@@ -9,6 +9,8 @@ The Reference Study Location for network development is Marshfield, Massachusett
 
 ## Pipeline Overview
 
+See: `locations`
+
 ### 1. Grid Construction
 
 The grid workflow starts by defining the US-based Study Location "Marshfield, MA, USA" in `config.yaml`. Following the notebook process, a synthetic radial distribution feeder via SHIFT/GDM/DiTTo is built and exported into OpenDSS format, with the inclusion of an Asset Registry informed by ResStock and ComStock data.
