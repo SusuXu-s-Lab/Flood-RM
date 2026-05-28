@@ -1,0 +1,1285 @@
+from __future__ import annotations
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from scipy import stats
+from pyproj import Transformer
+
+from .fit_history.extreme_value import (
+    fit_distribution,
+    get_frozen_dist,
+    observed_return_periods,
+    score_fit,
+)
+
+
+# Stage 1.1: SFINCS offshore boundary + chosen CORA snap node centroid.
+def plot_boundary_and_node(paths, config):
+    boundary_pts = []
+    for line in paths["sfincs_boundary_file"].read_text().splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            boundary_pts.append([float(parts[0]), float(parts[1])])
+    boundary_pts = np.asarray(boundary_pts, dtype=float)
+    crs = config["collection"]["cora"].get("boundary_points_crs", "EPSG:26919")
+    tr = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+    lon, lat = tr.transform(boundary_pts[:, 0], boundary_pts[:, 1])
+    cx, cy = tr.transform(boundary_pts[:, 0].mean(), boundary_pts[:, 1].mean())
+    fig, ax = plt.subplots(figsize=(7, 5))
+    ax.plot(lon, lat, "-o", color="steelblue", lw=2, ms=4, label="SFINCS boundary nodes")
+    ax.scatter(cx, cy, color="crimson", s=120, marker="*", zorder=3,
+               label=f"boundary centroid ({cx:.4f}, {cy:.4f})")
+    ax.set_xlabel("longitude")
+    ax.set_ylabel("latitude")
+    ax.set_title("Stage 1.1 — SFINCS boundary and CORA snap target")
+    ax.legend(loc="best", fontsize=9)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
+# Stage 2.1: raw hourly water level: sample window + full distribution.
+def plot_raw_waterlevel(waterlevel, window_slice=("2018-01-01", "2018-03-31")):
+    window = waterlevel.loc[window_slice[0]:window_slice[1]]
+    fig, axes = plt.subplots(1, 2, figsize=(14, 4))
+    axes[0].plot(window.index, window.values, lw=1.0)
+    axes[0].set_title(f"Stage 2.1 — Raw CORA hourly water level ({window_slice[0]} to {window_slice[1]})")
+    axes[0].set_ylabel("water level [m+MSL]")
+    axes[0].grid(True, alpha=0.3)
+    axes[1].hist(waterlevel.values, bins=60, color="0.4", alpha=0.85)
+    axes[1].set_title(f"Full record (n={len(waterlevel):,})")
+    axes[1].set_xlabel("water level [m+MSL]")
+    axes[1].grid(True, alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
+# Stage 2.2: linear MSL trend used to detrend hourly water level to a reference epoch.
+def plot_detrending(waterlevel, detrend_meta):
+    series = waterlevel.dropna().sort_index()
+    annual = series.resample("YS").mean()
+    fig, ax = plt.subplots(figsize=(11, 4))
+    ax.plot(annual.index.year, annual.values, "o-", color="0.3", label="CORA annual mean")
+    if detrend_meta.get("applied"):
+        slope = float(detrend_meta["slope_m_per_year"])
+        ref_year = float(detrend_meta["reference_epoch_year"])
+        years = annual.index.year.to_numpy(dtype=float)
+        ref_mask = annual.index.year == int(ref_year)
+        anchor = float(annual[ref_mask].mean()) if ref_mask.any() else float(annual.mean())
+        ax.plot(years, anchor + slope * (years - ref_year), "--", color="crimson", lw=2,
+                label=f"linear trend = {slope*1000:+.2f} mm/yr (ref={ref_year:.0f})")
+        ax.axvline(ref_year, color="black", ls=":", lw=1, label=f"reference epoch = {ref_year:.0f}")
+        source = detrend_meta.get("slope_source", "")
+        ax.text(0.02, 0.95, f"slope source: {source}",
+                transform=ax.transAxes, va="top", fontsize=9,
+                bbox=dict(boxstyle="round", fc="white", alpha=0.8))
+    else:
+        ax.text(0.02, 0.95, "detrending disabled",
+                transform=ax.transAxes, va="top", fontsize=9,
+                bbox=dict(boxstyle="round", fc="white", alpha=0.8))
+    ax.set_xlabel("year")
+    ax.set_ylabel("annual-mean water level [m+MSL]")
+    ax.set_title("Stage 2.2 — Detrending: secular MSL trend at the CORA boundary node")
+    ax.legend(loc="lower right", fontsize=9)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
+# Stage 2.3: POT thresholding on a sample window + magnitude histogram.
+def plot_pot_extraction(waterlevel, peaks, threshold_m,
+                        window_slice=("2018-01-01", "2018-03-31")):
+    window = waterlevel.loc[window_slice[0]:window_slice[1]]
+    peak_window = peaks.loc[window_slice[0]:window_slice[1]]
+    fig, axes = plt.subplots(1, 2, figsize=(14, 4))
+    axes[0].plot(window.index, window.values, lw=1.0, label="raw hourly")
+    axes[0].scatter(peak_window.index, peak_window.values, color="crimson", s=22,
+                    zorder=3, label="POT peaks")
+    axes[0].axhline(threshold_m, color="black", ls="--", lw=1.0,
+                    label=f"threshold = {threshold_m:.2f} m")
+    axes[0].set_ylabel("water level [m+MSL]")
+    axes[0].set_title("Stage 2.3 — POT extraction (sample window)")
+    axes[0].grid(True, alpha=0.3)
+    axes[0].legend(loc="best", fontsize=9)
+    axes[1].hist(peaks.dropna().values, bins=35, color="steelblue", alpha=0.85)
+    axes[1].axvline(threshold_m, color="black", ls="--", lw=1.0)
+    axes[1].set_title(f"Historical peak magnitudes (n={peaks.dropna().size})")
+    axes[1].set_xlabel("peak [m+MSL_ref]")
+    axes[1].grid(True, alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
+# Stage 2.4: candidate distributions (Exp vs GPD) with AIC scores. Use the
+# same fitting and scoring path as production so the figure cannot disagree
+# with the selected marginal.
+def plot_aic_model_selection(peaks, marginal):
+    values = peaks.dropna().to_numpy(dtype=float)
+    sorted_vals = np.sort(values)
+    fig, axes = plt.subplots(1, 2, figsize=(14, 4.2))
+
+    # Left: empirical CDF vs fitted CDFs, with AIC printed in the legend.
+    axes[0].plot(sorted_vals, np.linspace(0, 1, len(sorted_vals)),
+                 "o", color="0.3", alpha=0.7, label=f"empirical CDF ({len(sorted_vals):,} peaks)")
+    grid = np.linspace(values.min(), values.max() * 1.05, 400)
+    fits = {}
+    for dist in ("exp", "gpd"):
+        params = fit_distribution(values, dist)
+        aic = score_fit(values, params, dist, "AIC")
+        fits[dist] = (params, aic)
+    chosen_dist = min(fits, key=lambda key: fits[key][1])
+    for dist in ("exp", "gpd"):
+        params, aic = fits[dist]
+        chosen = (dist == chosen_dist)
+        axes[0].plot(grid, get_frozen_dist(params, dist).cdf(grid),
+                     "-" if chosen else "--", lw=2.2 if chosen else 1.3,
+                     color="crimson" if chosen else "steelblue",
+                     label=f"{dist.upper()} fit (AIC={aic:.1f}{'  ←AIC pick' if chosen else ''})")
+    axes[0].set_xlabel("peak height h [m+MSL_ref]")
+    axes[0].set_ylabel("F(h) = P(peak ≤ h)")
+    axes[0].set_title("Stage 2.4 — Which distribution best matches the historical peaks?")
+    axes[0].legend(loc="lower right", fontsize=9)
+    axes[0].grid(True, alpha=0.3)
+
+    # Right: log-survival diagnostic. The Exponential is a straight line on
+    # this scale; any deviation indicates a heavier or lighter tail. The
+    # empirical points falling on a straight line is direct visual evidence
+    # that no heavier-tailed (GPD) model is needed.
+    n = len(sorted_vals)
+    emp_surv = 1.0 - (np.arange(1, n + 1) - 0.5) / n
+    axes[1].semilogy(sorted_vals, emp_surv, "o", color="0.3", alpha=0.7,
+                     label="empirical P(peak > h)")
+    for dist in ("exp", "gpd"):
+        params, _ = fits[dist]
+        chosen = (dist == chosen_dist)
+        axes[1].semilogy(grid, get_frozen_dist(params, dist).sf(grid),
+                         "-" if chosen else "--", lw=2.2 if chosen else 1.3,
+                         color="crimson" if chosen else "steelblue",
+                         label=f"{dist.upper()} fit{' ←AIC pick' if chosen else ''}")
+    axes[1].set_xlabel("peak height h [m+MSL_ref]")
+    axes[1].set_ylabel("P(peak > h)  (log scale)")
+    axes[1].set_title("Tail diagnostic — Exp = straight line on log-survival axis")
+    axes[1].legend(loc="upper right", fontsize=9)
+    axes[1].grid(True, alpha=0.3, which="both")
+    fig.tight_layout()
+    return fig
+
+
+# Stage 2.5: the 3-step conversion chain that turns a fitted distribution
+# into a return-period curve. Each panel is one substitution:
+#   per-peak probability  →  expected exceedances per year  →  return period.
+# The 100-yr peak is highlighted in every panel so a reviewer can trace it
+# horizontally across the figure.
+def plot_return_curve_with_ci(peaks, marginal, bootstrap, rps=None,
+                              highlight_rp=100.0):
+    if rps is None:
+        rps = np.array([2, 5, 10, 25, 50, 100, 250, 500])
+    values = peaks.dropna().to_numpy(dtype=float)
+    rate = float(marginal.extremes_rate)
+    h_grid = np.linspace(values.min(), values.max() * 1.18, 500)
+    rp_at_h = marginal.return_period(h_grid)
+    annual_at_h = 1.0 / rp_at_h
+    surv_at_h = annual_at_h / rate
+    h_star = float(marginal.magnitude(highlight_rp))
+    p_star = 1.0 / (rate * highlight_rp)
+    rate_star = 1.0 / highlight_rp
+
+    fig, axes = plt.subplots(1, 3, figsize=(16.5, 4.4))
+
+    # Step 1: per-peak survival probability from the fitted Exponential.
+    ax = axes[0]
+    ax.semilogy(h_grid, surv_at_h, "-", color="crimson", lw=2)
+    ax.axvline(h_star, ls=":", color="black")
+    ax.axhline(p_star, ls=":", color="black")
+    ax.plot([h_star], [p_star], "o", color="black", ms=7, zorder=5)
+    ax.set_xlabel("peak height h [m+MSL_ref]")
+    ax.set_ylabel("P(peak > h)  per peak  (log)")
+    ax.set_title("Step 1 — Exp gives per-peak probability")
+    ax.text(0.04, 0.06,
+            f"P(peak > {h_star:.2f}) = 1 / {1/p_star:,.0f}",
+            transform=ax.transAxes, fontsize=9,
+            bbox=dict(boxstyle="round", fc="white", alpha=0.85))
+    ax.grid(True, alpha=0.3, which="both")
+
+    # Step 2: multiply by the peaks-per-year rate.
+    ax = axes[1]
+    ax.semilogy(h_grid, annual_at_h, "-", color="crimson", lw=2)
+    ax.axvline(h_star, ls=":", color="black")
+    ax.axhline(rate_star, ls=":", color="black")
+    ax.plot([h_star], [rate_star], "o", color="black", ms=7, zorder=5)
+    ax.set_xlabel("peak height h [m+MSL_ref]")
+    ax.set_ylabel("expected exceedances / year  (log)")
+    ax.set_title(f"Step 2 — × {rate:.1f} peaks / year")
+    ax.text(0.04, 0.06,
+            f"{rate:.1f} × P(peak > {h_star:.2f})\n= {rate_star:.4f} / yr",
+            transform=ax.transAxes, fontsize=9,
+            bbox=dict(boxstyle="round", fc="white", alpha=0.85))
+    ax.grid(True, alpha=0.3, which="both")
+
+    # Step 3: invert the annual rate into a return period; overlay the
+    # historical peaks and the bootstrap confidence band on the inverse view.
+    ax = axes[2]
+    ax.plot(observed_return_periods(values, rate), np.sort(values),
+            "o", color="0.3", alpha=0.55, label="historical peaks")
+    ax.plot(rps, marginal.magnitude(rps), "-", color="crimson", lw=2,
+            label=f"{marginal.dist_name.upper()} fit")
+    if bootstrap is not None:
+        cl_pct = int(round(100 * bootstrap["confidence_level"]))
+        ax.fill_between(bootstrap["rps"], bootstrap["lo"], bootstrap["hi"],
+                        color="crimson", alpha=0.15,
+                        label=f"{cl_pct}% bootstrap CI ({bootstrap['n_succeeded']} reps)")
+    ax.axvline(highlight_rp, ls=":", color="black")
+    ax.axhline(h_star, ls=":", color="black")
+    ax.plot([highlight_rp], [h_star], "o", color="black", ms=8, zorder=5)
+    ax.annotate(f"{int(highlight_rp)}-yr peak = {h_star:.2f} m",
+                xy=(highlight_rp, h_star),
+                xytext=(highlight_rp * 0.05, h_star + 0.07),
+                fontsize=10,
+                bbox=dict(boxstyle="round", fc="white", alpha=0.9))
+    ax.set_xscale("log")
+    ax.set_xlabel("return period [yr]  (log)")
+    ax.set_ylabel("peak height h [m+MSL_ref]")
+    ax.set_title("Step 3 — RP = 1 / annual rate")
+    ax.legend(loc="lower right", fontsize=9)
+    ax.grid(True, alpha=0.3, which="both")
+
+    fig.suptitle(
+        f"Stage 2.5 — From fitted distribution to return-period curve  "
+        f"(per-peak P  →  × {rate:.1f}/yr  →  invert)",
+        y=1.02, fontsize=11,
+    )
+    fig.tight_layout()
+    return fig
+
+
+# Stage 2.6: peak series + Theil-Sen line + Mann-Kendall p-value annotation.
+def plot_stationarity(peaks, report):
+    series = peaks.dropna()
+    t = (series.index - series.index.min()) / pd.Timedelta(days=365.25)
+    t = np.asarray(t, dtype=float)
+    y = series.to_numpy(dtype=float)
+    ts = stats.theilslopes(y, t, 0.95)
+    fig, ax = plt.subplots(figsize=(11, 4))
+    ax.plot(series.index, y, "o", color="0.3", alpha=0.7, label="peaks")
+    line_t = np.array([t.min(), t.max()])
+    ax.plot([series.index.min(), series.index.max()],
+            ts.intercept + ts.slope * line_t, "-", color="crimson", lw=2,
+            label=f"Theil-Sen = {ts.slope*1000:+.2f} mm/yr "
+                  f"[{ts.low_slope*1000:+.2f}, {ts.high_slope*1000:+.2f}]")
+    mk_p = float(report.get("mann_kendall_p", float("nan")))
+    note = "stationary" if mk_p >= 0.05 else "trend detected"
+    ax.set_title(f"Stage 2.6 — Stationarity diagnostic: Mann-Kendall p={mk_p:.3f} ({note})")
+    ax.set_ylabel("peak [m+MSL_ref]")
+    ax.legend(loc="best", fontsize=9)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
+# Stage 3.1: hybrid splice between empirical body and parametric tail.
+def plot_hybrid_splice(historical_peaks, sampled_peaks, splice_q):
+    historical_peaks = np.asarray(historical_peaks, dtype=float)
+    splice_peak = float(np.quantile(historical_peaks, splice_q))
+    fig, axes = plt.subplots(1, 2, figsize=(14, 4))
+    axes[0].hist(historical_peaks, bins=35, alpha=0.65, density=True,
+                 label=f"historical (n={len(historical_peaks)})", color="steelblue")
+    axes[0].hist(sampled_peaks["peak_m"].to_numpy(), bins=60, alpha=0.55, density=True,
+                 label=f"synthetic targets (n={len(sampled_peaks):,})", color="orange")
+    axes[0].axvline(splice_peak, color="black", ls="--",
+                    label=f"splice q={splice_q:.2f} → {splice_peak:.2f} m")
+    axes[0].set_xlabel("peak [m+MSL_ref]")
+    axes[0].set_ylabel("density")
+    axes[0].set_title("Stage 3.1 — Hybrid splice: empirical body ↔ parametric tail")
+    axes[0].legend(loc="best", fontsize=9)
+    axes[0].grid(True, alpha=0.3)
+    rp_sorted = sampled_peaks["sample_rp_years"].sort_values().to_numpy()
+    axes[1].plot(np.arange(1, len(rp_sorted) + 1), rp_sorted)
+    axes[1].set_yscale("log")
+    axes[1].set_xlabel("sample rank")
+    axes[1].set_ylabel("coastal driver return period [yr]")
+    axes[1].set_title("Synthetic coastal-driver RP coverage (log)")
+    axes[1].grid(True, alpha=0.3, which="both")
+    fig.tight_layout()
+    return fig
+
+
+def _annual_chance_label(return_period_years):
+    aep = 100.0 / float(return_period_years)
+    return f"{aep:g}% annual chance"
+
+
+def nearest_benchmark_events(catalog, *, benchmarks=None):
+    benchmarks = benchmarks or [10, 50, 100, 500]
+    frame = catalog.copy()
+    frame["sample_rp_years"] = pd.to_numeric(frame["sample_rp_years"], errors="coerce")
+    valid = frame.dropna(subset=["sample_rp_years"]).copy()
+    valid = valid[valid["sample_rp_years"] > 0]
+    if valid.empty:
+        return pd.DataFrame()
+    log_rp = np.log(valid["sample_rp_years"])
+    rows = []
+    for benchmark in benchmarks:
+        benchmark = float(benchmark)
+        index = (log_rp - np.log(benchmark)).abs().idxmin()
+        row = valid.loc[index]
+        rows.append(
+            {
+                "benchmark_return_period_years": int(benchmark) if benchmark.is_integer() else benchmark,
+                "annual_chance_label": _annual_chance_label(benchmark),
+                "event_id": row.get("event_id", pd.NA),
+                "sample_rp_years": float(row["sample_rp_years"]),
+                "severity_band": row.get("severity_band", pd.NA),
+                "probability_weight": row.get("probability_weight", pd.NA),
+                "coastal_peak_m": row.get("coastal_peak_m", row.get("peak_m", pd.NA)),
+                "absolute_log_error": float(abs(np.log(row["sample_rp_years"]) - np.log(benchmark))),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def plot_return_period_benchmark_coverage(catalog, stress_catalog=None, *, benchmarks=None):
+    benchmarks = benchmarks or [10, 50, 100, 500]
+    frame = catalog.copy()
+    frame["sample_rp_years"] = pd.to_numeric(frame["sample_rp_years"], errors="coerce")
+    rp = frame["sample_rp_years"].replace([np.inf, -np.inf], np.nan).dropna()
+    rp = rp[rp > 0]
+    nearest = nearest_benchmark_events(frame, benchmarks=benchmarks)
+    fig, axes = plt.subplots(1, 2, figsize=(14, 4.5))
+    if len(rp):
+        lower = max(0.01, float(rp.min()))
+        upper = max(float(rp.max()), max(benchmarks))
+        bins = np.geomspace(lower, upper, 32)
+        axes[0].hist(rp, bins=bins, color="#4c78a8", alpha=0.70, label="Probability Catalog")
+        if stress_catalog is not None and "sample_rp_years" in stress_catalog:
+            stress_rp = pd.to_numeric(stress_catalog["sample_rp_years"], errors="coerce").dropna()
+            stress_rp = stress_rp[stress_rp > 0]
+            if len(stress_rp):
+                y = np.full(len(stress_rp), max(1, len(rp) * 0.004))
+                axes[0].scatter(stress_rp, y, marker="|", s=45, color="#d62728", alpha=0.65,
+                                label="Stress/Training Set")
+        axes[0].set_xscale("log")
+        axes[0].set_xlim(lower, upper * 1.05)
+    ymax = axes[0].get_ylim()[1] or 1
+    for benchmark in benchmarks:
+        axes[0].axvline(benchmark, color="black", ls=":", lw=1)
+        axes[0].text(
+            benchmark,
+            ymax * 0.92,
+            f"{int(benchmark)}-yr\n{_annual_chance_label(benchmark).split()[0]}",
+            ha="center",
+            va="top",
+            fontsize=8,
+            rotation=0,
+        )
+    axes[0].set_xlabel("coastal driver return period [years]")
+    axes[0].set_ylabel("event count")
+    axes[0].set_title("Stage 3.2 — 10/50/100/500-year coastal-driver benchmark coverage")
+    axes[0].legend(loc="best", fontsize=9)
+    axes[0].grid(True, alpha=0.3, which="both")
+
+    axes[1].axis("off")
+    if not nearest.empty:
+        table = nearest[
+            [
+                "benchmark_return_period_years",
+                "annual_chance_label",
+                "event_id",
+                "sample_rp_years",
+                "severity_band",
+            ]
+        ].copy()
+        table["sample_rp_years"] = table["sample_rp_years"].map(lambda value: f"{value:.1f}")
+        labels = ["target RP", "AEP", "nearest event", "event RP", "band"]
+        cell_text = table.to_numpy().tolist()
+        rendered = axes[1].table(cellText=cell_text, colLabels=labels, loc="center")
+        rendered.auto_set_font_size(False)
+        rendered.set_fontsize(8)
+        rendered.scale(1, 1.45)
+    axes[1].set_title("Nearest catalog rows used for benchmark slices")
+    fig.tight_layout()
+    return fig
+
+
+# Stage 4.1: normalized historical templates + shape-diversity scatter.
+def plot_template_bank(template_frame, n_show=8):
+    fig, axes = plt.subplots(1, 2, figsize=(14, 4))
+    sample = template_frame.sample(min(n_show, len(template_frame)), random_state=42)
+    for _, row in sample.iterrows():
+        axes[0].plot(row["surge_template"], alpha=0.7)
+    axes[0].set_xlabel("relative-hour index")
+    axes[0].set_ylabel("normalized surge anomaly")
+    axes[0].set_title(f"Stage 4.1 — {len(sample)} normalized historical templates")
+    axes[0].grid(True, alpha=0.3)
+    sc = axes[1].scatter(template_frame["peak_m"],
+                         template_frame["duration_above_50pct_peak"],
+                         c=template_frame["asymmetry_ratio"], cmap="viridis",
+                         s=18, alpha=0.85)
+    plt.colorbar(sc, ax=axes[1], label="asymmetry (fall/rise)")
+    axes[1].set_xlabel("template peak [m]")
+    axes[1].set_ylabel("duration > 50% peak [hr]")
+    axes[1].set_title(f"Template diversity (n={len(template_frame)})")
+    axes[1].grid(True, alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
+# Stage 4.2: tail-morph time-stretch as a function of target peak magnitude.
+def plot_tail_morph(historical_peaks, settings):
+    historical_peaks = np.asarray(historical_peaks, dtype=float)
+    historical_peaks = historical_peaks[np.isfinite(historical_peaks)]
+    max_peak = float(np.nanmax(historical_peaks))
+    trigger_q = float(settings.get("tail_morph_trigger_quantile", 0.95))
+    max_factor = float(settings.get("tail_morph_max_factor", 1.30))
+    trigger_peak = float(np.nanquantile(historical_peaks, trigger_q))
+    denom = max(0.05, max_peak - trigger_peak)
+    targets = np.linspace(historical_peaks.min(), max_peak * 1.4, 400)
+    factors = np.where(
+        targets <= max_peak, 1.0,
+        1.0 + np.minimum(max_factor - 1.0,
+                         (max_factor - 1.0) * (targets - max_peak) / denom),
+    )
+    fig, ax = plt.subplots(figsize=(11, 4))
+    ax.plot(targets, factors, "-", color="crimson", lw=2)
+    ax.axvline(max_peak, ls="--", color="black", label=f"max historical = {max_peak:.2f} m")
+    ax.axvline(trigger_peak, ls=":", color="0.3", label=f"trigger q={trigger_q:.2f}")
+    ax.axhline(max_factor, ls=":", color="crimson", alpha=0.5,
+               label=f"cap = {max_factor:.2f}× duration")
+    ax.set_xlabel("target peak [m]")
+    ax.set_ylabel("time-stretch factor")
+    ax.set_title("Stage 4.2 — Tail-morph factor for out-of-sample peaks")
+    ax.legend(loc="lower right", fontsize=9)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
+# Stage 4.3: Gaussian kernel weights for one target peak + reuse distribution.
+def plot_template_matching(template_frame, summary, target_peak, settings):
+    historical_peaks = template_frame["peak_m"].to_numpy(dtype=float)
+    pool_size = int(min(settings.get("nearest_pool_size", 75), len(historical_peaks)))
+    sigma_scale = float(settings.get("kernel_sigma_scale", 0.50))
+    sigma_min = float(settings.get("kernel_sigma_min_m", 0.03))
+    sigma_max = float(settings.get("kernel_sigma_max_m", 0.20))
+    order = np.argsort(np.abs(historical_peaks - target_peak))
+    pool_idx = order[:pool_size]
+    pool_peaks = historical_peaks[pool_idx]
+    sigma = float(np.clip(sigma_scale * np.nanstd(pool_peaks), sigma_min, sigma_max))
+    fig, axes = plt.subplots(1, 2, figsize=(14, 4))
+    axes[0].scatter(historical_peaks, np.zeros_like(historical_peaks),
+                    color="0.7", s=10, label=f"all templates ({len(historical_peaks)})")
+    axes[0].scatter(pool_peaks, np.full_like(pool_peaks, 0.05),
+                    color="steelblue", s=22, label=f"nearest pool ({pool_size})")
+    axes[0].axvline(target_peak, color="crimson", ls="--", lw=2,
+                    label=f"target = {target_peak:.2f} m")
+    grid = np.linspace(historical_peaks.min(), historical_peaks.max(), 300)
+    kernel = np.exp(-0.5 * ((grid - target_peak) / sigma) ** 2)
+    axes[0].plot(grid, kernel, color="crimson", alpha=0.6,
+                 label=f"Gaussian kernel σ={sigma:.3f} m")
+    axes[0].set_xlabel("template peak [m]")
+    axes[0].set_yticks([])
+    axes[0].set_title("Stage 4.3 — Analogue selection for one target peak")
+    axes[0].legend(loc="upper right", fontsize=9)
+    axes[0].grid(True, alpha=0.3)
+    template_use = summary["template_id"].value_counts()
+    axes[1].hist(template_use.values, bins=30, color="steelblue", alpha=0.85)
+    axes[1].set_xlabel("times each template was used")
+    axes[1].set_ylabel("template count")
+    axes[1].set_title(
+        f"Reuse distribution (max = {int(template_use.max())} of "
+        f"{len(summary):,} events; reuse-penalty λ"
+        f"={settings.get('reuse_penalty_lambda', 1.0):.2f})"
+    )
+    axes[1].grid(True, alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
+def _circular_day_gap(a, b):
+    diff = np.abs(np.asarray(a, dtype=float) - np.asarray(b, dtype=float))
+    return np.minimum(diff, 366.0 - diff)
+
+
+def _seasonal_pairing_values(catalog, forcing):
+    coastal_time = pd.to_datetime(catalog.get("coastal_template_peak_time"), errors="coerce")
+    member_time = pd.to_datetime(catalog.get(f"{forcing}_member_time"), errors="coerce")
+    mask = coastal_time.notna() & member_time.notna()
+    coastal_doy = coastal_time[mask].dt.dayofyear.to_numpy(dtype=float)
+    member_doy = member_time[mask].dt.dayofyear.to_numpy(dtype=float)
+    diff = _circular_day_gap(coastal_doy, member_doy)
+    member_id = catalog.get(f"{forcing}_member_id")
+    if member_id is None:
+        member_id = pd.Series(["<missing>"] * len(catalog), index=catalog.index)
+    members = member_id.loc[mask].astype(str)
+    return coastal_doy, member_doy, diff, members
+
+
+def seasonal_pairing_diagnostics(catalog, forcing, *, window_days=None):
+    coastal_doy, member_doy, diff, members = _seasonal_pairing_values(catalog, forcing)
+    reuse = members.value_counts()
+    window = float(window_days) if window_days is not None else np.nan
+    in_window = int((diff <= window).sum()) if np.isfinite(window) else int(len(diff))
+    return pd.DataFrame(
+        [
+            {
+                "forcing": forcing,
+                "paired_rows": int(len(diff)),
+                "unique_members": int(members.nunique()) if len(members) else 0,
+                "unique_member_days": int(pd.Series(member_doy).nunique()) if len(member_doy) else 0,
+                "in_window_rows": in_window,
+                "in_window_fraction": float(in_window / len(diff)) if len(diff) else np.nan,
+                "median_gap_days": float(np.nanmedian(diff)) if len(diff) else np.nan,
+                "p90_gap_days": float(np.nanquantile(diff, 0.90)) if len(diff) else np.nan,
+                "max_gap_days": float(np.nanmax(diff)) if len(diff) else np.nan,
+                "max_member_reuse": int(reuse.max()) if len(reuse) else 0,
+                "p95_member_reuse": float(reuse.quantile(0.95)) if len(reuse) else np.nan,
+            }
+        ]
+    )
+
+
+def antecedent_pairing_diagnostics(catalog, forcing):
+    member_time = pd.to_datetime(catalog.get(f"{forcing}_member_time"), errors="coerce")
+    reference_time = pd.to_datetime(catalog.get(f"{forcing}_pairing_reference_time"), errors="coerce")
+    configured_lag = pd.to_numeric(
+        catalog.get(f"{forcing}_pairing_lag_hours"),
+        errors="coerce",
+    )
+    mask = member_time.notna() & reference_time.notna()
+    lag_hours = (reference_time[mask] - member_time[mask]).dt.total_seconds() / 3600.0
+    configured = configured_lag[mask]
+    if configured.notna().any():
+        expected = float(configured.dropna().median())
+        on_lag = int(np.isclose(lag_hours.to_numpy(dtype=float), expected, atol=1e-6).sum())
+    else:
+        expected = np.nan
+        on_lag = 0
+    return pd.DataFrame(
+        [
+            {
+                "forcing": forcing,
+                "policy": "antecedent_to_forcing",
+                "paired_rows": int(mask.sum()),
+                "reference_rows": int(reference_time.notna().sum()),
+                "configured_lag_hours": expected,
+                "median_lag_hours": float(np.nanmedian(lag_hours)) if len(lag_hours) else np.nan,
+                "min_lag_hours": float(np.nanmin(lag_hours)) if len(lag_hours) else np.nan,
+                "max_lag_hours": float(np.nanmax(lag_hours)) if len(lag_hours) else np.nan,
+                "on_lag_rows": on_lag,
+                "on_lag_fraction": float(on_lag / len(lag_hours)) if len(lag_hours) else np.nan,
+            }
+        ]
+    )
+
+
+def forcing_pairing_diagnostics(catalog, forcings=None, policies=None):
+    if forcings is None:
+        forcings = [
+            prefix.removesuffix("_pairing_policy")
+            for prefix in catalog.columns
+            if prefix.endswith("_pairing_policy")
+        ]
+    policies = policies or {}
+    frames = []
+    for forcing in forcings:
+        policy = policies.get(forcing, {})
+        strategy = policy.get("strategy")
+        if strategy is None and f"{forcing}_pairing_policy" in catalog:
+            values = catalog[f"{forcing}_pairing_policy"].dropna().astype(str)
+            strategy = values.iloc[0] if len(values) else None
+        if strategy == "seasonal_window_permutation":
+            window = policy.get("window_days")
+            if window is None and f"{forcing}_pairing_window_days" in catalog:
+                window_values = pd.to_numeric(catalog[f"{forcing}_pairing_window_days"], errors="coerce").dropna()
+                window = float(window_values.iloc[0]) if len(window_values) else None
+            frame = seasonal_pairing_diagnostics(catalog, forcing, window_days=window)
+            frame.insert(1, "policy", strategy)
+            frames.append(frame)
+        elif strategy == "antecedent_to_forcing":
+            frames.append(antecedent_pairing_diagnostics(catalog, forcing))
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def wave_analog_diagnostics(catalog):
+    policy = catalog.get("snapwave_pairing_policy", pd.Series(dtype=object)).dropna().astype(str)
+    policy_label = policy.mode().iloc[0] if len(policy) else "not_configured"
+    required = ["coastal_analog_id", "snapwave_member_id", "snapwave_member_file"]
+    present = [column for column in required if column in catalog]
+    if len(present) != len(required):
+        paired = pd.Series(False, index=catalog.index)
+    else:
+        values = catalog[required].fillna("").astype(str)
+        paired = values.ne("").all(axis=1)
+    if {"coastal_analog_id", "snapwave_member_id"}.issubset(catalog.columns):
+        same_analog = (
+            catalog["coastal_analog_id"].fillna("").astype(str)
+            == catalog["snapwave_member_id"].fillna("").astype(str)
+        ) & paired
+    else:
+        same_analog = pd.Series(False, index=catalog.index)
+    return pd.DataFrame(
+        [
+            {
+                "forcing": "coastal_waves",
+                "policy": policy_label,
+                "paired_rows": int(paired.sum()),
+                "missing_rows": int((~paired).sum()),
+                "same_analog_rows": int(same_analog.sum()),
+            }
+        ]
+    )
+
+
+def plot_antecedent_pairing(catalog, forcing, *, ax=None):
+    member_time = pd.to_datetime(catalog.get(f"{forcing}_member_time"), errors="coerce")
+    reference_time = pd.to_datetime(catalog.get(f"{forcing}_pairing_reference_time"), errors="coerce")
+    lag_hours = (reference_time - member_time).dt.total_seconds() / 3600.0
+    lag_hours = lag_hours[np.isfinite(lag_hours)]
+    expected = pd.to_numeric(catalog.get(f"{forcing}_pairing_lag_hours"), errors="coerce").dropna()
+    expected = float(expected.median()) if len(expected) else np.nan
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(8, 4))
+    else:
+        fig = ax.figure
+    if len(lag_hours):
+        ax.hist(lag_hours, bins=min(40, max(5, int(np.sqrt(len(lag_hours))))), color="steelblue", alpha=0.85)
+    if np.isfinite(expected):
+        ax.axvline(expected, color="crimson", ls="--", lw=2, label=f"configured lag = {expected:g} h")
+        ax.legend(loc="best", fontsize=9)
+    ax.set_xlabel("reference time minus member time [hours]")
+    ax.set_ylabel("event count")
+    ax.set_title(f"Stage 5.2 — Antecedent pairing: {forcing} (n={len(lag_hours):,})")
+    ax.grid(True, alpha=0.3, axis="y")
+    fig.tight_layout()
+    return fig
+
+
+def plot_configured_pairing(catalog, forcing, *, policy=None, ax=None):
+    policy = policy or {}
+    strategy = policy.get("strategy")
+    if strategy is None and f"{forcing}_pairing_policy" in catalog:
+        values = catalog[f"{forcing}_pairing_policy"].dropna().astype(str)
+        strategy = values.iloc[0] if len(values) else None
+    if strategy == "antecedent_to_forcing":
+        return plot_antecedent_pairing(catalog, forcing, ax=ax)
+    window = policy.get("window_days")
+    if window is None and f"{forcing}_pairing_window_days" in catalog:
+        window_values = pd.to_numeric(catalog[f"{forcing}_pairing_window_days"], errors="coerce").dropna()
+        window = float(window_values.iloc[0]) if len(window_values) else None
+    return plot_seasonal_pairing(catalog, forcing, window_days=window, ax=ax)
+
+
+def plot_rainfall_member_distribution(members):
+    depth_column = next(
+        (
+            column
+            for column in [
+                "mean_precip_mm",
+                "max_precip_mm",
+                "min_precip_mm",
+                # Backward-compatible legacy names. AORC APCP values are mm, not inches.
+                "mean_precip_in",
+                "max_precip_in",
+                "min_precip_in",
+            ]
+            if column in members
+        ),
+        None,
+    )
+    if depth_column is None:
+        raise KeyError("rainfall members need a precipitation depth column")
+    frame = members.copy()
+    frame[depth_column] = pd.to_numeric(frame[depth_column], errors="coerce")
+    if "rank" in frame:
+        frame["rank"] = pd.to_numeric(frame["rank"], errors="coerce")
+        frame = frame.sort_values("rank")
+        x = frame["rank"]
+    else:
+        frame = frame.sort_values(depth_column, ascending=False).reset_index(drop=True)
+        x = np.arange(1, len(frame) + 1)
+    storm_time = pd.to_datetime(frame.get("storm_start"), errors="coerce")
+    month_counts = storm_time.dt.month.value_counts().reindex(range(1, 13)).fillna(0).astype(int)
+    fig, axes = plt.subplots(1, 2, figsize=(13, 4))
+    axes[0].plot(x, frame[depth_column], "o-", color="steelblue", ms=3, lw=1)
+    axes[0].set_xlabel("SST member rank")
+    axes[0].set_ylabel(depth_column)
+    axes[0].set_title(f"Stage 5.1 — AORC SST rainfall member depths (n={len(frame):,})")
+    axes[0].grid(True, alpha=0.3)
+    axes[1].bar(month_counts.index, month_counts.values, color="0.45", alpha=0.85)
+    axes[1].set_xlabel("storm-start month")
+    axes[1].set_ylabel("member count")
+    axes[1].set_xticks(range(1, 13))
+    axes[1].set_title("AORC SST member seasonality")
+    axes[1].grid(True, alpha=0.3, axis="y")
+    fig.tight_layout()
+    return fig
+
+
+def _shade_circular_window(ax, window):
+    window = float(window)
+    if window >= 365:
+        ax.axhspan(1, 366, color="steelblue", alpha=0.12, label=f"±{int(window)}-day window")
+        return
+    x = np.linspace(1, 366, 400)
+    ax.fill_between(
+        x,
+        np.clip(x - window, 1, 366),
+        np.clip(x + window, 1, 366),
+        color="steelblue",
+        alpha=0.12,
+        label=f"±{int(window)}-day window",
+    )
+    left = x[x <= window]
+    if len(left):
+        ax.fill_between(left, 366 - window + left, 366, color="steelblue", alpha=0.12)
+    right = x[x >= 366 - window]
+    if len(right):
+        ax.fill_between(right, 1, right + window - 366, color="steelblue", alpha=0.12)
+
+
+# Stage 5.2: seasonal-window pairing diagnostic. Day-of-year (DOY) of each
+# coastal template peak vs. DOY of the paired non-coastal member, with the
+# configured circular ±window_days band overlaid. The methodology
+# (Zscheischler 2018, Wahl 2015) motivates seasonal alignment; this plot makes
+# the constraint auditable per Event Catalog row.
+def plot_seasonal_pairing(catalog, forcing, *, window_days=None, ax=None):
+    coastal_doy, member_doy, diff, _ = _seasonal_pairing_values(catalog, forcing)
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(7, 6))
+    else:
+        fig = ax.figure
+    if window_days is not None:
+        _shade_circular_window(ax, float(window_days))
+    ax.scatter(coastal_doy, member_doy, c=diff, cmap="viridis", s=10, alpha=0.65)
+    ax.plot([1, 366], [1, 366], ls=":", color="black", lw=0.8)
+    ax.set_xlabel("coastal template peak DOY")
+    ax.set_ylabel(f"paired {forcing} member DOY")
+    in_window = int((diff <= float(window_days)).sum()) if window_days is not None else len(diff)
+    title = f"Stage 5.2 — Seasonal-window pairing: {forcing} (n={len(diff):,})"
+    if window_days is not None:
+        title += f"  |  in-window={in_window}/{len(diff)}"
+    ax.set_title(title)
+    ax.set_xlim(0, 367)
+    ax.set_ylim(0, 367)
+    ax.legend(loc="lower right", fontsize=9)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
+# Stage 6.1: tail-enrichment audit. Sampling-region split (body vs tail) and
+# the per-row sampling_weight that records simulation-budget enrichment.
+def plot_sampling_weights(catalog):
+    region = catalog["sampling_region"].astype(str)
+    weight = pd.to_numeric(catalog["sampling_weight"], errors="coerce")
+    fig, axes = plt.subplots(1, 2, figsize=(13, 4))
+    counts = region.value_counts().reindex(["body", "tail"]).fillna(0).astype(int)
+    axes[0].bar(counts.index, counts.values, color=["steelblue", "crimson"], alpha=0.85)
+    for i, v in enumerate(counts.values):
+        axes[0].text(i, v, f"{int(v)}", ha="center", va="bottom", fontsize=9)
+    axes[0].set_ylabel("event count")
+    axes[0].set_title(f"Stage 6.1 — Sampling region (n={len(catalog):,})")
+    axes[0].grid(True, alpha=0.3, axis="y")
+    for label, color in [("body", "steelblue"), ("tail", "crimson")]:
+        sub = weight[region == label].dropna()
+        if len(sub):
+            axes[1].hist(sub, bins=30, color=color, alpha=0.65, label=f"{label} (n={len(sub):,})")
+    axes[1].set_xlabel("sampling_weight (body/tail enrichment correction)")
+    axes[1].set_ylabel("event count")
+    axes[1].set_title("Per-row sampling-budget weights")
+    axes[1].legend(loc="best", fontsize=9)
+    axes[1].grid(True, alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
+def severity_band_distribution(catalog, *, band_order=None):
+    band_order = band_order or ["mild", "common", "significant", "rare", "extreme", "beyond_design"]
+    counts = catalog["severity_band"].value_counts()
+    weights = pd.to_numeric(catalog["sampling_weight"], errors="coerce").fillna(0.0)
+    weighted = weights.groupby(catalog["severity_band"].astype(str)).sum()
+    if "probability_weight" in catalog:
+        probability_weights = pd.to_numeric(catalog["probability_weight"], errors="coerce")
+        has_probability_weight = bool(probability_weights.notna().any())
+        probability = probability_weights.fillna(0.0).groupby(catalog["severity_band"].astype(str)).sum()
+    else:
+        probability = pd.Series(dtype=float)
+        has_probability_weight = False
+    bands = [band for band in band_order if band in counts.index]
+    distribution = pd.DataFrame(
+        {
+            "severity_band": bands,
+            "event_count": counts.reindex(bands).fillna(0).astype(int).to_numpy(),
+            "weighted_mass": weighted.reindex(bands).fillna(0.0).astype(float).to_numpy(),
+            "probability_mass": probability.reindex(bands).fillna(0.0).astype(float).to_numpy(),
+        }
+    )
+    distribution.attrs["has_probability_weight"] = has_probability_weight
+    return distribution
+
+
+# Stage 6.2: severity-band coverage. Counts show model-budget allocation;
+# probability mass shows the distribution used by response summaries when
+# probability_weight is present.
+def plot_severity_bands(catalog, *, band_order=None):
+    distribution = severity_band_distribution(catalog, band_order=band_order)
+    has_probability_weight = bool(distribution.attrs.get("has_probability_weight", False))
+    right_column = "probability_mass" if has_probability_weight else "weighted_mass"
+    right_ylabel = "probability mass" if has_probability_weight else "weighted pseudo-count"
+    right_title = "Probability-weighted mass" if has_probability_weight else "Sampling-weight corrected pseudo-count"
+    colors = plt.get_cmap("YlOrRd")(np.linspace(0.25, 0.9, len(distribution)))
+    fig, axes = plt.subplots(1, 2, figsize=(13, 4), sharex=True)
+    bars = axes[0].bar(
+        distribution["severity_band"],
+        distribution["event_count"],
+        color=colors,
+        edgecolor="0.3",
+    )
+    for bar, value in zip(bars, distribution["event_count"]):
+        axes[0].text(bar.get_x() + bar.get_width() / 2, value, f"{int(value)}",
+                     ha="center", va="bottom", fontsize=9)
+    axes[0].set_ylabel("event count")
+    axes[0].set_title(f"Unweighted event count (n={int(distribution['event_count'].sum()):,})")
+    axes[0].grid(True, alpha=0.3, axis="y")
+
+    bars = axes[1].bar(
+        distribution["severity_band"],
+        distribution[right_column],
+        color=colors,
+        edgecolor="0.3",
+    )
+    for bar, value in zip(bars, distribution[right_column]):
+        axes[1].text(bar.get_x() + bar.get_width() / 2, value, f"{value:.2g}",
+                     ha="center", va="bottom", fontsize=9)
+    axes[1].set_ylabel(right_ylabel)
+    axes[1].set_title(right_title)
+    axes[1].grid(True, alpha=0.3, axis="y")
+    for ax in axes:
+        ax.tick_params(axis="x", rotation=20)
+    fig.suptitle("Stage 6.2 — Severity-band coverage", y=1.03)
+    fig.tight_layout()
+    return fig
+
+
+def plot_catalog_set_severity_comparison(probability_catalog, stress_catalog, *, band_order=None):
+    band_order = band_order or ["mild", "common", "significant", "rare", "extreme", "beyond_design"]
+    probability = severity_band_distribution(probability_catalog, band_order=band_order)
+    stress = severity_band_distribution(stress_catalog, band_order=band_order)
+    bands = [band for band in band_order if band in set(probability["severity_band"]) | set(stress["severity_band"])]
+    probability_counts = probability.set_index("severity_band")["event_count"].reindex(bands).fillna(0)
+    stress_counts = stress.set_index("severity_band")["event_count"].reindex(bands).fillna(0)
+    x = np.arange(len(bands))
+    fig, ax = plt.subplots(figsize=(11, 4.5))
+    ax.bar(x - 0.18, probability_counts, width=0.36, color="#4c78a8", alpha=0.75,
+           label=f"Probability Catalog (n={int(probability_counts.sum()):,})")
+    ax.bar(x + 0.18, stress_counts, width=0.36, color="#d62728", alpha=0.75,
+           label=f"Resilience Stress/Training Set (n={int(stress_counts.sum()):,})")
+    for xpos, value in zip(x - 0.18, probability_counts):
+        if value:
+            ax.text(xpos, value, f"{int(value)}", ha="center", va="bottom", fontsize=8)
+    for xpos, value in zip(x + 0.18, stress_counts):
+        if value:
+            ax.text(xpos, value, f"{int(value)}", ha="center", va="bottom", fontsize=8)
+    ax.set_xticks(x, bands, rotation=20, ha="right")
+    ax.set_ylabel("event count")
+    ax.set_title("Stage 6.3 — Probability Catalog vs Resilience Stress/Training Set")
+    ax.legend(loc="best", fontsize=9)
+    ax.grid(True, alpha=0.3, axis="y")
+    fig.tight_layout()
+    return fig
+
+
+# Stage 5.5: pairing-policy sensitivity. Overlay seasonal-window vs independent
+# permutation for one forcing so reviewers can see what the seasonal constraint
+# buys in practice. Independent permutation is the methodology's baseline
+# sensitivity case, not the production policy.
+def plot_independent_vs_seasonal(catalog_seasonal, catalog_independent, forcing, *, window_days=None):
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharex=True, sharey=True)
+    plot_seasonal_pairing(catalog_seasonal, forcing, window_days=window_days, ax=axes[0])
+    plot_seasonal_pairing(catalog_independent, forcing, window_days=window_days, ax=axes[1])
+    for ax, label, catalog in [
+        (axes[0], "seasonal_window_permutation", catalog_seasonal),
+        (axes[1], "independent_permutation (sensitivity)", catalog_independent),
+    ]:
+        stats = seasonal_pairing_diagnostics(catalog, forcing, window_days=window_days).iloc[0]
+        ax.set_title(
+            f"{label} — {forcing}\n"
+            f"in-window={int(stats['in_window_rows']):,}/{int(stats['paired_rows']):,}; "
+            f"median gap={stats['median_gap_days']:.0f} d"
+        )
+    fig.suptitle("Stage 5.5 — Pairing-policy sensitivity (in-memory comparison)", y=1.02)
+    fig.tight_layout()
+    return fig
+
+
+def _forcing_value_column(members, forcing, value_column=None):
+    if value_column is not None:
+        if value_column not in members:
+            raise ValueError(f"{value_column!r} is not present in {forcing} members")
+        return value_column
+    candidates_by_forcing = {
+        "rainfall": [
+            "mean_precip_mm",
+            "max_precip_mm",
+            "total_precip_mm",
+            "rainfall_depth_mm",
+            # Backward-compatible legacy names. AORC APCP values are mm, not inches.
+            "mean_precip_in",
+            "total_precip_in",
+            "precip_in",
+            "depth_in",
+            "mean",
+            "max",
+        ],
+        "soil_moisture": ["soil_moisture_mean", "SOIL_M", "soil_moisture", "mean"],
+        "streamflow": ["streamflow", "flow", "discharge", "Q", "mean"],
+        "snapwave": ["hs", "Hm0", "wave_height", "tp", "peak_period"],
+        "waves": ["hs", "Hm0", "wave_height", "tp", "peak_period"],
+    }
+    candidates = candidates_by_forcing.get(str(forcing), []) + ["value", "magnitude"]
+    column = next((candidate for candidate in candidates if candidate in members), None)
+    if column is None:
+        numeric = [
+            column
+            for column in members.columns
+            if column != "member_id" and pd.api.types.is_numeric_dtype(members[column])
+        ]
+        column = numeric[0] if numeric else None
+    if column is None:
+        raise ValueError(f"could not infer a numeric value column for {forcing} members")
+    return column
+
+
+def _plot_member_table(members, forcing):
+    frame = members.copy()
+    if "member_id" in frame:
+        return frame
+    soil_value_column = "SOILSAT_TOP" if "SOILSAT_TOP" in frame else "SOIL_M"
+    if str(forcing) == "soil_moisture" and {"time", soil_value_column}.issubset(frame.columns):
+        frame["time"] = pd.to_datetime(frame["time"], errors="coerce")
+        frame = frame.dropna(subset=["time"])
+        grouped = frame.groupby("time", as_index=False).agg(
+            soil_moisture_mean=(soil_value_column, "mean"),
+            soil_moisture_min=(soil_value_column, "min"),
+            soil_moisture_max=(soil_value_column, "max"),
+        )
+        grouped["member_id"] = "soil_moisture_" + grouped["time"].dt.strftime("%Y%m%dT%H%M%S")
+        return grouped
+    time_column = next((column for column in ["storm_date", "storm_start", "time"] if column in frame), None)
+    if time_column is not None:
+        times = pd.to_datetime(frame[time_column], errors="coerce").dt.strftime("%Y%m%dT%H%M%S")
+        frame["member_id"] = str(forcing) + "_" + times.fillna(pd.Series(range(len(frame)), index=frame.index).astype(str))
+        return frame
+    raise ValueError("members must include a 'member_id' column")
+
+
+def _probability_series(catalog):
+    if "probability_weight" in catalog:
+        probability = pd.to_numeric(catalog["probability_weight"], errors="coerce")
+        if probability.notna().any():
+            return probability.fillna(0.0)
+    sampling = pd.to_numeric(catalog.get("sampling_weight", 1.0), errors="coerce").fillna(0.0)
+    total = float(sampling.sum())
+    if np.isfinite(total) and total > 0:
+        return sampling / total
+    return pd.Series(np.full(len(catalog), 1.0 / max(len(catalog), 1)), index=catalog.index)
+
+
+def forcing_selection_frame(catalog, members, forcing, *, value_column=None):
+    member_id_column = f"{forcing}_member_id"
+    if member_id_column not in catalog:
+        raise ValueError(f"{member_id_column!r} is not present in catalog")
+
+    members = _plot_member_table(members, forcing)
+    value_column = _forcing_value_column(members, forcing, value_column)
+    source = members[["member_id", value_column]].copy()
+    source["member_id"] = source["member_id"].astype(str)
+    source[value_column] = pd.to_numeric(source[value_column], errors="coerce")
+
+    selected = pd.DataFrame(
+        {
+            "member_id": catalog[member_id_column].astype(str),
+            "sampling_weight": pd.to_numeric(catalog.get("sampling_weight", 1.0), errors="coerce").fillna(0.0),
+            "probability_weight": _probability_series(catalog),
+        }
+    )
+    selected = selected[selected["member_id"].notna() & (selected["member_id"] != "<NA>")]
+    grouped = selected.groupby("member_id", as_index=False).agg(
+        selected_count=("member_id", "size"),
+        selected_sampling_mass=("sampling_weight", "sum"),
+        selected_probability_mass=("probability_weight", "sum"),
+    )
+    out = source.merge(grouped, on="member_id", how="left")
+    out[["selected_count", "selected_sampling_mass", "selected_probability_mass"]] = out[
+        ["selected_count", "selected_sampling_mass", "selected_probability_mass"]
+    ].fillna(0.0)
+    out["selected_count"] = out["selected_count"].astype(int)
+    out = out.rename(columns={value_column: "member_value"})
+    out["value_column"] = value_column
+    out["forcing"] = forcing
+    return out
+
+
+def _selected_forcing_values(catalog, members, forcing, *, value_column=None):
+    member_id_column = f"{forcing}_member_id"
+    members = _plot_member_table(members, forcing)
+    value_column = _forcing_value_column(members, forcing, value_column)
+    source = members[["member_id", value_column]].copy()
+    source["member_id"] = source["member_id"].astype(str)
+    source[value_column] = pd.to_numeric(source[value_column], errors="coerce")
+    selected = catalog.copy()
+    selected["member_id"] = selected[member_id_column].astype(str)
+    selected["probability_weight"] = _probability_series(selected)
+    joined = selected.merge(source, on="member_id", how="left")
+    joined = joined.rename(columns={value_column: "member_value"})
+    joined["value_column"] = value_column
+    return joined
+
+
+def plot_forcing_marginal_comparison(catalog, members, forcing, *, value_column=None):
+    selection = forcing_selection_frame(catalog, members, forcing, value_column=value_column)
+    selected_values = np.repeat(
+        selection["member_value"].to_numpy(dtype=float),
+        selection["selected_count"].to_numpy(dtype=int),
+    )
+    source_values = selection["member_value"].dropna().to_numpy(dtype=float)
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+    if source_values.size:
+        ax.hist(source_values, bins=24, alpha=0.45, color="0.45", label="source members")
+    if selected_values.size:
+        ax.hist(selected_values, bins=24, alpha=0.55, color="steelblue", label="selected count")
+    weighted = selection[selection["selected_probability_mass"] > 0]
+    if len(weighted):
+        ax.scatter(
+            weighted["member_value"],
+            np.zeros(len(weighted)),
+            s=600 * weighted["selected_probability_mass"].to_numpy(dtype=float),
+            color="crimson",
+            alpha=0.55,
+            label="selected probability mass",
+            zorder=3,
+        )
+    value_label = selection["value_column"].iloc[0] if len(selection) else "member value"
+    ax.set_xlabel(value_label.replace("_", " "))
+    ax.set_ylabel("member count")
+    ax.set_title(f"Stage 5.4 — {forcing} marginal comparison")
+    ax.legend(loc="best", fontsize=9)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
+def plot_coastal_forcing_joint(catalog, members, forcing, *, value_column=None):
+    joined = _selected_forcing_values(catalog, members, forcing, value_column=value_column)
+    rp = pd.to_numeric(joined["sample_rp_years"], errors="coerce")
+    value = pd.to_numeric(joined["member_value"], errors="coerce")
+    probability = pd.to_numeric(joined["probability_weight"], errors="coerce").fillna(0.0)
+    sizes = 20 + 800 * probability.to_numpy(dtype=float)
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.scatter(rp, value, s=sizes, alpha=0.65, color="teal", edgecolor="white", linewidth=0.3)
+    ax.set_xscale("log")
+    ax.set_xlabel("coastal driver return period [years]")
+    value_label = joined["value_column"].iloc[0] if len(joined) else "member value"
+    ax.set_ylabel(value_label.replace("_", " "))
+    ax.set_title(f"Stage 5.5 — Coastal driver return period vs {forcing} forcing")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
+# Stage 4.4: synthetic-vs-historical descriptor distributions for QC acceptance.
+def plot_acceptance_descriptors(template_frame, summary):
+    # duration_above_50pct_peak and asymmetry_ratio are degenerate here: templates
+    # are cut on a fixed symmetric window so asymmetry is constant 1.0, and
+    # synthetic events reuse template duration by construction.
+    columns = ["peak", "volume"]
+    fig, axes = plt.subplots(1, len(columns), figsize=(4 * len(columns), 4))
+    for ax, column in zip(axes, columns):
+        h = pd.to_numeric(template_frame[column], errors="coerce").dropna()
+        s = pd.to_numeric(summary[column], errors="coerce").dropna()
+        ax.hist(h, bins=30, alpha=0.6, density=True, label="historical", color="steelblue")
+        ax.hist(s, bins=30, alpha=0.6, density=True, label="synthetic", color="orange")
+        ax.set_title(column.replace("_", " "))
+        ax.grid(True, alpha=0.3)
+    axes[0].legend(loc="best", fontsize=9)
+    fig.suptitle("Stage 4.4 — Acceptance: synthetic descriptors vs historical templates", y=1.02)
+    fig.tight_layout()
+    return fig
+
+
+def plot_distinct_oscillatory_proxies(
+    member_dataset,
+    summary,
+    template_frame,
+    waterlevel,
+    *,
+    random_seed=42,
+    candidate_n=250,
+    pick_n=5,
+    oscillation_keep_fraction=0.4,
+):
+    rng = np.random.default_rng(random_seed)
+    axis = member_dataset["relative_hour"].to_numpy().astype(int)
+    summary_idx = summary.set_index("event_id")
+    template_idx = template_frame.set_index("template_id")
+    candidate_ids = pd.Index(
+        rng.choice(
+            summary_idx.index.to_numpy(dtype=str),
+            size=min(candidate_n, len(summary_idx)),
+            replace=False,
+        )
+    )
+    proxy_rows = []
+    score_rows = []
+    for event_id in candidate_ids:
+        meta = summary_idx.loc[event_id]
+        tpl = template_idx.loc[meta["template_id"]]
+        hist_time = tpl["peak_time"] + pd.to_timedelta(axis, unit="h")
+        hist_total = waterlevel.reindex(hist_time).to_numpy(dtype=float)
+        baseline = float(tpl["baseline_m"])
+        scale = float(meta["peak"]) / max(float(tpl["peak_m"]), 1e-6)
+        proxy = baseline + (hist_total - baseline) * scale
+        proxy_rows.append(proxy)
+        dy = np.diff(np.nan_to_num(proxy, nan=baseline))
+        sign = np.sign(dy)
+        sign_changes = int(np.sum((sign[1:] * sign[:-1]) < 0)) if sign.size > 1 else 0
+        roughness = float(np.nansum(np.abs(np.diff(proxy, n=2)))) if proxy.size > 2 else 0.0
+        score_rows.append((event_id, sign_changes, roughness))
+    proxy_df = pd.DataFrame(proxy_rows, index=candidate_ids, columns=axis)
+    score_df = pd.DataFrame(
+        score_rows,
+        columns=["event_id", "sign_changes", "roughness"],
+    ).set_index("event_id")
+    score_df["oscillation_score"] = score_df["sign_changes"] + 0.05 * score_df["roughness"]
+    keep_n = max(pick_n, int(np.ceil(len(score_df) * oscillation_keep_fraction)))
+    candidate_ids = score_df.sort_values("oscillation_score", ascending=False).head(keep_n).index
+    proxy_df = proxy_df.loc[candidate_ids]
+    matrix = np.nan_to_num(proxy_df.to_numpy(dtype=float), nan=0.0)
+    seed = int(rng.integers(matrix.shape[0]))
+    picked = [seed]
+    while len(picked) < min(pick_n, matrix.shape[0]):
+        remaining = [i for i in range(matrix.shape[0]) if i not in picked]
+        min_dist = [min(np.linalg.norm(matrix[i] - matrix[j]) for j in picked) for i in remaining]
+        picked.append(remaining[int(np.argmax(min_dist))])
+    picked_ids = pd.Index(candidate_ids)[picked]
+    picked_rows = summary_idx.loc[picked_ids]
+    picked_proxy_df = proxy_df.loc[picked_ids]
+    y_min = float(np.nanmin(picked_proxy_df.to_numpy(dtype=float)))
+    y_max = float(np.nanmax(picked_proxy_df.to_numpy(dtype=float)))
+    y_pad = 0.05 * max(y_max - y_min, 1e-6)
+    fig, axes = plt.subplots(len(picked_ids), 1, figsize=(11, 2.4 * len(picked_ids)), sharex=True)
+    for ax, event_id in zip(np.atleast_1d(axes), picked_ids):
+        series = proxy_df.loc[event_id].dropna()
+        meta = picked_rows.loc[event_id]
+        ax.plot(series.index, series.values, lw=1.6)
+        ax.set_ylim(y_min - y_pad, y_max + y_pad)
+        ax.set_ylabel("m+MSL")
+        ax.set_title(
+            f"{event_id} | peak={meta['peak']:.2f} m | "
+            f"rp={meta['sample_rp_years']:.1f} y | template={meta['template_id']}"
+        )
+        ax.grid(True, alpha=0.3)
+    axes = np.atleast_1d(axes)
+    axes[-1].set_xlabel("relative hour")
+    fig.suptitle("Stage 4.5 — Distinct oscillatory water-level proxies", y=1.01, fontsize=11)
+    fig.tight_layout()
+    selected_columns = [
+        "template_id",
+        "sample_rp_years",
+        "peak",
+        "volume",
+        "duration_above_50pct_peak",
+        "asymmetry_ratio",
+    ]
+    selected_columns = [column for column in selected_columns if column in picked_rows]
+    selected = picked_rows[selected_columns].join(
+        score_df[["sign_changes", "roughness", "oscillation_score"]]
+    )
+    return fig, selected
+
+
+def plot_msl_shift_scenario_comparison(
+    scenario_datasets,
+    marginal_ci,
+    marginal_params,
+    *,
+    scenario_colors=None,
+    example_event_index=1000,
+):
+    scenario_names = list(scenario_datasets)
+    default_colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    scenario_colors = scenario_colors or {
+        name: default_colors[i % len(default_colors)] for i, name in enumerate(scenario_names)
+    }
+    scenario_offsets = {
+        name: float(ds.attrs.get("slr_offset_m", 0.0)) for name, ds in scenario_datasets.items()
+    }
+    fig, axes = plt.subplots(1, 3, figsize=(16, 4.5))
+    ax = axes[0]
+    for name in scenario_names:
+        ds = scenario_datasets[name]
+        peaks = pd.to_numeric(ds["peak"].to_series(), errors="coerce").dropna() + scenario_offsets[name]
+        ax.hist(
+            peaks,
+            bins=min(40, max(5, len(peaks))),
+            alpha=0.55,
+            label=f"{name} (+{scenario_offsets[name]:.2f} m)",
+            color=scenario_colors[name],
+        )
+    ax.set_xlabel("absolute peak [m+MSL_ref]")
+    ax.set_ylabel("count")
+    ax.set_title("Synthetic peak distribution per scenario")
+    ax.legend(loc="upper right", fontsize=9)
+    ax.grid(True, alpha=0.3)
+
+    ax = axes[1]
+    base_ds = scenario_datasets[scenario_names[0]]
+    event_ids = base_ds["event_id"].to_numpy()
+    example_event = str(event_ids[min(example_event_index, len(event_ids) - 1)])
+    for name in scenario_names:
+        ds = scenario_datasets[name]
+        series = ds["surge_absolute"].sel(event_id=example_event).to_numpy()
+        rel = ds["relative_hour"].to_numpy()
+        finite = np.isfinite(series)
+        ax.plot(
+            rel[finite],
+            series[finite],
+            color=scenario_colors[name],
+            label=f"{name} (+{scenario_offsets[name]:.2f} m)",
+            linewidth=1.6,
+        )
+    ax.set_xlabel("relative hour")
+    ax.set_ylabel("absolute water level [m+MSL_ref]")
+    ax.set_title(f"Event {example_event}: rigid translation under SLR")
+    ax.legend(loc="upper right", fontsize=9)
+    ax.grid(True, alpha=0.3)
+
+    ax = axes[2]
+    rps = marginal_ci["rps"].to_numpy()
+    for name in scenario_names:
+        offset = scenario_offsets[name]
+        ax.plot(
+            rps,
+            marginal_ci["h_point"] + offset,
+            color=scenario_colors[name],
+            label=f"{name} (+{offset:.2f} m)",
+            linewidth=1.8,
+        )
+        ax.fill_between(
+            rps,
+            marginal_ci["h_lo"] + offset,
+            marginal_ci["h_hi"] + offset,
+            color=scenario_colors[name],
+            alpha=0.18,
+        )
+    ax.set_xscale("log")
+    ax.set_xlabel("coastal driver return period [years]")
+    ax.set_ylabel("absolute peak [m+MSL_ref]")
+    ax.set_title("Coastal-driver return-period curve per scenario (95% bootstrap CI)")
+    ax.legend(loc="upper left", fontsize=9)
+    ax.grid(True, alpha=0.3, which="both")
+
+    params = marginal_params if isinstance(marginal_params, pd.DataFrame) else pd.DataFrame(marginal_params)
+    ref_epoch = float(params["detrend_reference_epoch_year"].dropna().iloc[0])
+    fig.suptitle(f"Stage 7 — MSL-shift scenarios | reference epoch {ref_epoch:.1f}", y=1.02, fontsize=11)
+    fig.tight_layout()
+    return fig

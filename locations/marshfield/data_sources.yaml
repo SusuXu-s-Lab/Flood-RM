@@ -1,0 +1,279 @@
+static_sources:
+  bbox:
+    output: data/static/aoi/bbox.geojson
+
+  terrain:
+    raw: data/static/raw/topo/cudem_10_marshfield.tif
+    output: data/static/processed/cudem_region_setup.tif
+
+  landcover:
+    raw: data/static/raw/landcover/worldcover_bbox.tif
+    output: data/static/processed/worldcover_region_setup.tif
+
+  coastline:
+    output: data/static/processed/coastal_region.geojson
+    land_seed:
+    - -70.76
+    - 42.12
+    ocean_seed:
+    - -70.62
+    - 42.1
+
+  ssurgo:
+    output: data/static/soils/ssurgo_mapunitpoly.gpkg
+    attributes_output: data/static/soils/ssurgo_mapunit_attributes.csv
+    hsg_output: data/static/soils/hsg_mfield.tif
+    ksat_output: data/static/soils/ksat_mmhr_mfield.tif
+
+
+collection:
+  start: '1979-02-01'
+  end: '2022-12-31'
+
+  cora:
+    output_path: data/sources/cora_waterlevel/cora_mfield_boundary_hourly_msl.csv
+    reuse_existing: true
+    s3_bucket: noaa-nos-cora-pds
+    s3_key_pattern: V1.1/assimilated/500m_grid/500m_grid_zeta_{date:%Y%m%d}.nc
+    variable: zeta
+    datum: MSL
+    units: m
+    boundary_points_crs: EPSG:26919
+    nearest_k: 20
+    max_snap_distance_km: 5.0
+    parallel_workers: 16
+    request_timeout_seconds: 60
+    raw_cache_enabled: false
+    raw_cache_dirname: cora_daily_nc
+
+  era5_waves:
+    provider: earthdatahub
+    auth_path: code/api-key.txt
+    bbox_wgs84:
+    - -71.0
+    - 42.0
+    - -70.0
+    - 42.5
+    output_path: data/sources/era5_waves/era5_mfield_offshore_hourly.nc
+    smoke_start: '2018-01-01T00:00:00'
+    smoke_end: '2018-01-01T23:00:00'
+
+  aorc_sst:
+    zarr_year_pattern: s3://noaa-nws-aorc-v1-1-1km/{year}.zarr
+    variable: APCP_surface
+    start_date: '1979-02-01'
+    end_date: '2022-12-31'
+    storm_duration_hours: 72
+    min_precip_threshold: 2.5
+    top_n_events: 440
+    check_every_n_hours: 6
+    decluster_hours: 72
+    transposition_stride_cells: 4
+    write_event_windows: true
+    transposition_region:
+      id: east-atlantic-marshfield
+      geometry_file: data/sources/aorc_sst/transposition_regions/transposition_region_100km.geojson
+      description: Direct AORC SST scan over the Atlas-14-informed 100 km Marshfield
+        candidate region.
+
+  nwm:
+    version: '3.0'
+    bucket: noaa-nwm-retrospective-3-0-pds
+    start: '1979-02-01'
+    end: '2022-12-31'
+    streamflow:
+      zarr: s3://noaa-nwm-retrospective-3-0-pds/CONUS/zarr/chrtout.zarr
+      variable: streamflow
+      feature_dim: feature_id
+      available: false
+      reason: Marshfield coastal SFINCS grid has no meaningful streamflow driver or
+        gage record for this baseline; do not use nearby tiny NWM reaches as a compound-flow
+        input.
+      selection_method: not_applicable_for_configured_coastal_no_streamflow
+      selection_source: Reviewed NWM v3.0 chrtout nearest features; retained as non-driver
+        context only because there is no practical streamflow boundary for this location.
+      feature_ids: []
+    soil_moisture:
+      zarr: s3://noaa-nwm-retrospective-3-0-pds/CONUS/zarr/ldasout.zarr
+      variables:
+      - SOIL_M
+      - SOILSAT_TOP
+      soilsat_top_layers:
+      - 0
+      - 1
+      x: x
+      y: y
+      crs: +proj=lcc +units=m +a=6370000.0 +b=6370000.0 +lat_1=30.0 +lat_2=60.0 +lat_0=40.0
+        +lon_0=-97.0 +x_0=0 +y_0=0 +k_0=1.0 +nadgrids=@null +wktext +no_defs
+      selection_method: nearest_finite_cells_to_sfinx_grid_centroid_corners_and_edges
+      selection_source: NWM v3.0 ldasout x/y arrays; sampled SFINCS grid centroid,
+        corners, and edge midpoints; retained cells with finite SOIL_M on 2018-01-01T00:00.
+      points:
+      - id: center
+        x: 2062500.875
+        y: 569499.6875
+      - id: southwest
+        x: 2058500.875
+        y: 561499.6875
+      - id: northwest
+        x: 2053500.875
+        y: 573499.6875
+      - id: west_mid
+        x: 2056500.875
+        y: 567499.6875
+      - id: south_mid
+        x: 2065500.875
+        y: 564499.6875
+
+event_catalog:
+  forcing_members:
+    rainfall: data/sources/aorc_sst/rainfall_members.csv
+    streamflow: null
+    soil_moisture: data/sources/nwm/soil_moisture.csv
+  pairing:
+    rainfall:
+      strategy: seasonal_window_permutation
+      seed: 42
+      window_days: 45
+    streamflow:
+      strategy: seasonal_window_permutation
+      seed: 43
+      window_days: 45
+    soil_moisture:
+      strategy: antecedent_to_forcing
+      reference_forcing: rainfall
+      lead_time_hours: 24
+
+events:
+  target_event_count: 2500
+
+extremes:
+  method: pot
+  hydrological_year_start: YS-AUG
+  selection_criterion: AIC
+  return_periods:
+  - 2
+  - 5
+  - 10
+  - 25
+  - 50
+  - 100
+  - 250
+  - 500
+  pot:
+    threshold_quantile: 0.98
+    distributions:
+    - exp
+    - gpd
+    min_peak_distance_hours: 72
+  bootstrap:
+    n_replicates: 1000
+    confidence_level: 0.95
+    seed: 42
+  detrend:
+    enabled: true
+    method: boundary_cora_annual_mean
+    reference_epoch: 2000
+    external_slope_m_per_year: null
+
+sampling:
+  spacing: log
+  return_period_min_years: 1.5
+  return_period_max_years: 500.0
+  hybrid_splice_quantile: 0.95
+  tail_sample_fraction: 0.2
+  severity_bands:
+  - severity_band: mild
+    rp_min_years: 0.0
+    rp_max_years: 2.0
+  - severity_band: common
+    rp_min_years: 2.0
+    rp_max_years: 10.0
+  - severity_band: significant
+    rp_min_years: 10.0
+    rp_max_years: 50.0
+  - severity_band: rare
+    rp_min_years: 50.0
+    rp_max_years: 100.0
+  - severity_band: extreme
+    rp_min_years: 100.0
+    rp_max_years: 500.0
+  - severity_band: beyond_design
+    rp_min_years: 500.0
+    rp_max_years: null
+
+resilience_stress_training:
+  target_event_count: 500
+  max_mild_fraction: 0.2
+  benchmark_return_period_years:
+  - 10
+  - 50
+  - 100
+  - 500
+  rainfall_heavy_fraction: 0.1
+  wet_soil_fraction: 0.1
+  wave_overtopping_fraction: 0.1
+  compound_pairing:
+    enabled: true
+    strategy: operationally_severe_plausible_dependence
+    seed: 42
+    seasonal_window_days: 45
+    real_event_count: 12
+    real_event_window_hours: 72
+    soil_moisture_lead_time_hours: 24
+    role_fractions:
+      high_rainfall_cooccurrence: 0.4
+      rainfall_before_coastal: 0.25
+      rainfall_after_coastal: 0.25
+      wet_soil_high_rainfall: 0.1
+
+design_events:
+  pre_event_baseline_hours: 24
+  event_threshold_fraction: 0.1
+  event_threshold_min_m: 0.05
+  min_event_hours: 12
+  max_event_hours: 168
+  tide_resolving_half_window_hours: 72
+  tail_morph_max_factor: 1.3
+  tail_morph_trigger_quantile: 0.95
+template_assignment:
+  random_seed: 42
+  nearest_pool_size: 75
+  kernel_sigma_scale: 0.5
+  kernel_sigma_min_m: 0.03
+  kernel_sigma_max_m: 0.2
+  reuse_penalty_lambda: 1.0
+  dominant_peak_ratio_max: 0.9
+  
+scenarios:
+  base:
+    slr_offset_m: 0.0
+    description: Observed MSL record 1979-2022. Baseline reference.
+  noaa_int_2050:
+    slr_offset_m: 0.3
+    description: NOAA 2022 Tech Report, Intermediate scenario, 2050.
+    source: NOAA/NASA Interagency Sea Level Rise Scenario Tool, 2022 Technical Report
+      data
+    source_url: https://sealevel.nasa.gov/data_tools/18/
+    source_dataset: 'Global and Regional Sea Level Rise Scenarios for the United States:
+      Updated Mean Projections and Extreme Water Level Probabilities Along U.S. Coastlines'
+    source_location_basis: regional/local relative sea-level scenario applicable to
+      Massachusetts South Shore; not a Boston tide-gauge detrend
+    source_baseline_year: 2000
+    source_accessed: '2026-05-01'
+    scenario_family: Intermediate
+    projection_year: 2050
+  noaa_int_2100:
+    slr_offset_m: 1.1
+    description: NOAA 2022 Tech Report, Intermediate scenario, 2100.
+    source: NOAA/NASA Interagency Sea Level Rise Scenario Tool, 2022 Technical Report
+      data
+    source_url: https://sealevel.nasa.gov/data_tools/18/
+    source_dataset: 'Global and Regional Sea Level Rise Scenarios for the United States:
+      Updated Mean Projections and Extreme Water Level Probabilities Along U.S. Coastlines'
+    source_location_basis: regional/local relative sea-level scenario applicable to
+      Massachusetts South Shore; not a Boston tide-gauge detrend
+    source_baseline_year: 2000
+    source_accessed: '2026-05-01'
+    scenario_family: Intermediate
+    projection_year: 2100

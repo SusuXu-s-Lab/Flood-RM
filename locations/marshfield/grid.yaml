@@ -1,0 +1,35 @@
+grid:
+  power_grid_root: data/power_grid
+  power_extent: data/power_grid/power_extent.geojson
+  shift_cache: data/power_grid/shift_cache
+  opendss_root: data/power_grid/derived_opendss
+  asset_registry: data/power_grid/asset_registry
+  augmented_artifacts: data/power_grid/augmented
+  onm_export: data/power_grid/onm_export
+  figures: data/power_grid/figures
+  source_area:
+    source: osmnx_place
+    place_name: project.place_name
+    extra_areas:
+    - name: humarock_barrier_strip
+      bbox:
+      - -70.725
+      - 42.088
+      - -70.655
+      - 42.145
+  source_anchors:
+    source: osm_power_substations
+    place_name: project.place_name
+    candidate_output: data/static/grid/source_anchor_candidates.geojson
+    reviewed_override: data/static/grid/source_anchors.geojson
+    accept_unreviewed_source_anchors: false
+  critical_facilities:
+    source: data/static/grid/critical_facilities.geojson
+
+aoi:
+  source: data/power_grid/asset_registry
+  source_format: asset_registry
+  alpha_ratio: 0.3
+  output: data/static/aoi/study_area.geojson
+  metadata_output: data/static/aoi/study_area.json
+  reference_extent: data/static/aoi/power_extent.geojson

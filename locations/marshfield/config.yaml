@@ -1,0 +1,20 @@
+project:
+  name: marshfield
+  place_name: Marshfield, MA, USA
+  country: US
+  model_crs: EPSG:26919
+  reference_crs: EPSG:4326
+
+flood_setting: coastal
+
+event_drivers:
+- coastal_water_level
+- rainfall
+- soil_moisture
+
+coastal_waves: true
+
+includes:
+  data_sources: data_sources.yaml
+  grid: grid.yaml
+  sfincs: sfincs.yaml

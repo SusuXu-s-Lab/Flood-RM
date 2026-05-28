@@ -1,0 +1,31 @@
+# standard
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.pytest_cache
+
+# environments
+.venv/
+
+# generated power-grid data (asset registry, SHIFT cache, augmented artifacts, ONM export)
+locations/*/data/power_grid/
+
+# general folders
+code
+docs
+tests
+cluster
+tests
+
+# data
+locations/marshfield/data
+
+# local Slurm output logs
+slurm-*.out
+runs/*
+!runs/.gitkeep
+!runs/debug/
+!runs/debug/.gitkeep

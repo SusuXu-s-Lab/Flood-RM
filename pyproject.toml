@@ -1,0 +1,90 @@
+[project]
+name = "flood-rm"
+version = "0.1.0"
+description = "Flood-RM: flood-resilient microgrid scenario ensemble builder"
+readme = "README.md"
+requires-python = ">=3.13, <3.14"
+dependencies = [
+    "arraylake>=0.32.0",
+    "cartopy>=0.24.0",
+    "contextily>=1.7.0",
+    "dask[array]>=2025.1.0",
+    "fsspec>=2025.3.0",
+    "gcsfs>=2025.3.0",
+    "geopandas>=1.1.3",
+    "geopy>=2.4.1",
+    "h5netcdf>=1.8.1",
+    "h5py>=3.16.0",
+    "hydromt>=1.3.0,<2",
+    "hydromt-sfincs>=2.0.0rc1,<3",
+    "intake>=2.0.9",
+    "intake-xarray>=2.0.0",
+    "ipyleaflet>=0.20.0",
+    "ipykernel>=7.2.0",
+    "jupyterlab>=4.5.6",
+    "matplotlib>=3.10.0",
+    "netcdf4>=1.7.4",
+    "neuraloperator>=2.0.0",
+    "osmnx>=2.1.0",
+    "pandas>=3.0.1",
+    "pillow>=12.1.1",
+    "planetary-computer>=1.0.0",
+    "pyogrio>=0.10.0",
+    "pygris>=0.2.1",
+    "pystac-client>=0.9.0",
+    "pyvinecopulib>=0.6.0",
+    "pyyaml>=6.0",
+    "rasterio>=1.5.0",
+    "s3fs>=2026.3.0",
+    "scikit-learn>=1.5.0",
+    "scipy>=1.14.0",
+    "shapely>=2.1.2",
+    "tqdm>=4.60.0",
+    "torch",
+    "torchaudio",
+    "torchvision",
+    "xarray>=2026.2.0",
+    "zarr>=3.1.0",
+    "torch-geometric>=2.7.0",
+    "floodsr>=0.1.4",
+    "cdsapi>=0.7.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = [
+    "src/design_events",
+    "src/sfincs_runs",
+    "src/power",
+    "src/fragility",
+]
+force-include = { "src/study_location.py" = "study_location.py" }
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv]
+default-groups = ["power-systems"]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu130" }]
+torchaudio = [{ index = "pytorch-cu130" }]
+torchvision = [{ index = "pytorch-cu130" }]
+nrel-shift = { git = "https://github.com/NLR-Distribution-Suite/shift.git" }
+
+[dependency-groups]
+power-systems = [
+    "grid-data-models>=2.3.3",   # gdm — distribution grid data models
+    "loguru>=0.7.0",              # used by nrel-ditto and directly in notebooks
+    "nrel-ditto>=0.1.0",          # OpenDSS writer (DiTTo)
+    "nrel-shift>=0.2.0",          # SHIFT synthetic feeder builder (git source above)
+    "opendssdirect-py>=0.9.4",    # OpenDSS Python interface for audit notebook
+]
