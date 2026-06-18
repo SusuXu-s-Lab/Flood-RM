@@ -130,32 +130,6 @@ def return_values(params, dist_name, rps=rps_default, extremes_rate=1.0):
 def bootstrap_return_values(values, ev_type, rps, extremes_rate, *,
                             distribution=None, criterium="AIC",
                             n_replicates=1000, confidence_level=0.95, seed=42):
-    # Nonparametric bootstrap of the fitted return-period curve.
-    #
-    # Regulator-facing rationale:
-    # - The catalog stage reports a single point estimate of the 100-yr
-    #   peak, the 250-yr peak, etc. A city engineer's first defensibility
-    #   question is "what is the confidence interval on those numbers?".
-    #   AIC alone selects a distribution but emits no parameter uncertainty
-    #   and no model-selection uncertainty.
-    # - Each bootstrap replicate resamples the OBSERVED peaks with
-    #   replacement (so distributional misspecification is also exercised,
-    #   not only sampling noise around a fixed family) and re-runs the
-    #   SAME model-selection step the production pipeline uses. The result
-    #   captures three sources of uncertainty:
-    #     (i)  finite-sample variance of the parameter estimates,
-    #     (ii) variance of the model-selection decision (distribution
-    #          family may flip between replicates), and
-    #     (iii) the joint effect of both on the return-value curve.
-    # - The extremes_rate is held fixed across replicates. For POT this is
-    #   peaks_per_year over the full record; bootstrapping it would
-    #   confound rate uncertainty with magnitude uncertainty and is not
-    #   what the engineer is asking about. (A separate Poisson CI on the
-    #   rate could be reported if needed; not added here.)
-    #
-    # Returns a dict with point estimate, percentile CI bounds, distribution
-    # selection counts, and the number of successful replicates. The caller
-    # owns serialization (CSV/JSON).
     rng = np.random.default_rng(int(seed))
     values = np.asarray(values, dtype=float)
     values = values[np.isfinite(values)]

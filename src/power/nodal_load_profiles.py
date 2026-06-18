@@ -13,12 +13,6 @@ from power.load_profiles import LOAD_PROFILE_ASSIGNMENTS_SCHEMA_VERSION
 EVERSOURCE_MA_RESIDENTIAL_PEAK_KW_CEILING = 10.0
 EVERSOURCE_MA_INDUSTRIAL_PEAK_KW_FLOOR = 200.0
 
-EVERSOURCE_CLASSIFIER_CITATION = (
-    "Eversource Massachusetts retail electric tariff schedules MDPU 1310: "
-    "R-1/R-2 residential service (typical peak <10 kW), G-1 general service "
-    "small (<10 kW), G-2 medium (10-200 kW), G-3 large/industrial (>=200 kW)."
-)
-
 CUSTOMER_CLASS_RESIDENTIAL = "residential"
 CUSTOMER_CLASS_COMMERCIAL = "commercial"
 CUSTOMER_CLASS_INDUSTRIAL_PROXY = "industrial_proxy"
@@ -31,8 +25,7 @@ _DEFAULT_POWER_FACTOR_POLICY = "static_load_pf"
 def classify_eversource_customer_class(*, peak_kw: float) -> str:
     """Classify a load by peak kW using Eversource MA rate-class thresholds.
 
-    See module docstring for citation. Returns one of ``residential``,
-    ``commercial``, or ``industrial_proxy``.
+    Returns one of ``residential``, ``commercial``, or ``industrial_proxy``.
     """
 
     if peak_kw < EVERSOURCE_MA_RESIDENTIAL_PEAK_KW_CEILING:
@@ -93,13 +86,7 @@ def assign_nodal_load_profiles(
 
         provenance = {
             "classifier": "eversource_ma_rate_class_kw_threshold",
-            "classifier_citation": EVERSOURCE_CLASSIFIER_CITATION,
             "diversity_rule": "deterministic_hash_within_feeder_class_bucket",
-            "diversity_rule_citation": (
-                "Zhu & Mather, 'Data-Driven Load Diversity and Variability "
-                "Modeling for Quasi-Static Time-Series Simulation on "
-                "Distribution Feeders' (NREL)."
-            ),
             "profile_source": archetype["profile_source"],
             "source_building_type": archetype["source_building_type"],
             "schedule_overlay": archetype.get("schedule_overlay"),

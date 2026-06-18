@@ -1693,7 +1693,7 @@ def plot_and_joint_isolines(
     paired=None,
     catalog=None,
 ):
-    """AND joint-exceedance isolines over two drivers (Maduwantha 2026 Fig. 3 style)."""
+    """AND joint-exceedance isolines over two drivers."""
     from design_events.build_events.joint_exceedance import and_return_period, and_survival_from_cdf
 
     if model.dim != 2:
@@ -1831,7 +1831,7 @@ def plot_population_copula_fits(model, paired, *, n=4000, seed=11):
 
 
 def plot_combined_and_isolines(model, *, return_periods=(10, 50, 100, 500), grid=60, n_sample=4000, seed=11, paired=None, catalog=None, ax=None):
-    """Combined AND isolines across storm-type populations (the paper's pooled-AEP surface)."""
+    """Combined AND isolines across storm-type populations."""
     from scipy.ndimage import gaussian_filter
 
     from design_events.build_events.joint_exceedance import combined_return_period

@@ -140,8 +140,7 @@ class EmpiricalMarginal:
     Unlike a POT exp/GPD tail, this does not extrapolate beyond the observed sample: the
     quantile function saturates at the observed [min, max]. Appropriate for a bounded
     conditioning/antecedent variable such as soil saturation fraction, where an unbounded
-    extreme-value tail produces unphysical values (>1 saturation). Jane et al. (2020) fit
-    non-conditioning compound-flood drivers to bounded distributions, not a GPD tail.
+    extreme-value tail produces unphysical values (>1 saturation).
     """
 
     dist_name = "empirical"

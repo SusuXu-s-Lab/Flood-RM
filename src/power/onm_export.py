@@ -136,8 +136,8 @@ def derive_switch_bounded_load_block_summary(
 ) -> pd.Series:
     """Summarize static blocks after opening all synthesized sectionalizers.
 
-    Transformer winding buses are non-switchable topology bridges per the
-    Moring block abstraction, so they must connect components for this summary.
+    Transformer winding buses are non-switchable topology bridges, so they must
+    connect components for this summary.
     """
 
     line_edges = lines[lines["line_class"].fillna("line").eq("line")].copy()

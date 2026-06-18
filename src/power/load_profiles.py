@@ -16,13 +16,6 @@ attached via the infrasys ``SingleTimeSeries`` API on each
 ``DistributionLoad`` component, which is the NLR-native time-series
 mechanism. Archetype mapping itself has no NLR-native equivalent because it
 is a sandbox-specific domain decision.
-
-Citations:
-- Wilson, Christensen, El Kontar, Horowitz, Present et al. "End-Use Load
-  Profiles for the U.S. Building Stock: Methodology and Results of Model
-  Calibration, Simulation, and Validation." NREL/TP-5500-80889, 2022.
-- ComStock dataset, https://comstock.nrel.gov/
-- ResStock dataset, https://resstock.nrel.gov/
 """
 
 from __future__ import annotations

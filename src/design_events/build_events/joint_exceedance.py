@@ -6,10 +6,8 @@ per-driver summaries) and the paired-event rate, and produces:
 
 - AND joint-exceedance probability, AEP, and return period for each event, and a
   severity band, following the "AND" hazard scenario used for compound flooding
-  (Moftakhari et al. 2019; Salvadori et al. 2016; Jane et al. 2020).
 - "Most-likely" design events on an AND isoline at target return periods, where
   the design point is the maximum joint-density point along the isoline
-  (Salvadori & De Michele 2013; Bender et al. 2016; Maduwantha et al. 2026).
 
 The copula is duck-typed: any object exposing ``cdf(u)`` (n*d uniforms -> n) and
 ``simulate(n, seeds=[...])`` (-> n*d uniforms) works, including a fitted
@@ -55,8 +53,7 @@ def and_survival_from_cdf(u, cdf):
 def and_survival_empirical(u, reference, *, block_size=256):
     """Monte-Carlo AND survival: fraction of reference draws exceeding ``u`` in all dims.
 
-    Robust for vine copulas whose analytic CDF is itself a QMC estimate, and the
-    proportion-based estimator used by Jane et al. (2020) / Maduwantha et al. (2026).
+    Robust for vine copulas whose analytic CDF is itself a QMC estimate.
     """
     u = np.atleast_2d(np.asarray(u, dtype=float))
     reference = np.atleast_2d(np.asarray(reference, dtype=float))
@@ -81,13 +78,12 @@ def and_joint_survival(
 ):
     """AND survival probability for each event, via the copula CDF or Monte Carlo.
 
-    For a fitted vine the default ("auto") is the Monte-Carlo proportion estimator
-    (sample a large pool, count draws exceeding the level in all dims) — it is robust,
-    scales to 3+ drivers without inclusion-exclusion, and matches the proportion-based
-    AND estimate of Jane et al. (2020) / Maduwantha et al. (2026). The closed-form
-    ``cdf`` path is reserved for analytic copulas and single-event diagnostics. Both
-    are Monte Carlo for vines, so tail estimates carry sampling uncertainty; use a
-    large pool (and ``qrng=True`` on simulate) and treat low-hit bands as uncertain.
+    For a fitted vine the default ("auto") is the Monte-Carlo proportion estimator:
+    sample a large pool and count draws exceeding the level in all dimensions. It is
+    robust and scales to 3+ drivers without inclusion-exclusion. The closed-form
+    ``cdf`` path is reserved for analytic copulas and single-event diagnostics.
+    Tail estimates carry sampling uncertainty; use a large pool and treat low-hit
+    bands as uncertain.
     """
     if method == "auto":
         if reference is not None:
@@ -134,9 +130,8 @@ def combined_and_frequency(physical, populations):
     For each population ``p`` with rate ``lambda_p``, marginals, and copula, the AND survival
     ``S_p(x) = P(all drivers exceed x | a p event)`` is evaluated in physical space (map x to
     that population's marginal CDFs, then its copula), and the population frequencies add:
-    ``freq(x) = sum_p lambda_p * S_p(x)``. This is the paper's "combine the AEPs of the two
-    populations" (Maduwantha et al. 2026), generalized to any number of populations. Returns
-    the per-point frequency in 1/yr.
+    ``freq(x) = sum_p lambda_p * S_p(x)``. This combines population-specific AEPs
+    across any number of storm populations and returns the per-point frequency in 1/yr.
     """
     physical = np.atleast_2d(np.asarray(physical, dtype=float))
     freq = np.zeros(len(physical), dtype=float)
@@ -223,8 +218,7 @@ def select_most_likely_design_events(
     return period, maps it to physical magnitudes through the marginals, and picks
     the point of maximum joint density (Gaussian KDE) within a relative band around
     each target RP. Returns one row per target with the design point in both uniform
-    and physical space. Mirrors the most-likely-event design of Salvadori & De Michele
-    (2013) / Bender et al. (2016) used by Jane et al. (2020) and Maduwantha et al. (2026).
+    and physical space.
     """
     from scipy.stats import gaussian_kde
 

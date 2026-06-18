@@ -7,7 +7,7 @@ level as ``MSL + tide + K*NTR``: only the non-tidal residual (surge) is scaled, 
 astronomical tide and mean sea level are added back unscaled, so the observed tidal modulation
 and tide-surge phasing are preserved and never amplified by ``K`` (the macro-tidal failure mode
 of scaling total water level). SLR enters as a rigid MSL translation (``msl_offset_m``). This is
-the coastal analogue of the AORC SST field scaling (Kim et al. 2023; Maduwantha et al. 2026).
+the coastal analogue of the AORC SST field-scaling workflow.
 """
 
 from __future__ import annotations

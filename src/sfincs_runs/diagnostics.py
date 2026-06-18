@@ -1333,7 +1333,7 @@ def plot_runup_overtopping(
             series, dashed crest line, overtopping fill, and Hs on a secondary
             y-axis.
 
-    Overtopping convention: EurOtop (2018) §5 / USACE CEM Part II-4.
+    Overtopping convention: crest-exceedance screen for configured runup gauges.
 
     Returns
     -------

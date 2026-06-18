@@ -1,10 +1,8 @@
 """Audit Marshfield synthetic grid artifacts against synthetic-grid validation criteria.
 
-The audit follows the three-pronged frame from Krishnan et al.,
-``Validation of Synthetic U.S. Electric Power Distribution System Data Sets``:
-statistical, operational, and expert validation. It does not certify the
-Marshfield Control Sandbox as SMART-DS or as a utility model; it records which
-paper-style tests the current artifacts can support.
+The audit uses statistical, operational, and expert validation categories. It
+does not certify the Marshfield Control Sandbox as SMART-DS or as a utility
+model; it records which validation checks the current artifacts can support.
 """
 
 from __future__ import annotations
@@ -28,7 +26,7 @@ from power.paths import REPO_ROOT
 from power.paths import POWER_GRID
 
 SANDBOX_ID = "marshfield"
-SOURCE_PDF_TITLE = "Validation of Synthetic U.S. Electric Power Distribution System Data Sets"
+VALIDATION_REFERENCE_LABEL = "synthetic_distribution_validation_criteria"
 METERS_PER_MILE = 1609.344
 
 DEFAULT_REGISTRY_DIR = POWER_GRID / "asset_registry"
@@ -207,7 +205,7 @@ def _grade_values(metric_id: str, values: list[float], *, notes: list[str] | Non
         "min": round(min(values), 6) if values else None,
         "median": round(sorted(values)[len(values) // 2], 6) if values else None,
         "max": round(max(values), 6) if values else None,
-        "paper_target": {
+        "validation_target": {
             "typical": target.typical,
             "uncommon": target.uncommon,
         },
@@ -606,7 +604,7 @@ def _voltage_summary(values: list[float]) -> dict[str, Any]:
 
 
 def build_power_flow_validation_report(network_dss: Path | str) -> dict[str, Any]:
-    """Compile and solve an OpenDSS network with paper-style validation fields."""
+    """Compile and solve an OpenDSS network with validation fields."""
 
     import opendssdirect as dss
 
@@ -648,7 +646,7 @@ def build_power_flow_validation_report(network_dss: Path | str) -> dict[str, Any
                     "unknown_state_count": 0,
                 },
             },
-            "paper_exit_criteria": {},
+            "validation_exit_criteria": {},
             "evidence_gaps": {"short_circuit_report": True},
         }
 
@@ -665,7 +663,7 @@ def build_power_flow_validation_report(network_dss: Path | str) -> dict[str, Any
     all_bus_voltage = _voltage_summary(list(dss.Circuit.AllBusMagPu()))
     all_bus_voltage["scope"] = "all_bus_nodes"
 
-    paper_exit_criteria = {
+    validation_exit_criteria = {
         "power_flow_converged": {
             "passed": converged,
             "target": "converged",
@@ -707,7 +705,7 @@ def build_power_flow_validation_report(network_dss: Path | str) -> dict[str, Any
             "system_losses_percent": round(losses_percent, 6) if losses_percent is not None else None,
             "switch_state_settings": switch_state_settings,
         },
-        "paper_exit_criteria": paper_exit_criteria,
+        "validation_exit_criteria": validation_exit_criteria,
         "evidence_gaps": {
             "short_circuit_report": True,
             "overload_report": True,
@@ -802,7 +800,7 @@ def build_short_circuit_validation_report(
             "circuit": None,
             "sample_count_by_voltage_class": {"mv": 0, "lv": 0},
             "fault_current_ka": {},
-            "paper_exit_criteria": {},
+            "validation_exit_criteria": {},
         }
 
     circuit = dss.Circuit.Name().lower()
@@ -837,7 +835,7 @@ def build_short_circuit_validation_report(
             "lv": lv_summary,
         },
         "samples": measured,
-        "paper_exit_criteria": {
+        "validation_exit_criteria": {
             "mv_short_circuit_ka": {
                 "passed": mv_summary["in_range_fraction"] == 1.0,
                 "target": "0.3-40",
@@ -887,7 +885,7 @@ def _switch_counts_by_feeder(switches: list[dict[str, Any]]) -> dict[str, int]:
     return dict(counts)
 
 
-def _paper_prongs(
+def _validation_prongs(
     *,
     has_stage_a_validation: bool,
     has_voltage_loss_report: bool,
@@ -1111,7 +1109,7 @@ def build_synthetic_validation_report(
         and (power_flow_evidence.get("power_flow") or {}).get("converged")
     )
     has_short_circuit_report = bool(short_circuit_evidence and short_circuit_evidence.get("compiled"))
-    paper_prongs = _paper_prongs(
+    validation_prongs = _validation_prongs(
         has_stage_a_validation=has_stage_a_validation,
         has_voltage_loss_report=has_voltage_loss_report,
     )
@@ -1161,7 +1159,7 @@ def build_synthetic_validation_report(
     elif power_flow_evidence:
         failed_operational = [
             name
-            for name, criterion in (power_flow_evidence.get("paper_exit_criteria") or {}).items()
+            for name, criterion in (power_flow_evidence.get("validation_exit_criteria") or {}).items()
             if not criterion.get("passed")
         ]
         if failed_operational:
@@ -1185,10 +1183,10 @@ def build_synthetic_validation_report(
 
     report = {
         "sandbox_id": SANDBOX_ID,
-        "source_pdf": SOURCE_PDF_TITLE,
+        "validation_reference": VALIDATION_REFERENCE_LABEL,
         "overall_status": "partial",
         "scope_note": (
-            "This is an audit of the Marshfield Control Sandbox against paper-style synthetic-grid "
+            "This is an audit of the Marshfield Control Sandbox against synthetic-grid "
             "validation criteria using SMART-DS Austin, SFO, and Greensboro synthetic reference cases. "
             "It is not a real-utility validation claim or a SMART-DS regional validation claim."
         ),
@@ -1204,12 +1202,12 @@ def build_synthetic_validation_report(
             "load_profile_assignments": len(load_profiles),
             "der_inventory_rows": len(ders),
         },
-        "paper_prongs": paper_prongs,
+        "validation_prongs": validation_prongs,
         "data_quality": data_quality,
         "smart_ds_reference_set": smart_ds_reference_set,
         "missing_capabilities": missing_capabilities,
         "statistical_metrics": metrics,
-        "operational_targets_from_paper": {
+        "operational_validation_targets": {
             "power_flow_iterations": "< 20",
             "solve_time_seconds": "< 30",
             "service_voltage_pu": "99.5% of loads within 0.95-1.05 p.u.",
@@ -1232,13 +1230,13 @@ def _failed_operational_criteria(report: dict[str, Any]) -> list[str]:
     power_flow = (report.get("operational_evidence") or {}).get("power_flow") or {}
     failed = [
         name
-        for name, criterion in (power_flow.get("paper_exit_criteria") or {}).items()
+        for name, criterion in (power_flow.get("validation_exit_criteria") or {}).items()
         if not criterion.get("passed")
     ]
     short_circuit = (report.get("operational_evidence") or {}).get("short_circuit") or {}
     failed.extend(
         name
-        for name, criterion in (short_circuit.get("paper_exit_criteria") or {}).items()
+        for name, criterion in (short_circuit.get("validation_exit_criteria") or {}).items()
         if not criterion.get("passed")
     )
     return failed
@@ -1247,21 +1245,21 @@ def _failed_operational_criteria(report: dict[str, Any]) -> list[str]:
 def _next_operational_behavior(failed_operational: list[str]) -> str:
     behavior_by_criterion = {
         "service_voltage_range_a_fraction": "load-terminal service voltages satisfy ANSI Range A fraction",
-        "system_losses_percent": "system losses remain below the paper threshold",
+        "system_losses_percent": "system losses remain below the validation threshold",
         "power_flow_converged": "OpenDSS power flow converges",
         "power_flow_iterations": "OpenDSS power flow solves within the iteration threshold",
         "solve_time_seconds": "OpenDSS power flow solves within the runtime threshold",
-        "mv_short_circuit_ka": "medium-voltage short-circuit currents fall within the paper range",
-        "lv_short_circuit_ka": "low-voltage short-circuit currents fall within the paper range",
+        "mv_short_circuit_ka": "medium-voltage short-circuit currents fall within the validation range",
+        "lv_short_circuit_ka": "low-voltage short-circuit currents fall within the validation range",
     }
     return behavior_by_criterion.get(
         failed_operational[0],
-        "power-flow evidence reports all paper exit criteria passing",
+        "power-flow evidence reports all validation criteria passing",
     )
 
 
-def build_paper_compliance_gate(report: dict[str, Any]) -> dict[str, Any]:
-    """Build the TDD gate for paper-style synthetic-distribution compliance."""
+def build_validation_compliance_gate(report: dict[str, Any]) -> dict[str, Any]:
+    """Build the TDD gate for synthetic-distribution validation compliance."""
 
     missing = report.get("missing_capabilities") or {}
     failed_operational = _failed_operational_criteria(report)
@@ -1342,17 +1340,17 @@ def build_paper_compliance_gate(report: dict[str, Any]) -> dict[str, Any]:
     else:
         first = blockers[0] if blockers else {}
         next_slice = {
-            "name": first.get("blocker_id", "paper_compliance_complete"),
-            "first_failing_behavior": first.get("next_behavior_to_test", "all paper compliance gates pass"),
+            "name": first.get("blocker_id", "validation_complete"),
+            "first_failing_behavior": first.get("next_behavior_to_test", "all validation gates pass"),
             "recommended_scope": "advance the next explicit blocker only",
         }
 
     return {
-        "gate_id": f"{SANDBOX_ID}:synthetic_validation:paper_compliance",
-        "target": "paper_style_synthetic_distribution_validation",
+        "gate_id": f"{SANDBOX_ID}:synthetic_validation:validation_compliance",
+        "target": "synthetic_distribution_validation",
         "compliant": not blockers,
         "scope_note": (
-            "This gate checks paper-style validation evidence for the Marshfield Control Sandbox; "
+            "This gate checks validation evidence for the Marshfield Control Sandbox; "
             "its statistical references are synthetic SMART-DS reference cases, not real utility data. "
             "It is not a utility certification or SMART-DS regional claim."
         ),
@@ -1362,9 +1360,9 @@ def build_paper_compliance_gate(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def render_paper_compliance_gate_markdown(gate: dict[str, Any]) -> str:
+def render_validation_compliance_gate_markdown(gate: dict[str, Any]) -> str:
     lines = [
-        "# Marshfield Paper-Style Validation Compliance Gate",
+        "# Marshfield Synthetic Validation Compliance Gate",
         "",
         f"- Gate: `{gate['gate_id']}`",
         f"- Target: `{gate['target']}`",
@@ -1398,12 +1396,12 @@ def render_paper_compliance_gate_markdown(gate: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_paper_compliance_gate(gate: dict[str, Any], output_dir: Path = DEFAULT_REPORT_DIR) -> dict[str, Path]:
+def write_validation_compliance_gate(gate: dict[str, Any], output_dir: Path = DEFAULT_REPORT_DIR) -> dict[str, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    json_path = output_dir / "marshfield_paper_compliance_gate.json"
-    markdown_path = output_dir / "marshfield_paper_compliance_gate.md"
+    json_path = output_dir / "marshfield_validation_compliance_gate.json"
+    markdown_path = output_dir / "marshfield_validation_compliance_gate.md"
     json_path.write_text(json.dumps(gate, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    markdown_path.write_text(render_paper_compliance_gate_markdown(gate), encoding="utf-8")
+    markdown_path.write_text(render_validation_compliance_gate_markdown(gate), encoding="utf-8")
     return {"json": json_path, "markdown": markdown_path}
 
 
@@ -1420,10 +1418,11 @@ def _metric_line(metric: dict[str, Any]) -> str:
 def render_markdown_report(report: dict[str, Any]) -> str:
     counts = report["summary_counts"]
     quality = report["data_quality"]
+    validation_reference = report.get("validation_reference") or "synthetic validation criteria"
     lines = [
         "# Marshfield Synthetic Validation Audit",
         "",
-        f"Guide: {report['source_pdf']}.",
+        f"Validation reference: {validation_reference}.",
         "",
         report["scope_note"],
         "",
@@ -1433,10 +1432,10 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         f"- Network scale: {counts['feeders']} feeders, {counts['buses']} buses, {counts['lines']} lines, {counts['loads']} loads, {counts['transformers']} transformers, {counts['sources']} sources.",
         f"- Augmentation scale: {counts['controllable_switches']} controllable switches, {counts['switch_bounded_load_blocks']} switch-bounded load blocks, {counts['der_inventory_rows']} DER inventory rows.",
         "",
-        "## Paper Prongs",
+        "## Validation Categories",
         "",
     ]
-    for name, prong in report["paper_prongs"].items():
+    for name, prong in report["validation_prongs"].items():
         lines.append(f"- {name}: `{prong['status']}`.")
     lines.extend(
         [
@@ -1530,9 +1529,9 @@ def run_statistical_validation(
 ) -> dict[str, dict[str, Any]]:
     """Notebook-facing statistical audit runner.
 
-    The current implementation keeps the Krishnan et al. framing in one place:
-    build the full synthetic-validation report, write the report and compliance
-    gate, then return a compact metric table for notebook display.
+    The current implementation builds the full synthetic-validation report,
+    writes the report and compliance gate, then returns a compact metric table
+    for notebook display.
     """
 
     del smart_ds_reference_dir  # Reference availability is summarized by the report builder.
@@ -1543,8 +1542,8 @@ def run_statistical_validation(
         grid_network_dir=Path(grid_network_dir),
     )
     write_synthetic_validation_report(report, Path(output_dir))
-    write_paper_compliance_gate(build_paper_compliance_gate(report), Path(output_dir))
-    plot_validation_region_report_card(report, Path(output_dir) / "krishnan_validation_region_report_card.png")
+    write_validation_compliance_gate(build_validation_compliance_gate(report), Path(output_dir))
+    plot_validation_region_report_card(report, Path(output_dir) / "validation_region_report_card.png")
     return _metric_status_table(report)
 
 
@@ -1557,7 +1556,7 @@ def _load_optional_json(path: Path) -> dict[str, Any] | None:
 def _operational_report_status(report: dict[str, Any] | None) -> str:
     if not report:
         return "missing"
-    criteria = report.get("paper_exit_criteria") or {}
+    criteria = report.get("validation_exit_criteria") or {}
     if not criteria:
         return "partial" if report.get("compiled") else "gap"
     return "pass" if all(bool(item.get("passed")) for item in criteria.values()) else "check"
@@ -1574,7 +1573,7 @@ def run_operational_validation(
     The expensive OpenDSS power-flow and short-circuit routines remain available
     as explicit lower-level functions. This notebook runner records whether the
     feeder cases and solver evidence are present, so audit execution does not
-    unexpectedly hang while still keeping the paper-style operational gate honest.
+    unexpectedly hang while still keeping the operational validation gate honest.
     """
 
     root = Path(opendss_root)
@@ -1677,7 +1676,7 @@ def build_audit_summary(
 
 
 def plot_validation_region_report_card(report: dict[str, Any], output_path: Path) -> Path:
-    """Plot Marshfield metric ranges against Krishnan-style validation regions."""
+    """Plot Marshfield metric ranges against validation regions."""
 
     mpl_config_dir = Path(os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib"))
     mpl_config_dir.mkdir(parents=True, exist_ok=True)
@@ -1697,12 +1696,12 @@ def plot_validation_region_report_card(report: dict[str, Any], output_path: Path
     metrics = [
         metric
         for metric in report.get("statistical_metrics", [])
-        if metric.get("metric_id") in labels and metric.get("paper_target")
+        if metric.get("metric_id") in labels and metric.get("validation_target")
     ]
     if not metrics:
-        metrics = [metric for metric in report.get("statistical_metrics", []) if metric.get("paper_target")][:6]
+        metrics = [metric for metric in report.get("statistical_metrics", []) if metric.get("validation_target")][:6]
     if not metrics:
-        raise ValueError("report contains no statistical metrics with paper_target regions")
+        raise ValueError("report contains no statistical metrics with validation_target regions")
 
     cols = 2
     rows = math.ceil(len(metrics) / cols)
@@ -1713,7 +1712,7 @@ def plot_validation_region_report_card(report: dict[str, Any], output_path: Path
     median_color = "#111111"
 
     for ax, metric in zip(axes.ravel(), metrics):
-        target = metric["paper_target"]
+        target = metric["validation_target"]
         ranges = list(target.get("typical", ())) + list(target.get("uncommon", ()))
         high = max([float(hi) for _, hi in ranges] + [float(metric.get("max") or 0.0), 1.0])
         low = min([float(lo) for lo, _ in ranges] + [float(metric.get("min") or 0.0), 0.0])
@@ -1754,7 +1753,7 @@ def plot_validation_region_report_card(report: dict[str, Any], output_path: Path
     fig.text(
         0.5,
         0.935,
-        "Validation-region framing follows Krishnan et al.; shaded bands are target regions, not utility certification.",
+        "Shaded bands are validation target regions, not utility certification.",
         ha="center",
         fontsize=9,
     )
@@ -1780,7 +1779,7 @@ def main() -> None:
         grid_network_dir=args.grid_network_dir,
     )
     outputs = write_synthetic_validation_report(report, args.output_dir)
-    gate_outputs = write_paper_compliance_gate(build_paper_compliance_gate(report), args.output_dir)
+    gate_outputs = write_validation_compliance_gate(build_validation_compliance_gate(report), args.output_dir)
     print(f"Wrote {outputs['json']}")
     print(f"Wrote {outputs['markdown']}")
     print(f"Wrote {gate_outputs['json']}")

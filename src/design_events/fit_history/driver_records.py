@@ -50,7 +50,7 @@ def cooccurrence_params_from_config(config):
     """Two-sided POT co-occurrence sampling parameters from config (with defaults).
 
     ``target_rate_per_year`` calibrates each conditioning threshold to a target exceedance
-    rate (paper-style) instead of a fixed quantile; ``condition_on`` restricts conditioning
+    rate instead of a fixed quantile; ``condition_on`` restricts conditioning
     to the extreme forcing drivers (an antecedent state is paired but never conditioned).
     """
     cooccurrence = _dependence(config).get("cooccurrence", {}) or {}

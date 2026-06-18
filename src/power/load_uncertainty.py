@@ -1,17 +1,15 @@
 """Per-load uncertainty bounds for robust restoration optimization.
 
 Implements the per-(load, timestep) uncertainty set consumed by the two-stage
-Robust Partitioning and Operation Problem (RPOP) of Moring et al. (2025),
-"Reconfiguration and Real-Time Operation of Networked Microgrids Under Load
-Uncertainty," arXiv:2504.15084v2. The paper's eqn (1) defines
+Robust Partitioning and Operation Problem (RPOP). The uncertainty model defines
 
     s_d^{phi} = s_d^{0,phi} + u_d^{phi},     underline{s_d^{phi}} <= s_d^{phi} <= overline{s_d^{phi}}
 
 i.e. each load's realized demand lies in a per-load band around a nominal
-demand. Improvement (3) in Section I of the paper is *spatial clustering of
-load uncertainty* (cluster index gamma in Γ, eqn 12): loads in the same
-cluster respond simultaneously to the worst-case realization. This reduces
-the cardinality of the inner max problem from 2^{|D × Φ|} to 2^{|Γ|}.
+demand. The implementation supports spatially clustered load uncertainty:
+loads in the same cluster respond simultaneously to the worst-case realization.
+This reduces the cardinality of the inner max problem from one realization per
+load/phase to one realization per cluster.
 
 This module assembles the bound table the master/subproblem consumes:
 
@@ -19,21 +17,11 @@ This module assembles the bound table the master/subproblem consumes:
   ``dft.power.event_window.slice_annual_profile_to_event_window`` after
   diversity-preserving nodal assignment in
   ``dft.power.nodal_load_profiles.assign_nodal_load_profiles``.
-* The default symmetric band is ±20%, matching the Moring et al. Section V
-  case study (Fig. 5 caption, "20% load uncertainty"; T=1..60 at 90%, T=61..120
-  at 100%, T=121..180 at 120% of nominal).
+* The default symmetric band is ±20%, matching the current stress-test policy.
 * The cluster id defaults to the Switch-Bounded Load Block id
   (``simulated_data_protocol.md`` §"switch_bounded_load_blocks"), so loads
-  inside the same block share a cluster — this aligns the paper's eqn (12)
-  cluster set Γ with this codebase's existing Stage B Candidate Control
-  Units and avoids inventing a new spatial grouping.
-
-Citation:
-    Moring, H., Poolla, B. K., Nagarajan, H., Mathieu, J. L., Bernstein, A.,
-    and Fobes, D. M. "Reconfiguration and Real-Time Operation of Networked
-    Microgrids Under Load Uncertainty." arXiv:2504.15084v2, 2025. Local copy
-    at ``docs/Reconfiguration and Real-Time Operation of Networked
-    Microgrids Under Load Uncertainty - 2504.15084v2.pdf``.
+  inside the same block share a cluster and avoid inventing a new spatial
+  grouping.
 """
 
 from __future__ import annotations

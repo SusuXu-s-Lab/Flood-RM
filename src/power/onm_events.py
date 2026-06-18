@@ -31,11 +31,9 @@ Inputs:
   recorded in ``skipped_asset_ids`` rather than silently dropped, because
   PMONM cannot operate an element it never parsed.
 
-Timestep indexing: PMONM and Moring et al. (2025) use 1-indexed timesteps
-(see eqn (8a)–(8j) constraints "forall k = 1, 2, ..."). We compute the
-PMONM timestep from the ceiling of ``(timestamp - event_start_utc)`` in
-hours plus 1, so an asset that is failed at the first sample emits a
-``timestep = 1`` event.
+Timestep indexing: PMONM uses 1-indexed timesteps. We compute the PMONM
+timestep from the ceiling of ``(timestamp - event_start_utc)`` in hours plus 1,
+so an asset that is failed at the first sample emits a ``timestep = 1`` event.
 """
 
 from __future__ import annotations

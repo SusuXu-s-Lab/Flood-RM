@@ -9,7 +9,7 @@ AND labeling/selection stage (``joint_exceedance``). It:
    distribution by default, carrying equal ``probability_weight`` per event, and
 3. optionally supports configured band-stratified tail enrichment for stress/design
    catalogs, carrying ``sampling_weight`` and ``probability_weight`` that reconstruct
-   the true joint mass per Beck & Zuev (2015), and
+   the true joint mass, and
 4. gates the catalog against the stress-set severity budget so a thin joint tail
    fails loudly rather than silently starving the 500-event stress set.
 
@@ -91,7 +91,7 @@ def fit_driver_dependence(
 
     ``paired_observations`` is an (n, d) array of concurrent physical driver values
     (the two-sided POT co-occurrence sample). Marginals are kept parametric and the
-    dependence is fit semiparametrically on pseudo-observations (Genest et al. 1995).
+    dependence is fit semiparametrically on pseudo-observations.
     """
     x = np.asarray(paired_observations, dtype=float)
     if x.ndim != 2:
@@ -128,7 +128,7 @@ def _select_catalog_indices(pool_band, band_names, n_catalog, target_band_fracti
     With ``target_band_fractions=None`` the draw is proportional (unweighted counts follow the
     fitted distribution). Otherwise each band ``b`` is filled to its target count from its pool
     members and every event in the band carries the same between-band importance weight
-    ``w_b = p_b / f_b`` (Beck & Zuev 2015), so ``probability_weight`` rebuilds the true mass.
+    ``w_b = p_b / f_b``, so ``probability_weight`` rebuilds the true mass.
     Returns ``(idx, band_arr, sampling_weight, probability_weight, sampling_scheme, catalog_role)``.
     """
     pool_total = len(pool_band)
@@ -246,7 +246,7 @@ def check_stress_budget(catalog, stress_settings, *, severity_bands=None, raise_
     stress set needs, pass/fail). Raises when a band with a positive budget cannot be
     met, so a thin joint tail fails loudly instead of silently starving the 500 set.
     Distinct support below the budget is flagged: those bands are filled by resampling
-    duplicates and carry the deep-tail Monte-Carlo uncertainty (Beck & Zuev 2015).
+    duplicates and carry the deep-tail Monte-Carlo uncertainty.
     """
     bands = severity_bands or default_severity_bands()
     target_500 = int(stress_settings.get("target_event_count", 500))

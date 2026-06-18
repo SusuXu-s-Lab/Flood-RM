@@ -1,8 +1,8 @@
 """Block Invariant Contract for Stage B Switch-Bounded Load Blocks.
 
-Implements the per-block validation required by Moring et al. (2025) §II-A
-and §II-B before ``switch_bounded_load_blocks.parquet`` may ship as part of
-the Augmented Network artifact set.
+Implements the per-block validation required before
+``switch_bounded_load_blocks.parquet`` may ship as part of the Augmented
+Network artifact set.
 
 Invariants (hard-fail policy per
 ``docs/power/methodology/rpop_ready_switch_siting.md``):
@@ -89,18 +89,17 @@ def derive_validated_blocks(
     for component_idx, bus_set in enumerate(components):
         block_load_kw = sum(loads_by_bus.get(bus, 0.0) for bus in bus_set)
         has_pcc = bool(bus_set & pcc_buses)
-        # Invariant B per Moring 2025 microgrid def (CC must have load OR
-        # voltage source). A load-less block carrying a substation PCC is a
-        # valid trunk; a block with neither load nor PCC is a dead spur.
+        # Invariant B: a block must have load or a voltage source. A load-less
+        # block carrying a substation PCC is a valid trunk; a block with neither
+        # load nor PCC is a dead spur.
         if block_load_kw <= 0.0 and not has_pcc:
             raise BlockInvariantViolation(
                 f"invariant_b: block {component_idx} has no load and no substation PCC "
                 f"(buses={sorted(bus_set)})"
             )
-        # Invariant C per Moring 2025 §II-A: multi-voltage blocks are
-        # allowed when bridged by transformer windings, but a voltage
-        # transition across a LINE edge between bands (LV/MV/HV) is a
-        # data error.
+        # Invariant C: multi-voltage blocks are allowed when bridged by
+        # transformer windings, but a voltage transition across a LINE edge
+        # between bands (LV/MV/HV) is a data error.
         block_line_violations = [
             (u, v) for (u, v) in line_voltage_violations if u in bus_set and v in bus_set
         ]
@@ -230,7 +229,7 @@ def _connected_components(
     transformers: pd.DataFrame | None = None,
 ) -> list[set[str]]:
     """Connected components of (lines minus opened) plus transformer-winding
-    bridges per Moring 2025 §II-A.
+    bridges.
 
     Transformer edges connect the network across voltage classes but do
     NOT partition blocks; only Controllable Switches partition blocks.
@@ -334,8 +333,8 @@ def inject_block_ids_into_onm_settings(
     """Add per-bus and per-load ``block_id`` and per-block ``microgrid``
     sections to the PowerModelsONM settings sidecar.
 
-    Moring (2025) RPOP requires block_id propagation so its block-state
-    variable ``z^bl_l`` is consistent with the planning-time partition.
+    RPOP requires block_id propagation so its block-state variable is
+    consistent with the planning-time partition.
     """
     feeder_by_bus = _feeder_by_bus(buses) if buses is not None else {}
     bus_to_block_id: dict[str, str] = {}
@@ -564,8 +563,7 @@ def _block_edge_counts(
     """Count edges fully contained within each connected component.
 
     Transformer winding-bus pairs are counted as edges because they are
-    network elements per Moring 2025 §II-A and contribute to the spanning
-    tree check (invariant F).
+    network elements and contribute to the spanning-tree check (invariant F).
     """
     bus_to_component: dict[str, int] = {}
     for idx, component in enumerate(components):

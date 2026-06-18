@@ -61,7 +61,7 @@ def fit_index_marginal(values, *, event_rate, kind="pot", ev_type="pot", criteri
     ``kind="pot"`` fits an AIC-selected extreme-value tail (Exp/GPD) — for the conditioning
     extreme drivers (rainfall, water level, discharge). ``kind="empirical"`` fits a bounded
     empirical CDF — for antecedent/state drivers (e.g. soil saturation fraction), so the
-    quantile function never extrapolates past the observed range (ADR-0011; Jane 2020).
+    quantile function never extrapolates past the observed range.
     """
     v = np.asarray(values, dtype=float)
     v = v[np.isfinite(v)]

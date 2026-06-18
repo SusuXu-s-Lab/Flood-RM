@@ -10,13 +10,6 @@ The default horizon is 72 hours, matching the FEMA Community Lifelines
 Stabilization horizon already used elsewhere in this codebase
 (``dft.power.der_inventory.FEMA_COMMUNITY_LIFELINES_OUTAGE_HOURS``).
 This is the same horizon REopt resilience sizing assumes by default.
-
-Citations:
-
-* FEMA Community Lifelines Implementation Toolkit (R15 in
-  ``simulated_data_protocol.md``): 72-hour stabilization horizon.
-* NREL REopt resilience sizing: ``critical_load_fraction``-weighted outage
-  with default ``outage_duration_hours = 72``.
 """
 
 from __future__ import annotations

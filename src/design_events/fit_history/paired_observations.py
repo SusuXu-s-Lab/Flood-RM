@@ -2,8 +2,7 @@
 
 Assembles the paired-observation sample that the vine fit (`build_events.dependence`)
 consumes: a set of historical events where the Driver Probability Indices are observed
-*together*. Follows the two-sided conditional sampling of Wahl et al. (2015),
-Jane et al. (2020), and Maduwantha et al. (2026):
+*together*. The method uses two-sided conditional sampling:
 
 - condition on each driver in turn; take its declustered peaks-over-threshold,
 - for every conditioning peak, record the concurrent maximum of the other drivers
@@ -27,8 +26,7 @@ def declustered_pot_peaks(series, *, threshold=None, threshold_quantile=0.98, mi
     """Declustered peaks-over-threshold of one driver series.
 
     Greedily selects the largest exceedances such that no two peaks fall within
-    ``min_separation_hours`` (runs declustering by minimum inter-event time, as in
-    Maduwantha et al.'s 5-day window). Returns a frame with ``time`` and ``value``.
+    ``min_separation_hours``. Returns a frame with ``time`` and ``value``.
     """
     s = pd.Series(series).dropna()
     if not isinstance(s.index, pd.DatetimeIndex):
@@ -51,8 +49,8 @@ def declustered_pot_peaks(series, *, threshold=None, threshold_quantile=0.98, mi
 def calibrate_threshold_for_rate(series, target_rate_per_year, *, min_separation_hours=120.0, search_quantile=0.90):
     """Pick the POT threshold whose declustered peaks occur at ~``target_rate_per_year``.
 
-    Maduwantha et al. set the threshold *to obtain* a target exceedance rate (their
-    ~5 events/yr), rather than fixing a quantile and inheriting whatever rate falls out.
+    This selects a threshold to obtain a target exceedance rate, rather than fixing a
+    quantile and inheriting whatever rate falls out.
     Because greedy declustering visits exceedances in descending order, the first ``N``
     selected peaks are exactly the ``N`` largest declustered peaks, so we stop once
     ``N = round(target_rate * record_years)`` are found and read the threshold off the
@@ -119,7 +117,7 @@ def build_paired_observations(
     ``condition_on`` restricts which drivers seed conditioning peaks (the extreme forcing
     drivers; a bounded antecedent state is paired but never conditioned). When
     ``target_rate_per_year`` is set, each conditioning threshold is calibrated to that rate
-    (paper-style) instead of a fixed quantile, and the realized distinct-storm rate is
+    instead of a fixed quantile, and the realized distinct-storm rate is
     recorded on ``out.attrs['base_event_rate_per_year']`` for the ``T = 1/(rate*S)`` step.
     """
     if isinstance(drivers, pd.DataFrame):

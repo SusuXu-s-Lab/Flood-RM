@@ -13,26 +13,8 @@ from typing import Any, Optional
 
 
 PLACEMENT_RULE_SSAP = "ssap_radial_sectionalizing_switch_allocation"
-SSAP_SUBRULE = "galias_usberti_ssap"
+SSAP_SUBRULE = "exact_tree_dynamic_programming_ssap"
 CONTROLLABLE_SWITCHES_SCHEMA_VERSION = "stage_b_controllable_switches.v0.1"
-
-SSAP_CITATIONS: tuple[str, ...] = (
-    "Levitin, Mazal-Tov, Elmakis 1995, DOI 10.1016/0378-7796(95)01002-5",
-    "Billinton, Jonnavithula 1996, DOI 10.1109/61.517529",
-    "Galias 2019, DOI 10.1109/TPWRS.2019.2909836",
-    "Usberti et al. 2025, DOI 10.1016/j.epsr.2025.112016",
-)
-
-RESILIENCE_SWITCH_PLACEMENT_CITATIONS: tuple[str, ...] = (
-    "Fayyazi, Azad-Farsani, Haghighi 2024, DOI 10.1016/j.ress.2023.109919",
-)
-
-TWO_TIER_SWITCH_CITATIONS: tuple[str, ...] = (
-    "IEEE Std 1366-2022 (Distribution Reliability Indices)",
-    "IEEE Std 1547-2018 (DER Interconnection)",
-    "Brown 2017, Electric Power Distribution Reliability, 3rd ed. Ch. 5-6",
-    "EPRI 1024101, Distribution Automation Reliability Practices",
-)
 
 
 @dataclass(frozen=True)
@@ -187,7 +169,7 @@ def _solve_ssap_brute_force(
 
 @dataclass(frozen=True)
 class _DPState:
-    """Bottom-up DP state for the Usberti 2025 / Galias 2019 SSAP tree DP.
+    """Bottom-up DP state for the exact SSAP tree DP.
 
     ``committed_cost`` is the sum of ``L(z) * E(z)`` for zones fully sealed
     off inside the current subtree by switches placed below; ``residual_load``
@@ -284,7 +266,7 @@ def _solve_ssap_tree_dp(
     k_switches: int,
     switchable_edges: frozenset[SsapEdge],
 ) -> SsapSolution:
-    """Polynomial-time exact SSAP via Usberti 2025 / Galias 2019 tree DP.
+    """Polynomial-time exact SSAP via tree dynamic programming.
 
     Each subtree carries Pareto-pruned ``(committed_cost, residual_load,
     residual_exposure, switch_set)`` states keyed by switches-used. At every
@@ -393,14 +375,7 @@ def solve_rpop_ready_ssap(
     algorithm: str = "tree_dp",
     eligible_edges: Iterable[SsapEdge] | None = None,
 ) -> SsapSolution:
-    """Solve SSAP after applying RPOP/DNMG candidate-admissibility gates.
-
-    Usberti et al. 2025 provides the exact fixed-budget SSAP optimizer; the
-    policy gates are caller-supplied inputs that keep candidates aligned with
-    Moring-style switch-bounded blocks before the exact solve runs. They are
-    not flood-risk terms, geographic spacing rules, or changes to the SSAP
-    objective.
-    """
+    """Solve SSAP after applying RPOP/DNMG candidate-admissibility gates."""
 
     policy = policy or SsapCandidatePolicy()
     candidate_edges = tuple(feeder.edges) if eligible_edges is None else tuple(eligible_edges)
@@ -423,7 +398,6 @@ def solve_rpop_ready_ssap_frontier(
 ) -> tuple[SsapFrontierPoint, ...]:
     """Solve exact RPOP-ready SSAP for every budget from zero to ``max_switches``.
 
-    SAP_2025/Usberti takes the number of available switches as an input.
     The frontier exposes that input rather than hiding it behind a fixed
     density, so callers can choose a study budget from marginal ENS benefit.
     """
@@ -471,7 +445,7 @@ def select_global_marginal_benefit_budget(
     switches to accept without adding utility cost, failure-rate, or flood data.
 
     ``min_per_feeder`` enforces an equity floor over the caller-supplied
-    frontier components (Abiri-Jahromi et al. 2012): each component should
+    frontier components: each component should
     receive at least that many switches before any component can be advanced
     past the floor, provided the component's frontier has enough points to
     support the request. If the global budget cannot cover every floor
@@ -574,14 +548,11 @@ def classify_two_tier_switches(
     to ``automated_sectionalizing`` (``dispatchable=True``); the rest are
     ``manual_sectionalizing`` (``dispatchable=False``).
 
-    Marshfield utility-realistic switch density per IEEE 1366 / EPRI
-    1024101 / Brown 2017: ~20-60 automated (SCADA) plus 150-400+ manual
-    operable devices on a town of Marshfield's scale. Both tiers still
+    The two-tier split keeps the highest-benefit switches dispatchable and
+    leaves the rest as manually operable devices. Both tiers still
     export as OpenDSS ``Line ... Switch=Yes`` so PowerModelsDistribution
     recognises them as native switches; only PowerModelsONM's RPOP
     optimisation uses the ``dispatchable`` flag.
-
-    Citations are added to row provenance as ``two_tier_citations``.
     """
     if automated_count < 0:
         raise ValueError("automated_count must be non-negative")
@@ -597,7 +568,6 @@ def classify_two_tier_switches(
             "automated_sectionalizing" if is_automated else "manual_sectionalizing"
         )
         new_row["dispatchable"] = is_automated
-        new_row["two_tier_citations"] = list(TWO_TIER_SWITCH_CITATIONS)
         classified.append(new_row)
     return classified
 
@@ -611,9 +581,9 @@ def build_customer_weighted_loads(
 ) -> dict[str, float]:
     """Blend static kW with a per-bus customer-count proxy for the SSAP load term.
 
-    Implements the SAIDI-style weighting introduced by Billinton &
-    Jonnavithula (1996): per-zone outage cost is proportional to customer
-    count, not just connected kW. Marshfield exposes the same blend via
+    Supports customer-weighted outage cost so per-zone outage cost can be
+    proportional to customer count, not just connected kW. Marshfield exposes
+    the same blend via
 
         L(bus) = kw_weight * load_kw(bus) + customer_weight * n_customers(bus)
 
@@ -627,7 +597,6 @@ def build_customer_weighted_loads(
     global marginal-benefit selection toward more switches in those
     feeders without introducing flood, FEMA, SFINCS, or ERAD signals.
 
-    Citation: Billinton, Jonnavithula 1996, DOI 10.1109/61.517529.
     """
     if kw_weight < 0 or customer_weight < 0:
         raise ValueError("kw_weight and customer_weight must be non-negative")
@@ -770,7 +739,7 @@ def derive_switch_bounded_blocks(
     feeder: RootedFeeder,
     switch_edges: Iterable[SsapEdge],
 ) -> tuple[SsapZone, ...]:
-    """Compute the Moring (2025) static Switch-Bounded Load Blocks.
+    """Compute static Switch-Bounded Load Blocks.
 
     Equivalent to opening every switch in ``switch_edges`` and computing the
     connected components of the remaining graph; each switch edge is
@@ -856,8 +825,6 @@ def emit_ssap_switch_rows(
             "k_switches": len(solution.switch_edges),
             "objective_value": solution.objective_value,
             "edge_exposure": switch_edge.exposure,
-            "citations": list(SSAP_CITATIONS)
-            + list(RESILIENCE_SWITCH_PLACEMENT_CITATIONS),
         }
         rows.append(
             {

@@ -192,30 +192,6 @@ def fit_historical_peaks(config, waterlevel):
     return peaks, marginal, fit_rps, detrend_meta
 
 def stationarity_report(peaks_series, detrend_meta=None):
-    # Diagnose whether the historical peak record looks stationary.
-    #
-    # Regulator-facing rationale:
-    # - The hybrid sampler treats every historical peak as exchangeable: the
-    #   bootstrap body resamples uniformly from 1979-onward, and the GPD/exp
-    #   tail fit pools all selected peaks. Both assumptions require
-    #   stationarity of the peak distribution. Sea-level rise alone (Boston
-    #   tide gauge ~3 mm/yr) injects ~13 cm of trend over a 44-year record,
-    #   which is 5-8% of the typical Marshfield peak range and material to
-    #   the fitted return-period curve.
-    # - This function does not detrend or modify the record. Detrending is
-    #   a scientific decision (which trend? linear in time? regressed on a
-    #   reanalyzed MSL series?) that must be made by a human reviewer. We
-    #   only surface the test statistics so the reviewer can decide.
-    #
-    # Tests reported (each on the selected peak series, indexed by event
-    # time, not on hourly water level):
-    # - Mann-Kendall: distribution-free monotonic trend test, computed via
-    #   Kendall tau on (event_time_in_years, peak_height). Two-sided p-value.
-    # - Theil-Sen: robust median-of-pairwise-slopes estimator with 95% CI.
-    #   Reported in m/yr; compare against the local SLR rate as a sanity check.
-    # - OLS slope: classical least-squares slope; reported only as a
-    #   reference value, since OLS is sensitive to extremes by construction.
-    #
     # Interpretation rule of thumb (NOT a gate):
     #   Mann-Kendall p < 0.05 -> trend is statistically detectable. The
     #   reviewer should compare the Theil-Sen slope to the local SLR rate

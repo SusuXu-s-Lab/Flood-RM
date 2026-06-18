@@ -1,8 +1,7 @@
 """End-to-end PowerModelsONM input bundler.
 
 Composes the four MVP slices into one per-(event_id, mc_draw) artifact bundle
-that PowerModelsONM and the Moring et al. (2025) RPOP solver can consume
-directly:
+that PowerModelsONM and the RPOP solver can consume directly:
 
 1. ``dft.power.nodal_load_profiles.assign_nodal_load_profiles`` —
    diversity-preserving ResStock/ComStock archetype assignment for every
@@ -11,16 +10,13 @@ directly:
    each nodal annual profile down to the 72-hour FEMA Community Lifelines
    restoration window anchored at the FLOOD-RM/SFINCS event start.
 3. ``dft.power.load_uncertainty.build_load_uncertainty_bounds`` — per-(load,
-   timestep) bounds with Switch-Bounded Load Block cluster ids, matching the
-   paper's set Γ (eqn 12).
+   timestep) bounds with Switch-Bounded Load Block cluster ids.
 4. ``dft.power.onm_events.build_onm_events`` — PMONM events.json entries
    from the Stage A2 ``asset_states`` trajectory.
 
-The bundle is the minimum sufficient input shape for the paper's two-stage
-RPOP plus MFRT-OPF formulation; PV time series is intentionally omitted
-because Moring et al. (2025) treat DGs as controllable injections without
-weather-driven stochastic generation and mark storage / inverter-based DERs
-with their own dynamics as future work (Section VI).
+The bundle is the minimum sufficient input shape for the two-stage RPOP plus
+MFRT-OPF formulation; PV time series is intentionally omitted because DERs are
+represented as controllable injections in this interface.
 """
 
 from __future__ import annotations
@@ -173,30 +169,6 @@ def build_onm_event_window_artifacts(
         "load_profile_assignments_schema_version": LOAD_PROFILE_ASSIGNMENTS_SCHEMA_VERSION,
         "load_uncertainty_schema_version": LOAD_UNCERTAINTY_SCHEMA_VERSION,
         "onm_events_schema_version": ONM_EVENTS_SCHEMA_VERSION,
-        "citations": {
-            "rpop_formulation": (
-                "Moring, H. et al. 'Reconfiguration and Real-Time Operation of "
-                "Networked Microgrids Under Load Uncertainty.' arXiv:2504.15084v2 "
-                "(2025)."
-            ),
-            "fema_community_lifelines": (
-                "FEMA Community Lifelines Implementation Toolkit "
-                "(72-hour stabilization horizon)."
-            ),
-            "load_diversity": (
-                "Zhu, X. and Mather, B. 'Data-Driven Load Diversity and "
-                "Variability Modeling for Quasi-Static Time-Series Simulation "
-                "on Distribution Feeders.' NREL."
-            ),
-            "eulp_sources": (
-                "Wilson, E. et al. 'End-Use Load Profiles for the U.S. "
-                "Building Stock.' NREL/TP-5500-80889, 2022."
-            ),
-            "eversource_ma_tariff": (
-                "Eversource Massachusetts retail electric tariff schedules "
-                "MDPU 1310 (R-1, R-2, G-1, G-2, G-3)."
-            ),
-        },
     }
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True))
 

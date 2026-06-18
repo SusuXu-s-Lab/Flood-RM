@@ -7,8 +7,7 @@ forcing is the real spatio-temporal field (AORC SST rainfall ``netampr``, an obs
 hydrograph) scaled to the target — never a uniform scalar. It is the multivariate,
 copula-driven generalization of the analog+scale realization already used for coastal
 water level (``hydrographs.build_surge_event_members``) and inland streamflow
-(``inland_event_catalog._design_streamflow_members``), and of the field-scaling design
-of Kim et al. (2023) / Maduwantha et al. (2026): select a nearby observed event
+(``inland_event_catalog._design_streamflow_members``): select a nearby observed event
 (kernel-weighted, with a reuse penalty for diversity) and scale its field by
 ``K = target / observed``.
 """
@@ -87,7 +86,7 @@ def select_analog_realization(
 
 
 def draw_relative_lags(n, observed_lags=None, *, default_lag_hours=0.0, seed=0):
-    """Draw per-event timing lags from observed inter-driver lags (Maduwantha et al. 2026).
+    """Draw per-event timing lags from observed inter-driver lags.
 
     Preserves realistic relative timing between driver peaks instead of forcing them to
     coincide. Falls back to a constant lag when no observed lags are supplied.

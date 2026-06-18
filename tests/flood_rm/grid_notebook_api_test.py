@@ -310,7 +310,7 @@ def test_audit_notebook_api_builds_summary_and_validation_region_plot(tmp_path):
                 "min": 4.0,
                 "median": 8.0,
                 "max": 12.0,
-                "paper_target": {
+                "validation_target": {
                     "typical": ((0.0, 275.0),),
                     "uncommon": ((275.0, 625.0),),
                 },
