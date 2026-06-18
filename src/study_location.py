@@ -25,7 +25,7 @@ from pathlib import Path
 
 import shapely
 import yaml
-from shapely.geometry import MultiPoint, mapping, shape
+from shapely.geometry import MultiPoint, MultiPolygon, Polygon, mapping, shape
 from shapely.geometry.base import BaseGeometry
 
 
@@ -79,6 +79,10 @@ def _read_geojson_geometry(path: Path) -> BaseGeometry:
 
 
 def _write_geojson(path: Path, geometry: BaseGeometry, properties: dict) -> None:
+    _write_geojson_features(path, [(geometry, properties)])
+
+
+def _write_geojson_features(path: Path, features: Iterable[tuple[BaseGeometry, dict]]) -> None:
     payload = {
         "type": "FeatureCollection",
         "crs": {"type": "name", "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"}},
@@ -88,6 +92,7 @@ def _write_geojson(path: Path, geometry: BaseGeometry, properties: dict) -> None
                 "geometry": mapping(geometry),
                 "properties": properties,
             }
+            for geometry, properties in features
         ],
     }
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -125,17 +130,53 @@ def iter_asset_registry_points(asset_registry_dir: Path) -> Iterator[tuple[float
 
 def iter_buscoords(smart_ds_root: Path) -> Iterator[tuple[float, float]]:
     for path in Path(smart_ds_root).rglob("Buscoords.dss"):
-        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith(("!", "//")):
-                continue
-            parts = stripped.split()
-            if len(parts) < 3:
-                continue
-            try:
-                yield float(parts[1]), float(parts[2])
-            except ValueError:
-                continue
+        yield from _iter_buscoords_file(path)
+
+
+def iter_buscoords_by_subregion(smart_ds_root: Path) -> Iterator[tuple[str, list[tuple[float, float]]]]:
+    """Yield ``(subregion_id, bus coordinates)`` per top-level SMART-DS subregion.
+
+    The subregion id is the directory name (e.g. ``rural``, ``P4U``) so it is a
+    stable SMART-DS identity that downstream domain selection keys on, rather than
+    a positional label inferred from geometry.
+    """
+    for subregion in sorted(path for path in Path(smart_ds_root).iterdir() if path.is_dir()):
+        points = list(_subregion_buscoords(subregion))
+        if points:
+            yield subregion.name, points
+
+
+def _subregion_buscoords(subregion: Path) -> Iterator[tuple[float, float]]:
+    """Yield a subregion's unique bus coordinates from its canonical export.
+
+    Every timeseries scenario re-exports an identical ``Buscoords.dss``, so reading
+    them all multiplies I/O by the scenario count (hundreds-to-thousands of files)
+    without adding coordinates. The aggregate export sitting directly under an
+    ``opendss*`` directory already lists every bus, so prefer those and fall back to
+    the full tree only when none is present. Points are de-duplicated either way.
+    """
+    files = sorted(subregion.rglob("Buscoords.dss"))
+    aggregates = [path for path in files if path.parent.name.startswith("opendss")]
+    seen: set[tuple[float, float]] = set()
+    for path in aggregates or files:
+        for point in _iter_buscoords_file(path):
+            if point not in seen:
+                seen.add(point)
+                yield point
+
+
+def _iter_buscoords_file(path: Path) -> Iterator[tuple[float, float]]:
+    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("!", "//")):
+            continue
+        parts = stripped.split()
+        if len(parts) < 3:
+            continue
+        try:
+            yield float(parts[1]), float(parts[2])
+        except ValueError:
+            continue
 
 
 # ---------------------------------------------------------------------------
@@ -179,12 +220,40 @@ def build_study_area(config, repo_root) -> StudyAreaResult:
     if source_format == "asset_registry":
         points = list(iter_asset_registry_points(source_path))
         geometry = concave_study_area(points, alpha_ratio=float(aoi.get("alpha_ratio", 0.3)))
+        feature_rows = None
     elif source_format == "smart_ds_buscoords":
-        points = list(iter_buscoords(source_path))
-        geometry = concave_study_area(points, alpha_ratio=float(aoi.get("alpha_ratio", 0.05)))
+        alpha_ratio = float(aoi.get("alpha_ratio", 0.05))
+        if aoi.get("preserve_disconnected_subregions"):
+            grouped_points = list(iter_buscoords_by_subregion(source_path))
+            points = [point for _, group in grouped_points for point in group]
+            feature_rows = [
+                (
+                    concave_study_area(group, alpha_ratio=alpha_ratio),
+                    {
+                        "location_name": location_name,
+                        "source_format": source_format,
+                        "source_path": str(source_path),
+                        "n_points": len(group),
+                        "source": "SMART-DS subregion Buscoords concave hull",
+                        "subregion_id": subregion,
+                    },
+                )
+                for subregion, group in grouped_points
+            ]
+            geometry = shapely.union_all([geom for geom, _ in feature_rows])
+        else:
+            points = list(iter_buscoords(source_path))
+            geometry = concave_study_area(points, alpha_ratio=alpha_ratio)
+            feature_rows = None
     elif source_format == "geojson":
         points = []
         geometry = _read_geojson_geometry(source_path)
+        if aoi.get("preserve_disconnected_subregions"):
+            geometry = preserve_disconnected_subregions(
+                geometry,
+                max_bridge_edge_degrees=float(aoi.get("subregion_bridge_max_edge_degrees", 0.03)),
+            )
+        feature_rows = None
     else:
         raise ValueError(f"unsupported aoi.source_format: {source_format!r}")
 
@@ -193,17 +262,20 @@ def build_study_area(config, repo_root) -> StudyAreaResult:
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_geojson(
-        output_path,
-        geometry,
-        {
-            "location_name": location_name,
-            "source_format": source_format,
-            "source_path": str(source_path),
-            "n_points": len(points),
-            "source": "power-grid coordinate concave hull",
-        },
-    )
+    if feature_rows:
+        _write_geojson_features(output_path, feature_rows)
+    else:
+        _write_geojson(
+            output_path,
+            geometry,
+            {
+                "location_name": location_name,
+                "source_format": source_format,
+                "source_path": str(source_path),
+                "n_points": len(points),
+                "source": "power-grid coordinate concave hull",
+            },
+        )
     metadata = {
         "location_name": location_name,
         "source_format": source_format,
@@ -211,6 +283,8 @@ def build_study_area(config, repo_root) -> StudyAreaResult:
         "output_path": str(output_path),
         "n_points": len(points),
         "bounds": list(geometry.bounds),
+        "subregion_count": len(feature_rows) if feature_rows else subregion_count(geometry),
+        "subregion_ids": [props["subregion_id"] for _, props in feature_rows] if feature_rows else [],
     }
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
 
@@ -258,6 +332,58 @@ def concave_study_area(
     return shapely.concave_hull(MultiPoint(coords), ratio=alpha_ratio)
 
 
+def preserve_disconnected_subregions(
+    geometry: BaseGeometry,
+    *,
+    max_bridge_edge_degrees: float,
+) -> BaseGeometry:
+    """Split a bridged concave hull back into disconnected source subregions.
+
+    SMART-DS regional footprints can become one Polygon when a concave hull
+    draws two long artificial exterior edges between otherwise separate
+    subregions. When exactly two over-threshold exterior edges are present,
+    the two exterior arcs define the original components.
+    """
+    if geometry.geom_type != "Polygon":
+        return geometry
+    coords = list(geometry.exterior.coords)
+    if len(coords) < 6:
+        return geometry
+    bridge_edges = [
+        index
+        for index, (left, right) in enumerate(zip(coords, coords[1:]))
+        if _segment_length(left, right) > max_bridge_edge_degrees
+    ]
+    if len(bridge_edges) != 2:
+        return geometry
+
+    first, second = sorted(bridge_edges)
+    rings = [
+        coords[first + 1 : second + 1] + [coords[first + 1]],
+        coords[second + 1 : -1] + coords[: first + 1] + [coords[second + 1]],
+    ]
+    polygons = []
+    for ring in rings:
+        polygon = Polygon(ring)
+        if not polygon.is_valid:
+            polygon = polygon.buffer(0)
+        if not polygon.is_empty and polygon.area > 0:
+            polygons.append(polygon)
+    if len(polygons) != 2:
+        return geometry
+    return MultiPolygon(sorted(polygons, key=lambda item: (item.bounds[0], item.bounds[1])))
+
+
+def subregion_count(geometry: BaseGeometry) -> int:
+    if geometry.geom_type == "MultiPolygon":
+        return len(geometry.geoms)
+    return 1
+
+
+def _segment_length(left, right) -> float:
+    return ((float(right[0]) - float(left[0])) ** 2 + (float(right[1]) - float(left[1])) ** 2) ** 0.5
+
+
 # ---------------------------------------------------------------------------
 # 4. FLOOD LOCATION — workspace configuration
 # ---------------------------------------------------------------------------
@@ -300,6 +426,464 @@ _stage_order = (
 )
 
 
+_NWM_SOIL_MOISTURE_DEFAULTS = {
+    "zarr": "s3://noaa-nwm-retrospective-3-0-pds/CONUS/zarr/ldasout.zarr",
+    "variables": ["SOIL_M", "SOILSAT_TOP"],
+    "soilsat_top_layers": [0, 1],
+    "x": "x",
+    "y": "y",
+    "crs": (
+        "+proj=lcc +units=m +a=6370000.0 +b=6370000.0 +lat_1=30.0 "
+        "+lat_2=60.0 +lat_0=40.0 +lon_0=-97.0 +x_0=0 +y_0=0 "
+        "+k_0=1.0 +nadgrids=@null +wktext +no_defs"
+    ),
+    "points_file": "data/static/aoi/nwm_soil_moisture_points.geojson",
+    "selection_method": "footprint_centroid_corners_and_edges_snapped_to_nearest_nwm_cell",
+}
+
+
+_AORC_SST_DEFAULTS = {
+    "zarr_year_pattern": "s3://noaa-nws-aorc-v1-1-1km/{year}.zarr",
+    "variable": "APCP_surface",
+    "start_date": "1979-02-01",
+    "end_date": "2022-12-31",
+    "storm_duration_hours": 72,
+    "min_precip_threshold": 2.5,
+    "top_n_events": 440,
+    "check_every_n_hours": 6,
+    "decluster_hours": 72,
+    "transposition_stride_cells": 4,
+    "write_event_windows": True,
+}
+
+
+def _common_methodology_defaults() -> dict:
+    return {
+        "paths": {
+            "outputs_root": "data/event_catalog",
+            "sfincs_outputs_root": "data/sfincs",
+            "static_inputs_root": "data/static",
+            "data_catalog": "data/static/data_catalogue.yaml",
+            "static_root": "data/static/processed",
+            "raw_root": "data/static/raw",
+            "observations_root": "data/sources",
+            "base_model_root": "data/sfincs/base",
+            "scenarios_root": "data/sfincs/scenarios",
+            "storage_root": "data/sfincs/run_outputs",
+            "run_root": "data/sfincs/run_stage",
+            "stats_root": "data/sfincs/stats",
+            "design_outputs_root": "data/event_catalog",
+        },
+        "grid_footprint": {
+            "source": "data/static/aoi/study_area.geojson",
+        },
+        "static_sources": {
+            "bbox": {
+                "output": "data/static/aoi/bbox.geojson",
+            },
+            "ssurgo": {
+                "output": "data/static/soils/ssurgo_mapunitpoly.gpkg",
+                "attributes_output": "data/static/soils/ssurgo_mapunit_attributes.csv",
+            },
+        },
+        "collection": {
+            "start": "1979-02-01",
+            "end": "2022-12-31",
+        },
+        "sfincs": {
+            "boundary_file": "data/sfincs/base/sfincs.bnd",
+        },
+        "scenario_build": {
+            "design_scenario": "base",
+            "forcing_variable": "auto",
+            "tref": "2000-01-01 00:00:00",
+        },
+        "scenario_run": {
+            "workers": 1,
+            "sfincs_bin": "/usr/local/bin/sfincs",
+            "sfincs_bin_env": "SFINCS_BIN",
+        },
+        "scenario_stats": {
+            "workers": 4,
+            "land_threshold_m": 0.0,
+            "huthresh_m": 0.01,
+            "impact_threshold_m": 0.1,
+        },
+    }
+
+
+def _inland_methodology_defaults() -> dict:
+    defaults = _common_methodology_defaults()
+    defaults["paths"]["evaluation_root"] = "data/evaluation"
+    defaults["static_sources"].update(
+        {
+            "wflow_collection_extent": {
+                "method": "reviewed_nhdplus_watersheds",
+                "padding_degrees": 0.02,
+                "source_fabric": "data/wflow/domain_set_subbasins.gpkg",
+                "source_catchments": "data/sources/national_hydrography/nhdplus_hr_catchments.gpkg",
+                "watersheds": "data/static/aoi/wflow_nhdplus_watersheds.geojson",
+                "boundary": "data/static/aoi/wflow_collection_region.geojson",
+                "terrain_raw": "data/wflow/static/raw/topo/dem_wflow.tif",
+                "terrain_output": "data/wflow/static/processed/dem_wflow_coarse.tif",
+                "terrain_resolution_degrees": 0.0009,
+                "landcover_raw": "data/wflow/static/raw/landcover/landcover_wflow.tif",
+                "landcover_output": "data/wflow/static/processed/landcover_wflow_coarse.tif",
+                "ssurgo_output": "data/wflow/static/soils/ssurgo_mapunitpoly_wflow.gpkg",
+                "ssurgo_attributes_output": "data/wflow/static/soils/ssurgo_mapunit_attributes_wflow.csv",
+                "hsg_output": "data/wflow/static/soils/hsg_wflow.tif",
+                "ksat_output": "data/wflow/static/soils/ksat_mmhr_wflow.tif",
+            },
+            "terrain": {
+                "raw": "data/static/raw/topo/dem.tif",
+                "output": "data/static/processed/dem_region_setup.tif",
+            },
+            "landcover": {
+                "raw": "data/static/raw/landcover/landcover.tif",
+                "output": "data/static/processed/landcover_region_setup.tif",
+            },
+        }
+    )
+    defaults["collection"].update(
+        {
+            "usgs_streamgages": {
+                "candidate_output": "data/sources/usgs_streamgages/streamgage_candidates.geojson",
+                "reviewed_network": "data/sources/usgs_streamgages/streamgage_network.geojson",
+                "active_records_only": True,
+                "exclude_inactive_gages": True,
+                "review_required": True,
+                "accept_unreviewed_streamgage_network": False,
+                "scoring": {
+                    "prefer_long_period_of_record": True,
+                    "prefer_complete_record": True,
+                    "prefer_drainage_area_match": True,
+                    "prefer_sfincs_handoff_reaches": True,
+                },
+                "roles": ["frequency", "calibration", "validation", "sfincs_handoff"],
+                "discovery": {
+                    "service": "nwis",
+                    "parameter_cd": "00060",
+                    "has_data_type_cd": "dv",
+                    "site_status": "active",
+                    "search_geometry": "data/static/aoi/wflow_nhdplus_watersheds.geojson",
+                    "hydrologic_buffer_km": 50,
+                },
+                "streamflow_records": {
+                    "collect": False,
+                    "output": "data/sources/usgs_streamgages/streamflow_records.csv",
+                    "service": "dv",
+                    "stat_cd": "00003",
+                },
+            },
+            "national_hydrography": {
+                "service": "usgs_3dhp_or_nhdplus_hr",
+                "hydromt_basemap": "data/wflow/hydrography/us_hydrography_basemap.nc",
+                "basemap_source_resolution_degrees": 0.0009,
+                "river_geometry": "data/sources/national_hydrography/nhdplus_hr_river_geometry.gpkg",
+                "catchments": "data/sources/national_hydrography/nhdplus_hr_catchments.gpkg",
+                "collect_review_vectors": True,
+                "wflow_soil_parameters": "data/wflow/static/ssurgo_wflow_soil_parameters.nc",
+            },
+            "aorc_sst": _deep_merge(
+                _AORC_SST_DEFAULTS,
+                {"transposition_region": {"buffer_km": 50}},
+            ),
+            "nwm": {
+                "version": "3.0",
+                "bucket": "noaa-nwm-retrospective-3-0-pds",
+                "start": "1979-02-01",
+                "end": "2022-12-31",
+                "streamflow": {
+                    "available": False,
+                    "feature_ids": [],
+                },
+                "soil_moisture": _deep_merge(
+                    _NWM_SOIL_MOISTURE_DEFAULTS,
+                    {"points_source": "data/static/aoi/evaluation_footprint.geojson"},
+                ),
+            },
+        }
+    )
+    defaults.update(
+        {
+            "event_catalog": {
+                "forcing_members": {
+                    "rainfall": "data/sources/aorc_sst/rainfall_members.csv",
+                    "streamflow": "data/sources/usgs_streamgages/streamflow_members.csv",
+                    "soil_moisture": "data/sources/nwm/soil_moisture.csv",
+                },
+                "dependence": {
+                    "method": "copula_joint",
+                    "driver_vector": ["streamflow", "rainfall"],
+                    "primary_driver": "streamflow",
+                    "event_rate_per_year": 5.0,
+                    "copula_seed": 42,
+                    "pool_size": 100000,
+                    "enforce_stress_budget": True,
+                    "catalog_band_fractions": {
+                        "mild": 0.05,
+                        "common": 0.28,
+                        "significant": 0.28,
+                        "rare": 0.12,
+                        "extreme": 0.27,
+                    },
+                    "cooccurrence": {
+                        "threshold_quantile": 0.95,
+                        "target_rate_per_year": 5.0,
+                        "condition_on": ["streamflow"],
+                        "decluster_window_hours": 120,
+                        "pairing_window_hours": 72,
+                    },
+                    "marginals": {
+                        "rainfall": {"kind": "pot"},
+                        "streamflow": {"kind": "pot"},
+                    },
+                    "driver_records": {
+                        "rainfall": {
+                            "time_column": "storm_date",
+                            "value_column": "mean",
+                        },
+                        "soil_moisture": {
+                            "path": "data/sources/nwm/soil_moisture.csv",
+                            "time_column": "time",
+                            "value_column": "SOILSAT_TOP",
+                            "aggregate": "mean",
+                        },
+                        "streamflow": {
+                            "path": "data/sources/usgs_streamgages/streamflow_records.csv",
+                            "time_column": "time",
+                            "value_column": "discharge_cfs",
+                            "group_column": "site_no",
+                            "aggregate": "max",
+                        },
+                    },
+                    "member_libraries": {
+                        "streamflow": {"from": "member_table"},
+                        "rainfall": {"from": "member_table"},
+                    },
+                },
+                "pairing": {
+                    "rainfall": {
+                        "strategy": "inland_rainfall_pairing_priority",
+                        "same_storm_when_available": True,
+                        "fallback_strategy": "seasonal_window_permutation",
+                        "seed": 42,
+                        "window_days": 45,
+                    },
+                    "streamflow": {
+                        "strategy": "coherent_streamgage_network_event",
+                        "active_records_only": True,
+                        "allow_multiple_frequency_basis_gages": True,
+                        "design_event_method": "scaled_streamgage_network_analog",
+                    },
+                    "soil_moisture": {
+                        "strategy": "inland_antecedent_moisture_pairing",
+                        "rainfall_relative_when_coherent": True,
+                        "fallback_reference": "dominant_streamgage_network_peak",
+                        "lead_time_hours": 24,
+                    },
+                },
+            },
+            "extremes": {
+                "method": "pot",
+                "hydrological_year_start": "YS-OCT",
+                "selection_criterion": "AIC",
+                "return_periods": [2, 5, 10, 25, 50, 100, 250, 500],
+                "pot": {
+                    "threshold_quantile": 0.98,
+                    "distributions": ["exp", "gpd"],
+                    "min_peak_distance_hours": 72,
+                },
+                "bootstrap": {
+                    "n_replicates": 1000,
+                    "confidence_level": 0.95,
+                    "seed": 42,
+                },
+            },
+            "sampling": {
+                "spacing": "log",
+                "return_period_min_years": 1.5,
+                "return_period_max_years": 500.0,
+                "hybrid_splice_quantile": 0.95,
+                "tail_sample_fraction": 0.05,
+                "severity_bands": [
+                    {"severity_band": "mild", "rp_min_years": 0.0, "rp_max_years": 2.0},
+                    {"severity_band": "common", "rp_min_years": 2.0, "rp_max_years": 10.0},
+                    {"severity_band": "significant", "rp_min_years": 10.0, "rp_max_years": 50.0},
+                    {"severity_band": "rare", "rp_min_years": 50.0, "rp_max_years": 100.0},
+                    {"severity_band": "extreme", "rp_min_years": 100.0, "rp_max_years": 500.0},
+                    {"severity_band": "beyond_design", "rp_min_years": 500.0, "rp_max_years": None},
+                ],
+            },
+            "sfincs": _deep_merge(
+                defaults["sfincs"],
+                {
+                    "grid_resolution_m": 100,
+                    "outflow_boundary_elevation_quantile": 0.05,
+                },
+            ),
+            "sfincs_domain_set": {
+                "enabled": True,
+                "review_required": True,
+                "domains_root": "data/sfincs/domains",
+                "domain_manifest": "data/sfincs/domains/domain_set.yaml",
+                "source": "data/static/aoi/evaluation_footprint.geojson",
+                "allow_multiple_domains": True,
+                "region_geometry": "bounding_box",
+                "event_catalog_scope": "shared_across_domain_set",
+                "evaluation_merge": "max_depth_per_asset_with_source_domain",
+                "domains": [],
+            },
+            "inland_coupling": {
+                "enabled": True,
+                "forcing_mode": "dual_fluvial_pluvial",
+                "streamflow_reference_time": "dominant_streamgage_network_peak",
+                "rainfall_member_scope": "shared_between_wflow_and_sfincs",
+                "direct_rainfall": {
+                    "enabled": True,
+                    "variable": "APCP_surface",
+                    "cumulative_input": True,
+                    "time_label": "right",
+                    "buffer_m": 30000,
+                },
+                "discharge_forcing": {
+                    "source": "wflow",
+                    "handoff_manifest": "data/wflow/domain_set_handoff.yaml",
+                    "handoff_location": "stream_boundary_intersection",
+                    "fallback_river_geometry": "data/sources/national_hydrography/nhdplus_hr_river_geometry.gpkg",
+                },
+                "soil_moisture": {
+                    "source": "data/sources/nwm/soil_moisture.csv",
+                    "pairing": "inland_antecedent_moisture_pairing",
+                    "lookback_hours": 24,
+                },
+            },
+            "scenario_build": _deep_merge(
+                defaults["scenario_build"],
+                {
+                    "zsini_mode": "dry",
+                    "timing": {
+                        "spinup_hours": 12,
+                        "drain_down_hours": 24,
+                        "min_run_hours": 72,
+                        "max_run_hours": 168,
+                    },
+                },
+            ),
+            "evaluation": {
+                "asset_source": "data/smart_ds",
+                "output_root": "data/evaluation",
+                "multi_domain_merge": {
+                    "method": "max_depth_per_asset",
+                    "retain_source_domain_id": True,
+                    "write_overlap_diagnostics": True,
+                },
+            },
+            "wflow": {
+                "enabled": True,
+                "plugin": "wflow_sbm",
+                "data_catalog": "data/wflow/data_catalog.yml",
+                "base_model_root": "data/wflow/base",
+                "events_root": "data/wflow/events",
+                "readiness_root": "data/wflow/readiness",
+                "domain_set_manifest": "data/wflow/domain_set.yaml",
+            },
+        }
+    )
+    return defaults
+
+
+def _coastal_methodology_defaults() -> dict:
+    defaults = _common_methodology_defaults()
+    defaults["collection"].update(
+        {
+            "hurdat2": {
+                "url": "https://www.nhc.noaa.gov/data/hurdat/hurdat2-1851-2023-051124.txt",
+                "request_timeout_seconds": 60,
+            },
+            "cora": {
+                "reuse_existing": True,
+                "s3_bucket": "noaa-nos-cora-pds",
+                "s3_key_pattern": "V1.1/assimilated/500m_grid/500m_grid_zeta_{date:%Y%m%d}.nc",
+                "variable": "zeta",
+                "datum": "MSL",
+                "units": "m",
+                "nearest_k": 20,
+                "max_snap_distance_km": 5.0,
+                "parallel_workers": 16,
+                "request_timeout_seconds": 60,
+                "raw_cache_enabled": False,
+                "raw_cache_dirname": "cora_daily_nc",
+            },
+            "era5_waves": {
+                "provider": "earthdatahub",
+                "auth_path": "code/api-key.txt",
+                "smoke_start": "2018-01-01T00:00:00",
+                "smoke_end": "2018-01-01T23:00:00",
+            },
+            "aorc_sst": _AORC_SST_DEFAULTS,
+            "nwm": {
+                "version": "3.0",
+                "bucket": "noaa-nwm-retrospective-3-0-pds",
+                "start": "1979-02-01",
+                "end": "2022-12-31",
+                "streamflow": {
+                    "zarr": "s3://noaa-nwm-retrospective-3-0-pds/CONUS/zarr/chrtout.zarr",
+                    "variable": "streamflow",
+                    "feature_dim": "feature_id",
+                    "available": False,
+                    "feature_ids": [],
+                },
+                "soil_moisture": _deep_merge(
+                    _NWM_SOIL_MOISTURE_DEFAULTS,
+                    {"points_source": "data/static/aoi/study_area.geojson"},
+                ),
+            },
+        }
+    )
+    defaults.update(
+        {
+            "coastal_wave_coupling": {
+                "quadtree": {
+                    "base_model_root": "data/sfincs/base_quadtree_snapwave",
+                    "res": 60,
+                    "rotated": True,
+                    "nr_subgrid_pixels": 6,
+                    "waterlevel_boundary_buffer_m": 180,
+                },
+                "snapwave": {
+                    "boundary_min_dist": 1500,
+                    "boundary_seaward_dist": 5000,
+                    "directional_spread_degrees": 20.0,
+                },
+                "hydrology": {
+                    "precipitation": {
+                        "variable": "APCP_surface",
+                        "cumulative_input": True,
+                        "time_label": "right",
+                        "buffer_m": 30000,
+                    },
+                    "soil_moisture": {
+                        "source": "data/sources/nwm/soil_moisture.csv",
+                        "lookback_hours": 24,
+                    },
+                },
+            },
+            "scenario_build": _deep_merge(
+                defaults["scenario_build"],
+                {"zsini_mode": "boundary_t0"},
+            ),
+        }
+    )
+    return defaults
+
+
+def _methodology_defaults(flood_setting: str) -> dict:
+    if flood_setting == "inland":
+        return _inland_methodology_defaults()
+    return _coastal_methodology_defaults()
+
+
 @dataclass(frozen=True)
 class LocationDefinition:
     name: str
@@ -310,6 +894,8 @@ class LocationDefinition:
     grid: dict
     data_sources: dict
     sfincs: dict
+    wflow: dict
+    model_recipes: dict
 
     def stage_order(self) -> tuple[str, ...]:
         return _stage_order
@@ -318,9 +904,17 @@ class LocationDefinition:
         issues = []
         if not self.name:
             issues.append("project.name is required")
-        for key in ("data_sources", "grid", "sfincs"):
+        for key in ("grid", "sfincs"):
             if key not in self.config.get("includes", {}):
                 issues.append(f"includes.{key} is required")
+        includes = self.config.get("includes", {})
+        for key in ("sfincs_build", "sfincs_update_forcing"):
+            if key not in includes:
+                issues.append(f"includes.{key} is required")
+        if "wflow_build" in includes or "wflow_update_forcing" in includes:
+            for key in ("wflow_build", "wflow_update_forcing"):
+                if key not in includes:
+                    issues.append(f"includes.{key} is required for Wflow-coupled Study Locations")
         return issues
 
 
@@ -331,16 +925,31 @@ def define_location(config_path) -> LocationDefinition:
     if not name:
         raise ValueError("project.name is required in config.yaml")
     root = config_path.parent
+    flood_setting = str(base.get("flood_setting", "coastal")).strip() or "coastal"
 
     includes = base.get("includes") or {}
-    data_sources = _load_location_detail(root, includes.get("data_sources"))
+    data_sources = _load_location_detail(root, includes.get("data_sources"), required=False)
     grid = _load_location_detail(root, includes.get("grid"))
     sfincs = _load_location_detail(root, includes.get("sfincs"))
+    wflow = _load_location_detail(root, includes.get("wflow"), required=False)
+    model_recipes = _load_model_recipe_includes(root, includes)
 
-    config = _deep_merge(base, data_sources)
+    config = _methodology_defaults(flood_setting)
+    # Legacy `extends:` remains supported, but location configs no longer need
+    # a stakeholder-facing shared YAML file to get methodology defaults.
+    extends = base.get("extends")
+    if extends is not None:
+        config = _deep_merge(config, _load_extends_base(root, extends))
+
+    config = _deep_merge(config, base)
+    config = _deep_merge(config, data_sources)
     config = _deep_merge(config, grid)
     config = _deep_merge(config, sfincs)
+    config = _deep_merge(config, wflow)
+
+    _apply_model_recipe_paths(config)
     config.pop("notebooks", None)
+    config.pop("extends", None)  # loader directive, not domain config
 
     return LocationDefinition(
         name=name,
@@ -351,6 +960,8 @@ def define_location(config_path) -> LocationDefinition:
         grid=config.get("grid", {}),
         data_sources=data_sources,
         sfincs=sfincs,
+        wflow=config.get("wflow", {}),
+        model_recipes=model_recipes,
     )
 
 
@@ -379,15 +990,58 @@ def _load_yaml_file(path: Path) -> dict:
         return yaml.safe_load(stream) or {}
 
 
-def _load_location_detail(root: Path, value) -> dict:
+def _load_extends_base(root: Path, value) -> dict:
+    """Load a shared base config referenced by `extends:` (path relative to the
+    location's config.yaml, e.g. `../_shared/inland_base.yaml`)."""
+    path = Path(value)
+    if not path.is_absolute():
+        path = (root / path).resolve()
+    if not path.exists():
+        raise FileNotFoundError(f"extends base not found: {path}")
+    return _load_yaml_file(path)
+
+
+def _load_location_detail(root: Path, value, *, required=True) -> dict:
     if value is None:
-        raise ValueError("config.yaml must include data_sources.yaml, grid.yaml, and sfincs.yaml")
+        if not required:
+            return {}
+        raise ValueError("config.yaml must include grid.yaml and sfincs.yaml")
     path = Path(value)
     if not path.is_absolute():
         path = root / path
     if not path.exists():
         raise FileNotFoundError(path)
     return _load_yaml_file(path)
+
+
+def _load_model_recipe_includes(root: Path, includes: dict) -> dict:
+    recipes = {}
+    for key, value in includes.items():
+        if key not in {
+            "sfincs_build",
+            "sfincs_build_waves",
+            "sfincs_update_forcing",
+            "wflow_build",
+            "wflow_update_forcing",
+        }:
+            continue
+        path = Path(value)
+        if not path.is_absolute():
+            path = root / path
+        if not path.exists():
+            raise FileNotFoundError(path)
+        recipes[key] = _load_yaml_file(path)
+    return recipes
+
+
+def _apply_model_recipe_paths(config: dict) -> None:
+    includes = config.get("includes") or {}
+    if "wflow_build" in includes or "wflow_update_forcing" in includes:
+        wflow = config.setdefault("wflow", {})
+        if "wflow_build" in includes:
+            wflow["build_config"] = includes["wflow_build"]
+        if "wflow_update_forcing" in includes:
+            wflow["update_forcing_config"] = includes["wflow_update_forcing"]
 
 
 def _deep_merge(left: dict, right: dict) -> dict:

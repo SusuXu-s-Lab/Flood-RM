@@ -68,6 +68,80 @@ def test_resilience_stress_training_set_keeps_benchmarks_and_limits_mild_rows():
     assert selected["event_set"].eq("resilience_stress_training").all()
 
 
+def test_resilience_stress_training_reasons_are_driver_aware_for_streamflow_catalogs():
+    catalog = pd.DataFrame(
+        {
+            "event_id": [f"evt_{index:04d}" for index in range(1, 7)],
+            "basis_site_no": ["02095000"] * 6,
+            "peak_flow_cfs": [1000, 1500, 2000, 3000, 5000, 8000],
+            "sample_rp_years": [2, 9, 12, 52, 101, 498],
+            "severity_band": ["common", "common", "significant", "rare", "extreme", "extreme"],
+            "sampling_region": ["body", "body", "tail", "tail", "tail", "tail"],
+            "rainfall_member_id": [f"rain_{index:02d}" for index in range(6)],
+            "soil_moisture_member_id": [f"soil_{index:02d}" for index in range(6)],
+        }
+    )
+
+    selected = select_resilience_stress_training_set(
+        catalog,
+        config={
+            "resilience_stress_training": {
+                "target_event_count": 5,
+                "benchmark_return_period_years": [10, 50, 100, 500],
+            }
+        },
+    )
+
+    reasons = ";".join(selected["selection_reason"])
+    assert "coastal_driver" not in reasons
+    assert "streamflow_driver" in reasons
+    assert "nearest_10pct_annual_chance_streamflow_driver" in reasons
+
+
+def test_resilience_stress_training_set_uses_marshfield_like_severity_budget_by_default():
+    rows = []
+    bands = [
+        ("mild", 1.2, "body"),
+        ("common", 3.0, "body"),
+        ("significant", 20.0, "tail"),
+        ("rare", 75.0, "tail"),
+        ("extreme", 250.0, "tail"),
+    ]
+    for band, base_rp, region in bands:
+        for index in range(100):
+            rows.append(
+                {
+                    "event_id": f"{band}_{index:03d}",
+                    "sample_rp_years": base_rp + index * 0.01,
+                    "severity_band": band,
+                    "sampling_region": region,
+                    "rainfall_member_id": f"rain_{band}_{index:03d}",
+                    "soil_moisture_member_id": f"soil_{band}_{index:03d}",
+                }
+            )
+    catalog = pd.DataFrame(rows)
+
+    selected = select_resilience_stress_training_set(
+        catalog,
+        config={
+            "resilience_stress_training": {
+                "target_event_count": 100,
+                "benchmark_return_period_years": [10, 50, 100, 500],
+            }
+        },
+    )
+
+    counts = selected["severity_band"].value_counts().to_dict()
+    assert len(selected) == 100
+    assert counts == {
+        "significant": 28,
+        "common": 28,
+        "extreme": 27,
+        "rare": 12,
+        "mild": 5,
+    }
+
+
 def test_soil_member_metrics_prefers_soilsat_top_when_available():
     members = pd.DataFrame(
         {

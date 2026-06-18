@@ -115,8 +115,14 @@ def validate_event_catalog(catalog, required_forcings=None, wave_analog_policy=N
         for column in ["study_location", "event_family", "scenario_name"]:
             if _is_missing(row.get(column, pd.NA)):
                 issues.append(_issue("missing_value", event_id=event_id, column=column))
+        # Observed historical-tail reference events sit outside the synthetic probability budget,
+        # so they carry no sampling/probability weight by design; only synthetic rows are weighted.
+        is_reference_row = (
+            str(row.get("event_origin", "")) == "historical_tail"
+            or str(row.get("catalog_role", "")) == "historical_reference"
+        )
         weight = pd.to_numeric(pd.Series([row.get("sampling_weight", pd.NA)]), errors="coerce").iloc[0]
-        if pd.isna(weight) or weight <= 0:
+        if not is_reference_row and (pd.isna(weight) or weight <= 0):
             issues.append(_issue("invalid_sampling_weight", event_id=event_id, column="sampling_weight"))
         rp = pd.to_numeric(pd.Series([row.get("sample_rp_years", pd.NA)]), errors="coerce").iloc[0]
         if pd.isna(rp) or rp <= 0:
@@ -337,10 +343,24 @@ def attach_forcing_members(catalog, members, forcing, policy=None):
     seed = int(policy.get("seed", 0 if strategy == "antecedent_to_forcing" else 42))
     if strategy not in {"independent_permutation", "seasonal_window_permutation", "antecedent_to_forcing"}:
         raise ValueError(f"unsupported forcing pairing strategy {strategy!r}")
-    if members.empty:
-        return catalog.copy()
-
     out = catalog.copy()
+    if members.empty:
+        for suffix in [
+            "source",
+            "member_file",
+            "member_id",
+            "member_time",
+            "pairing_policy",
+            "pairing_seed",
+            "pairing_window_days",
+            "pairing_reference_time",
+            "pairing_lag_hours",
+        ]:
+            column = f"{forcing}_{suffix}"
+            if column not in out:
+                out[column] = pd.NA
+        return out
+
     if strategy == "seasonal_window_permutation":
         assigned, member_time_column = _seasonal_assignment_indices(out, members, policy)
         reference_column = None

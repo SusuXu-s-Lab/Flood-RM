@@ -1,0 +1,303 @@
+{
+  "aoi": {
+    "alpha_ratio": 0.3,
+    "metadata_output": "data/static/aoi/study_area.json",
+    "output": "data/static/aoi/study_area.geojson",
+    "reference_extent": "data/static/aoi/power_extent.geojson",
+    "source": "data/power_grid/asset_registry",
+    "source_format": "asset_registry"
+  },
+  "coastal_wave_coupling": {
+    "hydrology": {
+      "infiltration": {
+        "block_size": 2000,
+        "effective": 0.5,
+        "effective_source": "scalar_until_nwm_soilsat_top_rerun",
+        "enabled": true,
+        "factor_ksat": 0.2777777777777778,
+        "hsg": "data/static/soils/hsg_mfield.tif",
+        "ksat": "data/static/soils/ksat_mmhr_mfield.tif",
+        "ksat_effective": "data/static/soils/ksat_mmhr_mfield_effective.tif",
+        "ksat_max_mmhr": 75.0,
+        "ksat_scale_factor": 0.1,
+        "lulc": "worldcover",
+        "method": "cn_with_recovery",
+        "reclass_table": null
+      },
+      "precipitation": {
+        "buffer_m": 30000,
+        "cumulative_input": true,
+        "time_label": "right",
+        "variable": "APCP_surface"
+      },
+      "soil_moisture": {
+        "lookback_hours": 24,
+        "source": "data/sources/nwm/soil_moisture.csv"
+      }
+    },
+    "quadtree": {
+      "base_model_root": "data/sfincs/base_quadtree_snapwave",
+      "nr_subgrid_pixels": 6,
+      "res": 60,
+      "rotated": true,
+      "waterlevel_boundary_buffer_m": 180
+    },
+    "runup_gauges": {
+      "crs": "EPSG:26919",
+      "rugdepth": 0.05,
+      "transects": [
+        {
+          "name": "rg_green_harbor_weir",
+          "x0": 363600.0,
+          "x1": 364150.0,
+          "y0": 4660350.0,
+          "y1": 4660350.0
+        },
+        {
+          "name": "rg_brant_rock_thin_dam",
+          "x0": 363900.0,
+          "x1": 364450.0,
+          "y0": 4661150.0,
+          "y1": 4661450.0
+        }
+      ]
+    },
+    "snapwave": {
+      "boundary_min_dist": 1500,
+      "boundary_seaward_dist": 5000,
+      "directional_spread_degrees": 20.0
+    }
+  },
+  "coastal_waves": true,
+  "collection": {
+    "aorc_sst": {
+      "check_every_n_hours": 6,
+      "decluster_hours": 72,
+      "end_date": "2022-12-31",
+      "min_precip_threshold": 2.5,
+      "start_date": "1979-02-01",
+      "storm_duration_hours": 72,
+      "top_n_events": 440,
+      "transposition_region": {
+        "geometry_file": "data/sources/aorc_sst/transposition_regions/transposition_region_100km.geojson",
+        "id": "east-atlantic-marshfield"
+      },
+      "transposition_stride_cells": 4,
+      "variable": "APCP_surface",
+      "write_event_windows": true,
+      "zarr_year_pattern": "s3://noaa-nws-aorc-v1-1-1km/{year}.zarr"
+    },
+    "cora": {
+      "boundary_points_crs": "EPSG:26919",
+      "datum": "MSL",
+      "max_snap_distance_km": 5.0,
+      "nearest_k": 20,
+      "output_path": "data/sources/cora_waterlevel/cora_mfield_boundary_hourly_msl.csv",
+      "parallel_workers": 16,
+      "raw_cache_dirname": "cora_daily_nc",
+      "raw_cache_enabled": false,
+      "request_timeout_seconds": 60,
+      "reuse_existing": true,
+      "s3_bucket": "noaa-nos-cora-pds",
+      "s3_key_pattern": "V1.1/assimilated/500m_grid/500m_grid_zeta_{date:%Y%m%d}.nc",
+      "units": "m",
+      "variable": "zeta"
+    },
+    "end": "2022-12-31",
+    "era5_waves": {
+      "auth_path": "code/api-key.txt",
+      "bbox_wgs84": [
+        -71.0,
+        42.0,
+        -70.0,
+        42.5
+      ],
+      "output_path": "data/sources/era5_waves/era5_mfield_offshore_hourly.nc",
+      "provider": "earthdatahub",
+      "smoke_end": "2018-01-01T23:00:00",
+      "smoke_start": "2018-01-01T00:00:00"
+    },
+    "hurdat2": {
+      "request_timeout_seconds": 60,
+      "url": "https://www.nhc.noaa.gov/data/hurdat/hurdat2-1851-2023-051124.txt"
+    },
+    "nwm": {
+      "bucket": "noaa-nwm-retrospective-3-0-pds",
+      "end": "2022-12-31",
+      "soil_moisture": {
+        "crs": "+proj=lcc +units=m +a=6370000.0 +b=6370000.0 +lat_1=30.0 +lat_2=60.0 +lat_0=40.0 +lon_0=-97.0 +x_0=0 +y_0=0 +k_0=1.0 +nadgrids=@null +wktext +no_defs",
+        "points_file": "data/static/aoi/nwm_soil_moisture_points.geojson",
+        "points_source": "data/static/aoi/study_area.geojson",
+        "selection_method": "footprint_centroid_corners_and_edges_snapped_to_nearest_nwm_cell",
+        "soilsat_top_layers": [
+          0,
+          1
+        ],
+        "variables": [
+          "SOIL_M",
+          "SOILSAT_TOP"
+        ],
+        "x": "x",
+        "y": "y",
+        "zarr": "s3://noaa-nwm-retrospective-3-0-pds/CONUS/zarr/ldasout.zarr"
+      },
+      "start": "1979-02-01",
+      "streamflow": {
+        "available": false,
+        "feature_dim": "feature_id",
+        "feature_ids": [],
+        "reason": "Marshfield coastal SFINCS grid has no meaningful streamflow driver or gage record for this baseline; do not use nearby tiny NWM reaches as a compound-flow input.",
+        "selection_method": "not_applicable_for_configured_coastal_no_streamflow",
+        "selection_source": "Reviewed NWM v3.0 chrtout nearest features; retained as non-driver context only because there is no practical streamflow boundary for this location.",
+        "variable": "streamflow",
+        "zarr": "s3://noaa-nwm-retrospective-3-0-pds/CONUS/zarr/chrtout.zarr"
+      },
+      "version": "3.0"
+    },
+    "start": "1979-02-01"
+  },
+  "event_drivers": [
+    "coastal_water_level",
+    "rainfall",
+    "soil_moisture"
+  ],
+  "flood_setting": "coastal",
+  "grid": {
+    "asset_registry": "data/power_grid/asset_registry",
+    "augmented_artifacts": "data/power_grid/augmented",
+    "critical_facilities": {
+      "source": "data/static/grid/critical_facilities.geojson"
+    },
+    "figures": "data/power_grid/figures",
+    "onm_export": "data/power_grid/onm_export",
+    "opendss_root": "data/power_grid/derived_opendss",
+    "power_extent": "data/power_grid/power_extent.geojson",
+    "power_grid_root": "data/power_grid",
+    "shift_cache": "data/power_grid/shift_cache",
+    "source_anchors": {
+      "accept_unreviewed_source_anchors": false,
+      "candidate_output": "data/static/grid/source_anchor_candidates.geojson",
+      "place_name": "project.place_name",
+      "reviewed_override": "data/static/grid/source_anchors.geojson",
+      "source": "osm_power_substations"
+    },
+    "source_area": {
+      "extra_areas": [
+        {
+          "bbox": [
+            -70.725,
+            42.088,
+            -70.655,
+            42.145
+          ],
+          "name": "humarock_barrier_strip"
+        }
+      ],
+      "place_name": "project.place_name",
+      "source": "osmnx_place"
+    }
+  },
+  "grid_footprint": {
+    "source": "data/static/aoi/study_area.geojson"
+  },
+  "includes": {
+    "data_sources": "data_sources.yaml",
+    "grid": "grid.yaml",
+    "sfincs": "sfincs.yaml",
+    "sfincs_build": "sfincs_build.yml",
+    "sfincs_build_waves": "sfincs_build_waves.yml",
+    "sfincs_update_forcing": "sfincs_update_forcing.yml"
+  },
+  "paths": {
+    "base_model_root": "data/sfincs/base",
+    "data_catalog": "data/static/data_catalogue.yaml",
+    "data_root": "locations/marshfield/data",
+    "design_outputs_root": "data/event_catalog",
+    "observations_root": "data/sources",
+    "outputs_root": "data/event_catalog",
+    "raw_root": "data/static/raw",
+    "run_root": "data/sfincs/run_stage",
+    "scenarios_root": "data/sfincs/scenarios",
+    "sfincs_outputs_root": "data/sfincs",
+    "static_inputs_root": "data/static",
+    "static_root": "data/static/processed",
+    "stats_root": "data/sfincs/stats",
+    "storage_root": "data/sfincs/run_outputs"
+  },
+  "project": {
+    "country": "US",
+    "model_crs": "EPSG:26919",
+    "name": "marshfield",
+    "place_name": "Marshfield, MA, USA",
+    "reference_crs": "EPSG:4326"
+  },
+  "scenario_build": {
+    "design_scenario": "base",
+    "forcing_variable": "auto",
+    "tref": "2000-01-01 00:00:00",
+    "zsini_mode": "boundary_t0"
+  },
+  "scenario_run": {
+    "sfincs_bin": "/usr/local/bin/sfincs",
+    "sfincs_bin_env": "SFINCS_BIN",
+    "workers": 1
+  },
+  "scenario_stats": {
+    "huthresh_m": 0.01,
+    "impact_threshold_m": 0.1,
+    "land_threshold_m": 0.0,
+    "workers": 4
+  },
+  "sfincs": {
+    "boundary_file": "data/sfincs/base/sfincs.bnd"
+  },
+  "sfincs_structures": {
+    "enabled": true,
+    "figures_root": "data/sfincs/figures/structures",
+    "layers": [
+      {
+        "component": "weirs",
+        "dz": null,
+        "name": "weirs",
+        "source": "weirs_marshfield_massgis_public_2015.geojson"
+      },
+      {
+        "component": "thin_dams",
+        "name": "thin_dams",
+        "source": "thin_dams_marshfield_massgis_public_2015.geojson"
+      }
+    ],
+    "output_root": "data/static/structures/processed",
+    "source_root": "data/static/structures/sources"
+  },
+  "static_sources": {
+    "bbox": {
+      "output": "data/static/aoi/bbox.geojson"
+    },
+    "coastline": {
+      "land_seed": [
+        -70.76,
+        42.12
+      ],
+      "ocean_seed": [
+        -70.62,
+        42.1
+      ],
+      "output": "data/static/processed/coastal_region.geojson"
+    },
+    "landcover": {
+      "output": "data/static/processed/worldcover_region_setup.tif",
+      "raw": "data/static/raw/landcover/worldcover_bbox.tif"
+    },
+    "ssurgo": {
+      "attributes_output": "data/static/soils/ssurgo_mapunit_attributes.csv",
+      "hsg_output": "data/static/soils/hsg_mfield.tif",
+      "ksat_output": "data/static/soils/ksat_mmhr_mfield.tif",
+      "output": "data/static/soils/ssurgo_mapunitpoly.gpkg"
+    },
+    "terrain": {
+      "output": "data/static/processed/cudem_region_setup.tif",
+      "raw": "data/static/raw/topo/cudem_10_marshfield.tif"
+    }
+  }
+}

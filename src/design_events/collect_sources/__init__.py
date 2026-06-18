@@ -5,11 +5,15 @@ from design_events.collect_sources.plan import (
     SourceCollectionStep,
     build_source_collection_plan,
 )
+from design_events.collect_sources.prerequisites import prepare_collection_prerequisites
 from design_events.collect_sources.run_collect import run_collect
+from design_events.collect_sources.usgs_streamgages import build_reviewed_streamgage_decisions
 
 __all__ = [
     "SourceCollectionPlan",
     "SourceCollectionStep",
+    "build_reviewed_streamgage_decisions",
     "build_source_collection_plan",
+    "prepare_collection_prerequisites",
     "run_collect",
 ]

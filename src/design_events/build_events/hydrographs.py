@@ -523,6 +523,28 @@ def build_surge_event_artifacts(config, paths):
     df_peaks = pd.read_csv(paths["historical_peaks_csv"], parse_dates=["time"], index_col="time")
     peak_times = pd.DatetimeIndex(df_peaks["h"].dropna().index)
     template_frame = extract_historical_templates(h_series, peak_times, settings)
+    if config.get("coastal_waves", False):
+        # SnapWave reuses the template's historical hour, so keep only analogs covered by ERA5 waves.
+        collection_cfg = config.get("collection", {})
+        wave_cfg = collection_cfg.get("era5_waves", {})
+        wave_start_value = wave_cfg.get("start_date") or collection_cfg.get("start")
+        wave_end_value = wave_cfg.get("end_date") or collection_cfg.get("end")
+        if wave_start_value or wave_end_value:
+            wave_start = pd.Timestamp(wave_start_value) if wave_start_value else None
+            wave_end = pd.Timestamp(wave_end_value) if wave_end_value else None
+            if isinstance(wave_end_value, str) and len(wave_end_value) == 10:
+                wave_end = wave_end + pd.Timedelta(days=1) - pd.Timedelta(hours=1)
+            peak_time = pd.to_datetime(template_frame["peak_time"])
+            template_start = peak_time + pd.to_timedelta(template_frame["valid_start_hour"], unit="h")
+            template_end = peak_time + pd.to_timedelta(template_frame["valid_end_hour"], unit="h")
+            keep = pd.Series(True, index=template_frame.index)
+            if wave_start is not None:
+                keep &= template_start >= wave_start
+            if wave_end is not None:
+                keep &= template_end <= wave_end
+            template_frame = template_frame.loc[keep].reset_index(drop=True)
+            if template_frame.empty:
+                raise RuntimeError("no historical templates overlap the configured ERA5 wave collection window")
     axis = np.arange(
         -int(design_cfg.get("max_event_hours", 168)),
         int(design_cfg.get("max_event_hours", 168)) + 1,

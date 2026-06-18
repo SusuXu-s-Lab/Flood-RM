@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
 
@@ -70,6 +71,38 @@ def physical_lines_only(lines: pd.DataFrame) -> pd.DataFrame:
     """Return ordinary physical line rows used for switch candidacy."""
 
     return lines[lines["line_class"].fillna("line").eq("line")].copy()
+
+
+def derive_lateral_fuses(lines: pd.DataFrame) -> pd.DataFrame:
+    """Derive Fuse Proxy rows where lower-phase laterals leave a higher-phase bus."""
+    max_phases_at_bus: dict[str, int] = defaultdict(int)
+    for row in lines.itertuples(index=False):
+        phases = int(row.phases)
+        max_phases_at_bus[row.from_bus] = max(max_phases_at_bus[row.from_bus], phases)
+        max_phases_at_bus[row.to_bus] = max(max_phases_at_bus[row.to_bus], phases)
+
+    rows: list[dict[str, object]] = []
+    for line in lines.itertuples(index=False):
+        phases = int(line.phases)
+        for endpoint in (line.from_bus, line.to_bus):
+            parent_phases = max_phases_at_bus[endpoint]
+            if parent_phases > phases:
+                rows.append(
+                    {
+                        "fuse_id": f"fuse_{line.line_name}_{endpoint}",
+                        "feeder_id": line.feeder_id,
+                        "line_name": line.line_name,
+                        "head_bus": endpoint,
+                        "child_phases": phases,
+                        "parent_phases": parent_phases,
+                    }
+                )
+                break
+
+    return pd.DataFrame(
+        rows,
+        columns=["fuse_id", "feeder_id", "line_name", "head_bus", "child_phases", "parent_phases"],
+    )
 
 
 def physical_switch_candidate_edges(

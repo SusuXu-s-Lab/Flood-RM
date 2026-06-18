@@ -8,12 +8,13 @@ cells can stay to one-liners (import + call + optional display).
 
 Public API
 ----------
-plot_forcing_qa_standard   Pre-run 6-panel QA for surge + rain builds
-plot_forcing_qa_waves      Pre-run 6-panel QA for surge + rain + SnapWave builds
-plot_flood_animation       Static peak-depth summary + flood/ocean mp4
-plot_postrun_diagnostics   3-panel post-run check (soil frac / his.nc zs / precip)
-plot_precip_animation      Spatiotemporal AORC precip mp4
-plot_runup_overtopping     Runup gauge map + per-gauge crest overtopping screen
+plot_forcing_qa_standard      Pre-run 6-panel QA for surge + rain builds
+plot_forcing_qa_waves         Pre-run 6-panel QA for surge + rain + SnapWave builds
+plot_flood_animation          Static peak-depth summary + flood/ocean mp4 (coastal)
+plot_inland_flood_animation   Static peak-depth summary + flood/discharge mp4 (inland)
+plot_postrun_diagnostics      3-panel post-run check (soil frac / his.nc zs / precip)
+plot_precip_animation         Spatiotemporal AORC precip mp4
+plot_runup_overtopping        Runup gauge map + per-gauge crest overtopping screen
 """
 from __future__ import annotations
 
@@ -157,6 +158,240 @@ def _format_datetime_axis(ax, times: pd.DatetimeIndex) -> None:
     ax.tick_params(axis="x", labelrotation=30)
     for label in ax.get_xticklabels():
         label.set_ha("right")
+
+
+def _read_json_if_exists(path: Path) -> dict:
+    path = Path(path)
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _resolve_manifest_path(run_root: Path, value) -> Path | None:
+    if value in (None, ""):
+        return None
+    path = Path(str(value))
+    if path.is_absolute() or "://" in str(value):
+        return path
+    for base in (run_root, *run_root.parents):
+        if (base / "config.yaml").exists():
+            return base / path
+        if base.name == "data" and base.parent.exists():
+            return base.parent / path
+    return run_root / path
+
+
+def _dataset_time_index(data_array) -> pd.DatetimeIndex | None:
+    if "time" not in data_array.coords:
+        return None
+    try:
+        return pd.DatetimeIndex(pd.to_datetime(data_array["time"].values))
+    except Exception:
+        return None
+
+
+def _plot_missing_panel(ax, title: str, message: str) -> None:
+    ax.set_title(title)
+    _axis_message(ax, message)
+
+
+def plot_inland_coupled_forcing_qa(
+    *,
+    forcing_manifest,
+    out_dir=None,
+    event_id=None,
+    event_label=None,
+):
+    """Pre-run QA for an inland Wflow-SFINCS staged scenario.
+
+    The inland coupled path is fluvial/pluvial: Wflow produces a discharge NetCDF
+    consumed by SFINCS, and optional direct rainfall is described in the forcing
+    manifest. The figure intentionally avoids coastal water-level panels used by
+    Marshfield and instead audits discharge handoff, event-driver metadata, and
+    staged static hydrology files.
+    """
+    forcing_manifest = Path(forcing_manifest)
+    manifest = _read_json_if_exists(forcing_manifest)
+    run_root = forcing_manifest.parent
+    event_id = str(event_id or manifest.get("event_id") or run_root.name)
+    event_label = str(event_label or event_id)
+    out_dir = Path(out_dir) if out_dir is not None else run_root / "diagnostics"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    discharge_path = _resolve_manifest_path(run_root, manifest.get("wflow_discharge_forcing"))
+
+    summary = {
+        "event": event_label,
+        "run_root": str(run_root),
+        "forcing_mode": manifest.get("forcing_mode"),
+        "direct_rainfall_enabled": manifest.get("direct_rainfall_enabled"),
+        "wflow_discharge_forcing": None if discharge_path is None else str(discharge_path),
+        "rainfall_member_id": manifest.get("rainfall_member_id"),
+        "soil_moisture_member_id": manifest.get("soil_moisture_member_id"),
+    }
+    display(pd.Series(summary, name="inland_forcing_summary"))
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 8), constrained_layout=True)
+    axes = axes.ravel()
+
+    if discharge_path is not None and discharge_path.exists():
+        with xr.open_dataset(discharge_path) as ds:
+            names = list(ds.data_vars)
+            variable = "discharge" if "discharge" in ds else names[0]
+            data = ds[variable].load()
+        if "time" in data.dims:
+            dims = tuple(dim for dim in data.dims if dim != "time")
+            frame = pd.DataFrame(
+                {
+                    "mean": data.mean(dims, skipna=True).to_pandas() if dims else data.to_pandas(),
+                    "max": data.max(dims, skipna=True).to_pandas() if dims else data.to_pandas(),
+                }
+            )
+            frame.plot(ax=axes[0], color=["#3182bd", "#08519c"], linewidth=1.8)
+            _format_datetime_axis(axes[0], pd.DatetimeIndex(frame.index))
+            axes[0].set_ylabel(f"{variable}")
+            axes[0].set_title("Wflow discharge handoff to SFINCS")
+            axes[0].grid(True, alpha=0.25)
+        else:
+            values = np.asarray(data.values, dtype=float).ravel()
+            axes[0].hist(values[np.isfinite(values)], bins=40, color="#3182bd", alpha=0.75)
+            axes[0].set_title("Wflow discharge handoff distribution")
+            axes[0].set_xlabel(variable)
+    else:
+        _plot_missing_panel(
+            axes[0],
+            "Wflow discharge handoff to SFINCS",
+            "No sfincs_discharge.nc yet\nrun Wflow replay first",
+        )
+
+    if discharge_path is not None and discharge_path.exists():
+        with xr.open_dataset(discharge_path) as ds:
+            variable = "discharge" if "discharge" in ds else next(iter(ds.data_vars))
+            data = ds[variable]
+            snapshot = data.max("time", skipna=True) if "time" in data.dims else data
+            if {"x", "y"} & set(snapshot.coords):
+                snapshot.plot(ax=axes[1], cmap="Blues", cbar_kwargs=dict(shrink=0.8, label=variable))
+                axes[1].set_aspect("equal", adjustable="datalim")
+                axes[1].set_title("Peak Wflow discharge forcing")
+            else:
+                axes[1].axis("off")
+                axes[1].table(
+                    cellText=[[name, str(value)] for name, value in summary.items()],
+                    colLabels=["field", "value"],
+                    loc="center",
+                )
+                axes[1].set_title("Forcing manifest summary")
+    else:
+        axes[1].axis("off")
+        axes[1].table(
+            cellText=[[name, "" if value is None else str(value)] for name, value in summary.items()],
+            colLabels=["field", "value"],
+            loc="center",
+        )
+        axes[1].set_title("Forcing manifest summary")
+
+    smax = np.fromfile(run_root / "sfincs.smax", dtype="<f4") if (run_root / "sfincs.smax").exists() else np.array([])
+    seff = np.fromfile(run_root / "sfincs.seff", dtype="<f4") if (run_root / "sfincs.seff").exists() else np.array([])
+    if smax.size and seff.size:
+        valid = np.isfinite(smax) & np.isfinite(seff) & (smax > 0)
+        frac = seff[valid] / smax[valid] if valid.any() else np.array([])
+        axes[2].hist(frac, bins=40, color="#6baed6", edgecolor="white", linewidth=0.4)
+        if frac.size:
+            axes[2].axvline(float(np.median(frac)), color="#08519c", linestyle="--", label=f"median={float(np.median(frac)):.2f}")
+            axes[2].legend(fontsize=8)
+        axes[2].set_xlabel("seff / smax")
+        axes[2].set_title("Initial SFINCS soil saturation")
+    else:
+        _plot_missing_panel(axes[2], "Initial SFINCS soil saturation", "No smax/seff files staged")
+
+    ks = np.fromfile(run_root / "sfincs.ks", dtype="<f4") if (run_root / "sfincs.ks").exists() else np.array([])
+    if ks.size:
+        finite_ks = ks[np.isfinite(ks) & (ks > 0)]
+        axes[3].hist(finite_ks, bins=50, color="#8c6d31", alpha=0.75)
+        if finite_ks.size:
+            p50, p95 = np.percentile(finite_ks, [50, 95])
+            axes[3].set_title(f"Ksat (p50={p50:.1f}, p95={p95:.1f})")
+        else:
+            axes[3].set_title("Infiltration hydraulic conductivity")
+        axes[3].set_xlabel("mm/hr")
+    else:
+        _plot_missing_panel(axes[3], "Infiltration hydraulic conductivity", "No sfincs.ks file staged")
+
+    for ax in axes:
+        if ax.has_data():
+            ax.grid(True, alpha=0.25)
+    out_path = out_dir / f"{event_id}_inland_forcing_qa.png"
+    fig.savefig(out_path, dpi=160)
+    plt.show()
+    print("Saved inland forcing QA plot:", out_path)
+    return out_path
+
+
+def plot_inland_coupled_postrun_diagnostics(
+    *,
+    run_root,
+    event_label=None,
+    out_dir=None,
+):
+    """Post-run inland coupled diagnostics for SFINCS outputs when present."""
+    run_root = Path(run_root)
+    event_label = str(event_label or run_root.name)
+    out_dir = Path(out_dir) if out_dir is not None else run_root / "diagnostics"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    fig, axes = plt.subplots(1, 3, figsize=(16, 4.5), constrained_layout=True)
+    map_path = run_root / "sfincs_map.nc"
+    if map_path.exists():
+        with xr.open_dataset(map_path, decode_times=False) as ds:
+            if {"zs", "zb"}.issubset(ds.data_vars):
+                depth = (ds["zs"] - ds["zb"]).where(ds["zs"] > ds["zb"])
+                peak = depth.max("time", skipna=True) if "time" in depth.dims else depth
+                peak.plot(ax=axes[0], cmap="Blues", cbar_kwargs=dict(shrink=0.8, label="depth [m]"))
+                axes[0].set_title("Peak SFINCS flood depth")
+                axes[0].set_aspect("equal", adjustable="datalim")
+            else:
+                _plot_missing_panel(axes[0], "Peak SFINCS flood depth", "sfincs_map.nc has no zs/zb")
+    else:
+        _plot_missing_panel(axes[0], "Peak SFINCS flood depth", "sfincs_map.nc not found")
+
+    his_path = run_root / "sfincs_his.nc"
+    if his_path.exists():
+        run_start = _resolve_run_start(run_root)
+        with xr.open_dataset(his_path, decode_times=False) as his:
+            times = pd.DatetimeIndex(run_start + pd.to_timedelta(his["time"].values.astype(float), unit="s"))
+            variable = "point_zs" if "point_zs" in his.data_vars else next(iter(his.data_vars), None)
+            if variable is not None:
+                values = his[variable].values
+                series = np.asarray(values[:, 0] if values.ndim > 1 else values, dtype=float)
+                axes[1].plot(times, np.where(np.isfinite(series), series, np.nan), color="#2171b5", linewidth=1.8)
+                axes[1].set_title(f"{variable} hydrograph")
+                axes[1].set_ylabel("water level [m]")
+                _format_datetime_axis(axes[1], times)
+            else:
+                _plot_missing_panel(axes[1], "SFINCS hydrograph", "sfincs_his.nc has no variables")
+    else:
+        _plot_missing_panel(axes[1], "SFINCS hydrograph", "sfincs_his.nc not found")
+
+    manifest = _read_json_if_exists(run_root / "forcing_manifest.json")
+    axes[2].axis("off")
+    rows = [
+        ["event_id", manifest.get("event_id", run_root.name)],
+        ["forcing_mode", manifest.get("forcing_mode", "")],
+        ["wflow_source_variable", manifest.get("wflow_source_variable", "")],
+        ["direct_rainfall_enabled", manifest.get("direct_rainfall_enabled", "")],
+        ["wflow_discharge_forcing", manifest.get("wflow_discharge_forcing", "")],
+    ]
+    axes[2].table(cellText=rows, colLabels=["field", "value"], loc="center")
+    axes[2].set_title("Coupling manifest")
+
+    for ax in axes[:2]:
+        ax.grid(True, alpha=0.25)
+    fig.suptitle(f"{event_label} inland coupled post-run diagnostics", fontsize=11, y=1.02)
+    out_path = out_dir / f"{run_root.name}_inland_postrun_diagnostics.png"
+    fig.savefig(out_path, dpi=160)
+    plt.show()
+    print("Saved inland post-run diagnostics:", out_path)
+    return out_path
 
 
 # ─── plot_forcing_qa_standard ─────────────────────────────────────────────────
@@ -605,6 +840,199 @@ def plot_flood_animation(
 
     ani = animation.FuncAnimation(fig_anim, _update, frames=n_steps, interval=120, blit=False)
     out_mp4 = out_dir / f"{event_id}_flood_ocean_animation.mp4"
+    ani.save(
+        str(out_mp4),
+        writer=animation.FFMpegWriter(
+            fps=10, bitrate=1800, codec="libx264",
+            extra_args=["-pix_fmt", "yuv420p"],
+        ),
+        dpi=140,
+        savefig_kwargs={"facecolor": fig_anim.get_facecolor()},
+    )
+    plt.close(fig_anim)
+    print("Saved animation:", out_mp4)
+    return out_mp4
+
+
+def _grid_cell_area_m2(x: np.ndarray, y: np.ndarray, fallback: float = 100.0) -> float:
+    """Median |Δx|·|Δy| of a (regular) SFINCS grid in metres², for flooded-area sums."""
+    def _spacing(arr, axis):
+        if arr.ndim > 1:
+            diffs = np.abs(np.diff(arr, axis=axis))
+        else:
+            diffs = np.abs(np.diff(arr))
+        diffs = diffs[np.isfinite(diffs) & (diffs > 0)]
+        return float(np.median(diffs)) if diffs.size else fallback
+
+    dx = _spacing(x, axis=-1)
+    dy = _spacing(y, axis=0)
+    area = dx * dy
+    return area if np.isfinite(area) and area > 0 else fallback * fallback
+
+
+def plot_inland_flood_animation(
+    *,
+    run_root: Path,
+    out_dir: Path,
+    event_id: str,
+    event_label: str,
+    discharge,
+    t_start: pd.Timestamp,
+    huthresh: float = 0.02,
+    display_depth_threshold: float = 0.05,
+    bmap_zoom: int = 12,
+) -> Path:
+    """
+    Inland (fluvial/pluvial) counterpart to ``plot_flood_animation``.
+
+    Static peak-depth summary (shown inline) + flood/discharge mp4 (saved).
+
+    The coastal version renders an ocean surface anomaly and a boundary
+    water-level panel; neither exists for an inland Wflow→SFINCS run. This version
+    animates land flood depth over a satellite basemap with a synced discharge
+    hydrograph (the inflow fed to the Wflow→SFINCS ``src`` points) carrying a
+    moving time cursor.
+
+    Parameters
+    ----------
+    discharge : pandas Series or DataFrame
+        Inflow discharge fed to the SFINCS ``src`` points. A DataFrame (time ×
+        src) is summed to a total-inflow line; a Series is used directly. If the
+        index is not datetime it is rebuilt hourly from ``t_start``.
+    display_depth_threshold : float
+        Minimum flood depth (m) rendered in the animation. Filters numerical
+        noise without changing SFINCS's wet/dry threshold (HUTHRESH).
+    huthresh : float
+        SFINCS HUTHRESH value — used only in the diagnostic print statement.
+
+    Returns
+    -------
+    Path to the saved mp4 file.
+    """
+    from sfincs_runs.scenarios.io import parse_sfincs_inp
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    inp = parse_sfincs_inp(run_root / "sfincs.inp")
+    epsg = int(inp.get("epsg", 26919))
+    tstart = pd.to_datetime(str(inp["tstart"]), format="%Y%m%d %H%M%S")
+
+    with xr.open_dataset(run_root / "sfincs_map.nc", decode_times=False) as ds:
+        x = ds["x"].values.astype(float)
+        y = ds["y"].values.astype(float)
+        time_s = ds["time"].values.astype(float)
+        zb = ds["zb"].values.astype(float)
+        msk = ds["msk"].values.astype(float)
+        zs = ds["zs"].values.astype(float)
+
+    timestamps = [tstart + pd.Timedelta(seconds=float(t)) for t in time_s]
+    n_steps = len(timestamps)
+    active = np.isfinite(msk) & (msk > 0)
+
+    depth_all = zs - zb[None, :, :]
+    land_depth = np.where(active[None, :, :] & (depth_all > display_depth_threshold), depth_all, np.nan)
+    peak_land_depth = np.nanmax(land_depth, axis=0)
+
+    land_vals = peak_land_depth[np.isfinite(peak_land_depth)]
+    depth_vmax = float(np.ceil(np.nanpercentile(land_vals, 99) * 2) / 2) if land_vals.size else 2.0
+    depth_vmax = max(depth_vmax, 0.5)
+
+    px_area = _grid_cell_area_m2(x, y)
+    wet_km2 = np.array([float(np.sum(np.isfinite(land_depth[i])) * px_area / 1e6) for i in range(n_steps)])
+    peak_t_idx = int(np.nanargmax(np.nan_to_num(np.nanmean(np.where(np.isfinite(land_depth), land_depth, 0.0), axis=(1, 2)))))
+    peak_time = timestamps[peak_t_idx]
+
+    # Discharge → total-inflow line on a datetime axis sharing the map clock.
+    disch = discharge.sum(axis=1) if isinstance(discharge, pd.DataFrame) else pd.Series(discharge)
+    if not isinstance(disch.index, pd.DatetimeIndex):
+        disch = pd.Series(disch.to_numpy(), index=pd.date_range(t_start, periods=len(disch), freq="h"))
+    disch = disch.sort_index()
+
+    flood_norm = mcolors.Normalize(vmin=0, vmax=depth_vmax)
+    x_min, x_max = float(np.nanmin(x)), float(np.nanmax(x))
+    y_min, y_max = float(np.nanmin(y)), float(np.nanmax(y))
+
+    print(f"Frames: {n_steps}")
+    print(f"Peak flooded area: {wet_km2[peak_t_idx]:.2f} km² at {peak_time}")
+    print(f"Peak inflow: {float(disch.max()):.1f} m³/s")
+    print(f"Display depth threshold: {display_depth_threshold*100:.0f} cm  (HUTHRESH={huthresh*100:.0f} cm)")
+
+    # Static summary panel: discharge hydrograph + peak flood depth map.
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    disch.plot(ax=axes[0], color="#08519c", linewidth=2, label="total inflow")
+    axes[0].axvline(peak_time, color="#444444", linestyle=":", linewidth=1.5, label="peak flood time")
+    axes[0].set_title(f"{event_label} Wflow→SFINCS inflow discharge")
+    axes[0].set_ylabel("Discharge (m³/s)")
+    axes[0].grid(True, alpha=0.25)
+    axes[0].legend()
+    mesh = axes[1].pcolormesh(
+        x, y, np.ma.masked_invalid(peak_land_depth),
+        cmap="Blues", norm=flood_norm, shading="auto", rasterized=True,
+    )
+    axes[1].set_title(f"Peak flood depth ({peak_time:%Y-%m-%d %H:%M})")
+    axes[1].set_xlabel("Easting (m)")
+    axes[1].set_ylabel("Northing (m)")
+    axes[1].set_aspect("equal")
+    plt.colorbar(mesh, ax=axes[1], fraction=0.046, pad=0.04, label="Flood depth (m)")
+    plt.tight_layout()
+    plt.show()
+
+    # Animation: flood depth over satellite imagery + synced discharge hydrograph.
+    BMAP_SOURCE = ctx.providers.Esri.WorldImagery
+
+    fig_anim = plt.figure(figsize=(10, 10))
+    fig_anim.patch.set_facecolor("#1a1a2e")
+    grid = gridspec.GridSpec(2, 1, height_ratios=[4, 1], hspace=0.18, figure=fig_anim)
+    ax_map = fig_anim.add_subplot(grid[0])
+    ax_hyd = fig_anim.add_subplot(grid[1])
+
+    ax_map.set_facecolor("#1a1a2e")
+    ax_map.set_xlim(x_min, x_max)
+    ax_map.set_ylim(y_min, y_max)
+    try:
+        ctx.add_basemap(ax_map, crs=f"EPSG:{epsg}", source=BMAP_SOURCE, zoom=bmap_zoom, attribution=False)
+    except Exception as exc:
+        print(f"Satellite basemap unavailable: {exc}")
+    ax_map.set_xlim(x_min, x_max)
+    ax_map.set_ylim(y_min, y_max)
+    ax_map.set_xlabel("Easting (m)", color="white")
+    ax_map.set_ylabel("Northing (m)", color="white")
+    ax_map.tick_params(colors="white")
+    for spine in ax_map.spines.values():
+        spine.set_edgecolor("white")
+    ax_map.set_aspect("equal")
+
+    flood_mesh = ax_map.pcolormesh(
+        x, y, np.ma.masked_invalid(land_depth[0]),
+        cmap="Blues", norm=flood_norm, shading="auto",
+        rasterized=True, alpha=0.78, zorder=2,
+    )
+    cbar = fig_anim.colorbar(flood_mesh, ax=ax_map, fraction=0.04, pad=0.02, label="Flood depth (m)")
+    cbar.ax.yaxis.label.set_color("white")
+    cbar.ax.tick_params(colors="white")
+    title_txt = ax_map.set_title("", color="white", fontsize=10, pad=8)
+
+    ax_hyd.set_facecolor("#1a1a2e")
+    ax_hyd.plot(disch.index, disch.to_numpy(), color="#6baed6", linewidth=1.8)
+    ax_hyd.set_ylabel("Inflow (m³/s)", color="white", fontsize=9)
+    ax_hyd.tick_params(colors="white", labelsize=8)
+    for spine in ax_hyd.spines.values():
+        spine.set_edgecolor("white")
+    ax_hyd.grid(True, alpha=0.2)
+    _format_datetime_axis(ax_hyd, pd.DatetimeIndex(disch.index))
+    cursor = ax_hyd.axvline(timestamps[0], color="#fd8d3c", linewidth=1.6)
+
+    def _update(i):
+        flood_mesh.set_array(np.ma.masked_invalid(land_depth[i]).ravel())
+        cursor.set_xdata([timestamps[i], timestamps[i]])
+        title_txt.set_text(
+            f"{event_label} | {timestamps[i]:%Y-%m-%d %H:%M} | "
+            f"t+{int(time_s[i] // 3600):3d}h | flooded={wet_km2[i]:.2f} km²"
+        )
+        return flood_mesh, cursor, title_txt
+
+    ani = animation.FuncAnimation(fig_anim, _update, frames=n_steps, interval=120, blit=False)
+    out_mp4 = out_dir / f"{event_id}_flood_discharge_animation.mp4"
     ani.save(
         str(out_mp4),
         writer=animation.FFMpegWriter(

@@ -72,6 +72,101 @@ def test_build_study_area_from_asset_registry_writes_location_artifacts(tmp_path
     assert metadata["n_points"] == 6
 
 
+def test_build_study_area_preserves_disconnected_smart_ds_subregions_from_bridged_geojson(tmp_path):
+    location_root = tmp_path / "locations" / "greensboro"
+    source = location_root / "data/static/aoi/dft_power_extent.geojson"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {"region_id": "greensboro"},
+                        "geometry": {
+                            "type": "Polygon",
+                            "coordinates": [
+                                [
+                                    [0.0, 0.0],
+                                    [0.0, 1.0],
+                                    [1.0, 1.0],
+                                    [6.0, 6.0],
+                                    [7.0, 6.0],
+                                    [7.0, 7.0],
+                                    [6.0, 7.0],
+                                    [6.0, 6.0],
+                                    [1.0, 1.0],
+                                    [1.0, 0.0],
+                                    [0.0, 0.0],
+                                ]
+                            ],
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = {
+        "project": {"name": "greensboro"},
+        "aoi": {
+            "source": "data/static/aoi/dft_power_extent.geojson",
+            "source_format": "geojson",
+            "preserve_disconnected_subregions": True,
+            "subregion_bridge_max_edge_degrees": 2.0,
+            "output": "data/static/aoi/study_area.geojson",
+            "metadata_output": "data/static/aoi/study_area.json",
+        },
+    }
+
+    result = build_study_area(config, tmp_path)
+
+    geometry = shape(json.loads(result.output_path.read_text(encoding="utf-8"))["features"][0]["geometry"])
+    assert geometry.geom_type == "MultiPolygon"
+    assert len(geometry.geoms) == 2
+    metadata = json.loads(result.metadata_path.read_text(encoding="utf-8"))
+    assert metadata["subregion_count"] == 2
+
+
+def test_build_study_area_writes_smart_ds_buscoords_subregion_features(tmp_path):
+    location_root = tmp_path / "locations" / "austin"
+    smart_ds = location_root / "data/smart_ds/2016"
+    for subregion, offset in [("P1U", 0.0), ("P2U", 10.0)]:
+        buscoords = smart_ds / subregion / "scenarios/base_timeseries/opendss_no_loadshapes/Buscoords.dss"
+        buscoords.parent.mkdir(parents=True, exist_ok=True)
+        buscoords.write_text(
+            "\n".join(
+                [
+                    f"bus_a {offset + 0.0} 0.0",
+                    f"bus_b {offset + 0.0} 1.0",
+                    f"bus_c {offset + 1.0} 1.0",
+                    f"bus_d {offset + 1.0} 0.0",
+                ]
+            ),
+            encoding="utf-8",
+        )
+    config = {
+        "project": {"name": "austin"},
+        "aoi": {
+            "source": "data/smart_ds/2016",
+            "source_format": "smart_ds_buscoords",
+            "preserve_disconnected_subregions": True,
+            "alpha_ratio": 0.1,
+            "output": "data/static/aoi/study_area.geojson",
+            "metadata_output": "data/static/aoi/study_area.json",
+        },
+    }
+
+    result = build_study_area(config, tmp_path)
+
+    payload = json.loads(result.output_path.read_text(encoding="utf-8"))
+    assert [feature["properties"]["subregion_id"] for feature in payload["features"]] == ["P1U", "P2U"]
+    metadata = json.loads(result.metadata_path.read_text(encoding="utf-8"))
+    assert metadata["subregion_count"] == 2
+    assert metadata["subregion_ids"] == ["P1U", "P2U"]
+
+
 def test_marshfield_location_builds_grid_footprint_from_power_aoi():
     config = define_location(repo_root / "locations/marshfield/config.yaml").config
 

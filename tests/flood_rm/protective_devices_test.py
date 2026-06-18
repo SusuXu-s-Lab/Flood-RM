@@ -1,6 +1,6 @@
 import pandas as pd
 
-from power.protective_devices import derive_lateral_fuses
+from power.ssap_notebook import derive_lateral_fuses
 from power.synthetic_validation import _fuse_counts_by_feeder
 
 

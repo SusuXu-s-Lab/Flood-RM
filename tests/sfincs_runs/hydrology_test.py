@@ -267,6 +267,8 @@ def test_write_ssurgo_infiltration_rasters_aligns_to_template(tmp_path):
     assert float(ksat[0, 0]) == pytest.approx(360.0)
     assert float(ksat[0, 3]) == pytest.approx(36.0)
     assert summary["rasterized_polygons"] == 2
+    assert not (tmp_path / ".hsg.tmp.tif").exists()
+    assert not (tmp_path / ".ksat.tmp.tif").exists()
 
 
 def test_write_ssurgo_infiltration_rasters_masks_to_land_domain(tmp_path):
@@ -464,3 +466,113 @@ def test_setup_hydromt_infiltration_registers_conditioned_ksat_raster(tmp_path):
     assert sf.quadtree_infiltration.kwargs["ksat"] == "ksat"
     assert sf.quadtree_infiltration.kwargs["factor_ksat"] == pytest.approx(1.0 / 3.6)
     assert summary["ksat_conditioning"]["capped_fraction"] == pytest.approx(1.0)
+
+
+def test_setup_hydromt_infiltration_prefers_regular_grid_component(tmp_path):
+    hsg = tmp_path / "hsg.tif"
+    ksat = tmp_path / "ksat.tif"
+    hsg.write_text("placeholder", encoding="utf-8")
+    ksat.write_text("placeholder", encoding="utf-8")
+
+    class FakeCatalog:
+        def __init__(self):
+            self.sources = {}
+
+        def from_dict(self, data):
+            self.sources.update(data)
+
+    class FakeInfiltration:
+        def __init__(self):
+            self.kwargs = None
+
+        def create_cn_with_recovery(self, **kwargs):
+            self.kwargs = kwargs
+
+    class FakeSf:
+        def __init__(self):
+            self.data_catalog = FakeCatalog()
+            self.infiltration = FakeInfiltration()
+            self.quadtree_infiltration = FakeInfiltration()
+
+    sf = FakeSf()
+    summary = setup_hydromt_infiltration(
+        sf,
+        {
+            "event_drivers": ["rainfall", "soil_moisture"],
+            "coastal_wave_coupling": {
+                "hydrology": {
+                    "infiltration": {
+                        "enabled": True,
+                        "method": "cn_with_recovery",
+                        "lulc": "worldcover",
+                        "hsg": str(hsg),
+                        "ksat": str(ksat),
+                        "effective": 0.5,
+                    }
+                }
+            },
+        },
+        {"location_root": tmp_path},
+    )
+
+    assert summary["written"] is True
+    assert sf.infiltration.kwargs["hsg"] == "hsg"
+    assert sf.infiltration.kwargs["ksat"] == "ksat"
+    assert sf.quadtree_infiltration.kwargs is None
+
+
+def test_setup_hydromt_infiltration_uses_quadtree_component_for_quadtree_grid(tmp_path):
+    hsg = tmp_path / "hsg.tif"
+    ksat = tmp_path / "ksat.tif"
+    hsg.write_text("placeholder", encoding="utf-8")
+    ksat.write_text("placeholder", encoding="utf-8")
+
+    class FakeCatalog:
+        def __init__(self):
+            self.sources = {}
+
+        def from_dict(self, data):
+            self.sources.update(data)
+
+    class RegularInfiltration:
+        def create_cn_with_recovery(self, **kwargs):
+            raise AttributeError("'SfincsGrid' object has no attribute 'nmax'")
+
+    class QuadtreeInfiltration:
+        def __init__(self):
+            self.kwargs = None
+
+        def create_cn_with_recovery(self, **kwargs):
+            self.kwargs = kwargs
+
+    class FakeSf:
+        def __init__(self):
+            self.grid_type = "quadtree"
+            self.data_catalog = FakeCatalog()
+            self.infiltration = RegularInfiltration()
+            self.quadtree_infiltration = QuadtreeInfiltration()
+
+    sf = FakeSf()
+    summary = setup_hydromt_infiltration(
+        sf,
+        {
+            "event_drivers": ["rainfall", "soil_moisture"],
+            "coastal_wave_coupling": {
+                "hydrology": {
+                    "infiltration": {
+                        "enabled": True,
+                        "method": "cn_with_recovery",
+                        "lulc": "worldcover",
+                        "hsg": str(hsg),
+                        "ksat": str(ksat),
+                        "effective": 0.5,
+                    }
+                }
+            },
+        },
+        {"location_root": tmp_path},
+    )
+
+    assert summary["written"] is True
+    assert sf.quadtree_infiltration.kwargs["hsg"] == "hsg"
+    assert sf.quadtree_infiltration.kwargs["ksat"] == "ksat"

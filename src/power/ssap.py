@@ -1,46 +1,4 @@
-"""Sectionalizing Switch Allocation Problem (SSAP) solver.
-
-Stage B switch siting per
-`docs/power/methodology/rpop_ready_switch_siting.md`: choose ``K_f``
-admissible ordinary-line edges of a rooted radial feeder to receive
-normally-closed sectionalizing switches so the expected unserved load product
-is minimized.
-
-    minimize  sum over zones z of  L(z) * E(z)
-
-Switch edges partition the rooted feeder into ``K_f + 1`` zones. Each switch
-edge is counted toward the exposure of its downstream zone (because faulting
-on the switch edge opens that switch and isolates the downstream subtree).
-The nominal Marshfield DNMG run uses homogeneous exposure (``1.0`` per edge);
-line-length-weighted exposure remains a sensitivity view. The notebook builds
-transformer-bridged feeder islands for topology/load accounting, then passes
-only ordinary physical line edges that satisfy documented admissibility gates
-as switch candidates.
-
-Two exact algorithms are available via the ``algorithm`` parameter to
-:func:`solve_ssap_per_feeder`:
-
-- ``"tree_dp"`` (default): polynomial-time bottom-up dynamic programming on
-  the rooted feeder arborescence per Usberti et al. 2025 with Galias 2019
-  state structure. Each subtree DP state tracks
-  ``(committed_cost, residual_load, residual_exposure)`` plus the selected
-  switch set; Pareto-frontier pruning keeps the state count bounded by the
-  3D non-dominated frontier. Suitable for Marshfield's documented admissible
-  candidate sets.
-- ``"brute_force"``: exhaustive enumeration of K-subsets of edges. Retained
-  as a parity oracle for tests; only viable on toy feeders (~10 edges).
-
-Both algorithms solve the same objective exactly for the supplied
-``RootedFeeder`` and supplied ``eligible_edges``. The brute-force solver
-documents the canonical optimum for small instances; the DP delivers the
-same answer in polynomial time.
-
-Citations (recorded in switch-row provenance by the caller):
-- Levitin, Mazal-Tov, Elmakis 1995, DOI 10.1016/0378-7796(95)01002-5
-- Billinton, Jonnavithula 1996, DOI 10.1109/61.517529
-- Galias 2019, DOI 10.1109/TPWRS.2019.2909836
-- Usberti et al. 2025, DOI 10.1016/j.epsr.2025.112016
-"""
+"""Sectionalizing Switch Allocation Problem (SSAP) solver."""
 
 from __future__ import annotations
 

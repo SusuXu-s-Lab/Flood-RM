@@ -4,7 +4,7 @@ from shapely.geometry import MultiPolygon
 from shapely.geometry import Point
 from shapely.geometry import box
 
-from power.shift_parcels import fetch_building_parcels_in_geometry
+from power.source_inputs import fetch_building_parcels_in_geometry
 
 
 def test_fetch_building_parcels_preserves_lon_lat_polygon_order(monkeypatch):
@@ -23,7 +23,7 @@ def test_fetch_building_parcels_preserves_lon_lat_polygon_order(monkeypatch):
             crs="EPSG:4326",
         )
 
-    monkeypatch.setattr("power.shift_parcels.ox.features_from_polygon", fake_features_from_polygon)
+    monkeypatch.setattr("power.source_inputs.ox.features_from_polygon", fake_features_from_polygon)
 
     parcels = fetch_building_parcels_in_geometry(box(-70.72, 42.08, -70.68, 42.12))
 
@@ -51,7 +51,7 @@ def test_fetch_building_parcels_skips_empty_multipolygon_parts(monkeypatch):
             raise response
         return response
 
-    monkeypatch.setattr("power.shift_parcels.ox.features_from_polygon", fake_features_from_polygon)
+    monkeypatch.setattr("power.source_inputs.ox.features_from_polygon", fake_features_from_polygon)
     geometry = MultiPolygon(
         [
             box(-70.72, 42.08, -70.70, 42.10),

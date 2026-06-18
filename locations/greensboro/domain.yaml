@@ -1,0 +1,29 @@
+# Greensboro inland domain configuration.
+
+paths:
+  data_root: locations/greensboro/data
+
+sfincs_domain_set:
+  include_domain_ids:              # SMART-DS subregion(s) to model, by SMART-DS id
+    - greensboro_rural             # the rural subregion (was the positional "east" blob)
+
+wflow:
+  domain_set:
+    review_required: false
+
+inland_coupling:
+  infiltration:
+    enabled: true
+    method: cn_with_recovery
+    lulc: data/static/processed/landcover_region_setup.tif
+    hsg: data/static/soils/hsg_greensboro.tif                          # per-location SSURGO hydrologic soil group
+    ksat: data/static/soils/ksat_mmhr_greensboro.tif                   # per-location saturated conductivity
+    ksat_effective: data/static/soils/ksat_mmhr_greensboro_effective.tif
+    ksat_scale_factor: 0.1
+    ksat_max_mmhr: 75.0
+    effective: 0.5
+    effective_source: scalar_until_event_nwm_soilsat_top_update
+    reclass_table: null
+    factor_ksat: 0.2777777777777778
+    block_size: 2000
+    review_required: true

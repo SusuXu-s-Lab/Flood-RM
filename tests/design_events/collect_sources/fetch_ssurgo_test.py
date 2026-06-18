@@ -2,6 +2,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import geopandas as gpd
+import requests
 from shapely.geometry import Polygon
 
 from design_events.collect_sources.fetch_ssurgo import (
@@ -22,6 +23,13 @@ class FakeResponse:
 
     def json(self):
         return self.payload
+
+
+class BadRequestResponse(FakeResponse):
+    status_code = 400
+
+    def raise_for_status(self):
+        raise requests.HTTPError("400 Client Error: Bad Request", response=self)
 
 
 def test_build_ssurgo_wfs_url_uses_soil_data_access_bbox():
@@ -83,6 +91,51 @@ def test_fetch_ssurgo_mapunit_polygons_writes_geopackage(tmp_path):
     assert list(written["mukey"]) == ["1"]
 
 
+def test_fetch_ssurgo_mapunit_polygons_tiles_large_bbox_after_bad_request(tmp_path):
+    calls = []
+
+    def fake_get(url, timeout):
+        bbox = tuple(float(value) for value in parse_qs(urlparse(url).query)["bbox"][0].split(","))
+        calls.append(bbox)
+        west, south, east, north = bbox
+        if east - west > 1.0 or north - south > 1.0:
+            return BadRequestResponse()
+        return FakeResponse()
+
+    def fake_read_file(path):
+        index = int(Path(path).stem.rsplit("_", 1)[-1])
+        west = -80.0 + 0.01 * index
+        return gpd.GeoDataFrame(
+            {"mukey": [str(index)]},
+            geometry=[
+                Polygon(
+                    [
+                        (west, 35.0),
+                        (west + 0.001, 35.0),
+                        (west + 0.001, 35.001),
+                        (west, 35.001),
+                    ]
+                )
+            ],
+            crs="EPSG:4326",
+        )
+
+    output_path = tmp_path / "ssurgo_mapunitpoly.gpkg"
+
+    soils = fetch_ssurgo_mapunit_polygons(
+        bbox_wgs84=(-80.3, 35.5, -78.5, 36.9),
+        output_path=output_path,
+        session_get=fake_get,
+        read_file=fake_read_file,
+    )
+
+    assert len(calls) == 13
+    assert all((east - west) <= 0.5 and (north - south) <= 0.5 for west, south, east, north in calls[1:])
+    assert output_path.exists()
+    assert len(soils) == 12
+    assert sorted(soils["mukey"].astype(str), key=int) == [str(index) for index in range(12)]
+
+
 def test_normalize_ssurgo_axis_order_repairs_wfs_lat_lon_coordinates():
     soils = gpd.GeoDataFrame(
         {"mukey": ["1"]},
@@ -113,9 +166,21 @@ def test_fetch_ssurgo_mapunit_attributes_writes_hsg_and_ksat_table(tmp_path):
         return FakeResponse(
             payload={
                 "Table": [
-                    ["mukey", "hydgrp", "ksat_r", "hzdept_r", "hzdepb_r"],
-                    ["1001", "B", 12.5, 0, 20],
-                    ["1002", "C/D", 2.0, 0, 15],
+                    [
+                        "mukey",
+                        "hydgrp",
+                        "ksat_r",
+                        "hzdept_r",
+                        "hzdepb_r",
+                        "sandtotal_r",
+                        "silttotal_r",
+                        "claytotal_r",
+                        "dbthirdbar_r",
+                        "om_r",
+                        "ph1to1h2o_r",
+                    ],
+                    ["1001", "B", 12.5, 0, 20, 55, 30, 15, 1.4, 2.0, 6.4],
+                    ["1002", "C/D", 2.0, 0, 15, 35, 35, 30, 1.5, 1.2, 5.8],
                 ]
             }
         )
@@ -132,6 +197,20 @@ def test_fetch_ssurgo_mapunit_attributes_writes_hsg_and_ksat_table(tmp_path):
     assert calls[0]["timeout"] == 45
     assert "component" in calls[0]["json"]["query"].lower()
     assert "chorizon" in calls[0]["json"]["query"].lower()
+    assert "sandtotal_r" in calls[0]["json"]["query"].lower()
+    assert "dbthirdbar_r" in calls[0]["json"]["query"].lower()
     assert out.exists()
-    assert list(attrs.columns) == ["mukey", "hydgrp", "ksat_r", "hzdept_r", "hzdepb_r"]
+    assert list(attrs.columns) == [
+        "mukey",
+        "hydgrp",
+        "ksat_r",
+        "hzdept_r",
+        "hzdepb_r",
+        "sandtotal_r",
+        "silttotal_r",
+        "claytotal_r",
+        "dbthirdbar_r",
+        "om_r",
+        "ph1to1h2o_r",
+    ]
     assert attrs["hydgrp"].tolist() == ["B", "C/D"]

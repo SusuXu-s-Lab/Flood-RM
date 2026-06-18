@@ -39,7 +39,13 @@ def build_region_setup(config, paths, *, buffer_degrees=0.01) -> RegionSetup:
         dem_output=_static_path(paths, sources, "terrain", "output"),
         landcover_output=_static_path(paths, sources, "landcover", "output"),
         bbox_output=_static_path(paths, sources, "bbox", "output"),
-        coastal_region_output=_static_path(paths, sources, "coastline", "output"),
+        coastal_region_output=_optional_static_path(
+            paths,
+            sources,
+            "coastline",
+            "output",
+            "data/static/processed/coastal_region.geojson",
+        ),
         ssurgo_output=_static_path(paths, sources, "ssurgo", "output"),
         ssurgo_attributes_output=_static_path(paths, sources, "ssurgo", "attributes_output"),
         ssurgo_hsg_output=_static_path(paths, sources, "ssurgo", "hsg_output"),
@@ -52,6 +58,11 @@ def _static_path(paths, sources, name, key) -> Path:
         value = sources[name][key]
     except KeyError as exc:
         raise ValueError(f"static_sources.{name}.{key} is required") from exc
+    return _location_path(paths, value)
+
+
+def _optional_static_path(paths, sources, name, key, default) -> Path:
+    value = sources.get(name, {}).get(key, default)
     return _location_path(paths, value)
 
 

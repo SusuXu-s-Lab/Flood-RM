@@ -1,0 +1,24 @@
+setup_grid_from_region:
+  res: 100
+  crs: EPSG:32617
+  rotated: true
+
+setup_dep:
+  datasets_dep:
+    - elevtn: dem_region
+
+setup_mask_active:
+  zmin: -0.1
+  drop_area: 100
+
+setup_mask_bounds:
+  btype: outflow
+  zmax: 2
+
+setup_subgrid:
+  datasets_dep:
+    - elevtn: dem_region
+  datasets_rgh:
+    - lulc: landcover_region
+  write_dep_tif: true
+  nr_subgrid_pixels: 6

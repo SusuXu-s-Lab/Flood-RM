@@ -1,22 +1,13 @@
+# Marshfield coastal SFINCS configuration.
+
 paths:
   data_root: locations/marshfield/data
-  outputs_root: data/event_catalog
-  sfincs_outputs_root: data/sfincs
-  static_inputs_root: data/static
-  data_catalog: data/static/data_catalogue.yaml
-  static_root: data/static/processed
-  raw_root: data/static/raw
-  observations_root: data/sources
-  base_model_root: data/sfincs/base
-  scenarios_root: data/sfincs/scenarios
-  storage_root: data/sfincs/run_outputs
-  run_root: data/sfincs/run_stage
-  stats_root: data/sfincs/stats
-  design_outputs_root: data/event_catalog
 
-grid_footprint:
-  source: data/static/aoi/study_area.geojson
+static_sources:
+  bbox:
+    output: data/static/aoi/bbox.geojson
 
+# Coastal protective structures specific to Marshfield (MassGIS 2015 public layers).
 sfincs_structures:
   enabled: true
   source_root: data/static/structures/sources
@@ -31,35 +22,14 @@ sfincs_structures:
     component: thin_dams
     source: thin_dams_marshfield_massgis_public_2015.geojson
 
-sfincs:
-  model_crs: EPSG:26919
-  boundary_file: data/sfincs/base/sfincs.bnd
-
 coastal_wave_coupling:
-  quadtree:
-    base_model_root: data/sfincs/base_quadtree_snapwave
-    res: 60
-    rotated: true
-    nr_subgrid_pixels: 6
-    waterlevel_boundary_buffer_m: 180
-
-  snapwave:
-    boundary_min_dist: 1500
-    boundary_seaward_dist: 5000
-    directional_spread_degrees: 20.0
-
   hydrology:
-    precipitation:
-      variable: APCP_surface
-      cumulative_input: true
-      time_label: right
-      buffer_m: 30000
     infiltration:
       enabled: true
       method: cn_with_recovery
       lulc: worldcover
-      hsg: data/static/soils/hsg_mfield.tif
-      ksat: data/static/soils/ksat_mmhr_mfield.tif
+      hsg: data/static/soils/hsg_mfield.tif                          # per-location SSURGO hydrologic soil group
+      ksat: data/static/soils/ksat_mmhr_mfield.tif                   # per-location saturated conductivity
       ksat_effective: data/static/soils/ksat_mmhr_mfield_effective.tif
       ksat_scale_factor: 0.1
       ksat_max_mmhr: 75.0
@@ -68,11 +38,7 @@ coastal_wave_coupling:
       reclass_table: null
       factor_ksat: 0.2777777777777778
       block_size: 2000
-    soil_moisture:
-      source: data/sources/nwm/soil_moisture.csv
-      lookback_hours: 24
-
-  runup_gauges:
+  runup_gauges:                       # site-specific overtopping transects (model-CRS coords)
     crs: EPSG:26919
     rugdepth: 0.05
     transects:
@@ -86,20 +52,3 @@ coastal_wave_coupling:
       y0: 4661150.0
       x1: 364450.0
       y1: 4661450.0
-
-scenario_build:
-  design_scenario: base
-  forcing_variable: auto
-  zsini_mode: boundary_t0
-  tref: '2000-01-01 00:00:00'
-
-scenario_run:
-  workers: 1
-  sfincs_bin: /usr/local/bin/sfincs
-  sfincs_bin_env: SFINCS_BIN
-
-scenario_stats:
-  workers: 4
-  land_threshold_m: 0.0
-  huthresh_m: 0.01
-  impact_threshold_m: 0.1

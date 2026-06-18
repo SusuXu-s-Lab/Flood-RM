@@ -4,6 +4,7 @@ __pycache__/
 build/
 dist/
 wheels/
+.agents
 *.egg-info
 .pytest_cache
 
@@ -13,15 +14,20 @@ wheels/
 # generated power-grid data (asset registry, SHIFT cache, augmented artifacts, ONM export)
 locations/*/data/power_grid/
 
+# raw SMART-DS reference datasets (austin, greensboro, ...)
+locations/*/data/smart_ds/
+
 # general folders
 code
-docs
 tests
 cluster
 tests
+docs
 
 # data
 locations/marshfield/data
+locations/austin/data
+locations/greensboro/data
 
 # local Slurm output logs
 slurm-*.out

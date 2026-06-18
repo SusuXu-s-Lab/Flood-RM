@@ -642,13 +642,7 @@ def build_manifest(
         "debug_outputs": {
             name: {"path": str(path), "sha256": maybe_sha256(path)}
             for name, path in debug_outputs.items()
-        },
-        "citations": [
-            "Wilkinson et al. 2016, FAIR Guiding Principles, https://doi.org/10.1038/sdata.2016.18",
-            "Wilson et al. 2017, Good enough practices in scientific computing, https://doi.org/10.1371/journal.pcbi.1005510",
-            "NREL ERAD, https://www.nrel.gov/research/software/erad--equitable-resiliency-analysis-tool-for-distribution-system",
-            "Duwadi et al., ERAD Zenodo software record, https://zenodo.org/records/17640811",
-        ],
+        }
     }
 
 

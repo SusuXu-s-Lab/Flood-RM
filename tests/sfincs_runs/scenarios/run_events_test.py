@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import json
 import sys
 
-from sfincs_runs.scenarios.run_events import parse_args, run_one, save_outputs, stage_event
+from sfincs_runs.scenarios.run_events import event_dirs, event_id, parse_args, run_one, save_outputs, stage_event
 
 
 def suffix(path):
@@ -17,6 +17,17 @@ def test_run_events_accepts_location_config_for_defaults():
     assert suffix(args.storage_dir) == "locations/marshfield/data/sfincs/run_outputs"
     assert suffix(args.run_root) == "locations/marshfield/data/sfincs/run_stage"
     assert args.sfincs_bin == "/usr/local/bin/sfincs"
+
+
+def test_run_events_selects_inland_usgs_event_ids(tmp_path):
+    scenarios = tmp_path / "scenarios"
+    (scenarios / "usgs_02095000_20180917T120000").mkdir(parents=True)
+    (scenarios / "evt_0001").mkdir()
+
+    assert event_id("usgs_02095000_20180917T120000") == "usgs_02095000_20180917T120000"
+    assert [path.name for path in event_dirs(scenarios, ids=["usgs_02095000_20180917T120000"])] == [
+        "usgs_02095000_20180917T120000"
+    ]
 
 
 def test_save_outputs_keeps_compact_run_receipts(tmp_path):

@@ -7,6 +7,13 @@ import pandas as pd
 
 
 default_benchmark_return_period_years = [10, 50, 100, 500]
+default_stress_training_severity_fractions = {
+    "mild": 0.05,
+    "common": 0.28,
+    "significant": 0.28,
+    "rare": 0.12,
+    "extreme": 0.27,
+}
 
 
 def select_resilience_stress_training_set(
@@ -22,6 +29,10 @@ def select_resilience_stress_training_set(
     rainfall_fraction = float(settings.get("rainfall_heavy_fraction", 0.10))
     wet_soil_fraction = float(settings.get("wet_soil_fraction", 0.10))
     wave_fraction = float(settings.get("wave_overtopping_fraction", 0.10))
+    severity_fractions = settings.get(
+        "severity_band_fractions",
+        default_stress_training_severity_fractions,
+    )
     compound_pairing = settings.get("compound_pairing", {})
 
     frame = catalog.copy().reset_index(drop=True)
@@ -37,10 +48,7 @@ def select_resilience_stress_training_set(
     _mark_wave_sensitive_events(frame, wave_fraction)
     _mark_response_threshold_events(frame)
 
-    candidates = frame[frame["_selection_reason"].map(bool)].copy()
-    if candidates.empty:
-        candidates = frame.copy()
-        _add_reason(candidates, candidates.index, "probability_catalog_representative", 1.0)
+    candidates = frame.copy()
 
     candidates["_is_mild"] = candidates.get("severity_band", "").astype(str).eq("mild")
     candidates["_rp_sort"] = candidates["sample_rp_years"].fillna(-np.inf)
@@ -49,10 +57,13 @@ def select_resilience_stress_training_set(
         ascending=[False, False, True],
     )
 
-    selected = _apply_budget(candidates, target_count, max_mild_fraction)
+    selected = _apply_budget(candidates, target_count, max_mild_fraction, severity_fractions)
     selected = selected.sort_values("sample_rp_years", na_position="last").reset_index(drop=True)
     selected["event_set"] = "resilience_stress_training"
     selected["selection_role"] = "resilience_stress_training"
+    selected["_selection_reason"] = selected["_selection_reason"].map(
+        lambda values: values if values else ["probability_catalog_representative"]
+    )
     selected["selection_reason"] = selected["_selection_reason"].map(lambda values: ";".join(sorted(set(values))))
     selected["benchmark_return_period_years"] = selected["_benchmark_rp"].map(_format_benchmarks)
     if compound_pairing.get("enabled", False):
@@ -155,8 +166,56 @@ def apply_compound_stress_pairing(
                     rainfall_time,
                     lead_hours,
                     wet=role == "wet_soil_high_rainfall",
+                    seed=seed,
                 )
 
+    return out
+
+
+def attach_antecedent_soil_moisture(catalog, soil_moisture_members, *, config=None):
+    """Stamp an antecedent soil-moisture state onto every design event (ADR-0011).
+
+    Soil moisture is not a copula axis; it is the wetness the basin carries into the storm. For
+    each row with a paired rainfall time, pick the nearest soil observation ``lead_hours`` before
+    that forcing and write the ``soil_moisture_*`` provenance the SFINCS handoff and seff staging
+    expect. This is the design-catalog counterpart to the soil pairing inside the stress set, so
+    the simulated events (synthetic design + historical tail) all run with conditioned moisture.
+    """
+    out = catalog.copy().reset_index(drop=True)
+    soil = _soil_member_table(soil_moisture_members)
+    if soil is None or soil.empty or "rainfall_member_time" not in out:
+        return out
+
+    settings = (config or {}).get("resilience_stress_training", {}).get("compound_pairing", {})
+    seed = int(settings.get("seed", 42))
+    lead_hours = float(settings.get("soil_moisture_lead_time_hours", 24))
+    season_window_days = int(settings.get("seasonal_window_days", settings.get("window_days", 45)))
+
+    for column in [
+        "soil_moisture_source",
+        "soil_moisture_member_file",
+        "soil_moisture_member_id",
+        "soil_moisture_member_time",
+        "soil_moisture_pairing_policy",
+        "soil_moisture_pairing_reference_time",
+    ]:
+        if column in out:
+            out[column] = out[column].astype("object")
+
+    rainfall_times = pd.to_datetime(out["rainfall_member_time"], errors="coerce")
+    for index in out.index:
+        rainfall_time = rainfall_times.iloc[index]
+        if pd.isna(rainfall_time):
+            continue
+        soil_member = _select_soil_member(
+            soil,
+            rainfall_time,
+            lead_hours=lead_hours,
+            season_window_days=season_window_days,
+            wet=False,
+        )
+        if soil_member is not None:
+            _assign_soil_member(out, index, soil_member, rainfall_time, lead_hours, wet=False, seed=seed)
     return out
 
 
@@ -194,11 +253,12 @@ def _mark_benchmark_events(frame, benchmarks):
     valid = frame["sample_rp_years"].replace([np.inf, -np.inf], np.nan).dropna()
     if valid.empty:
         return
+    driver = _driver_reason_suffix(frame)
     log_rp = np.log(valid)
     for benchmark in benchmarks:
         benchmark = float(benchmark)
         index = (log_rp - np.log(benchmark)).abs().idxmin()
-        frame.at[index, "_selection_reason"].append(f"nearest_{_annual_chance_label(benchmark)}_coastal_driver")
+        frame.at[index, "_selection_reason"].append(f"nearest_{_annual_chance_label(benchmark)}_{driver}")
         frame.at[index, "_selection_score"] += 100.0
         frame.at[index, "_benchmark_rp"].append(int(benchmark) if benchmark.is_integer() else benchmark)
 
@@ -216,7 +276,16 @@ def _mark_tail_driver_events(frame):
         severity.isin(["significant", "rare", "extreme", "beyond_design"])
         | sampling_region.eq("tail")
     ]
-    _add_reason(frame, indices, "tail_or_benchmark_coastal_driver", 35.0)
+    _add_reason(frame, indices, f"tail_or_benchmark_{_driver_reason_suffix(frame)}", 35.0)
+
+
+def _driver_reason_suffix(frame):
+    columns = set(frame.columns)
+    if columns & {"basis_site_no", "peak_flow_cfs", "streamflow_member_id", "streamflow_source"}:
+        return "streamflow_driver"
+    if columns & {"coastal_peak_m", "coastal_member_id", "coastal_analog_id", "coastal_source"}:
+        return "coastal_driver"
+    return "event_driver"
 
 
 def _mark_rainfall_heavy_events(frame, rainfall_members, fraction):
@@ -255,6 +324,10 @@ def _rainfall_member_metrics(rainfall_members):
 
 
 def _mark_wet_soil_events(frame, soil_moisture_members, fraction):
+    # Soil moisture is now an Antecedent Moisture State attached after sampling, not a copula
+    # realization column (ADR-0011), so this wet-soil marking no-ops until that state is wired.
+    if "soil_moisture_member_id" not in frame.columns:
+        return
     members = _soil_member_metrics(soil_moisture_members)
     if members is None:
         return
@@ -499,13 +572,16 @@ def _select_soil_member(soil, rainfall_time, *, lead_hours, season_window_days, 
     return candidates.loc[deltas.idxmin()]
 
 
-def _assign_soil_member(out, index, member, rainfall_time, lead_hours, wet):
+def _assign_soil_member(out, index, member, rainfall_time, lead_hours, wet, seed):
     member_time = pd.Timestamp(member["member_time"])
     out.at[index, "soil_moisture_source"] = member.get("source", "nwm")
     out.at[index, "soil_moisture_member_file"] = member.get("member_file", pd.NA)
     out.at[index, "soil_moisture_member_id"] = str(member["member_id"])
     out.at[index, "soil_moisture_member_time"] = member_time.strftime("%Y-%m-%dT%H:%M:%S")
     out.at[index, "soil_moisture_pairing_policy"] = "wet_soil_stress" if wet else "antecedent_to_forcing"
+    # The validator requires pairing-seed provenance for every non-coastal forcing; reuse the
+    # stress-pairing seed so soil reproduces the same draw as the rainfall it is conditioned on.
+    out.at[index, "soil_moisture_pairing_seed"] = seed
     out.at[index, "soil_moisture_pairing_reference_time"] = pd.Timestamp(rainfall_time).strftime("%Y-%m-%dT%H:%M:%S")
     out.at[index, "soil_moisture_pairing_lag_hours"] = lead_hours
     out.at[index, "soil_moisture_metric"] = float(member["soil_moisture_mean"])
@@ -535,10 +611,16 @@ def _top_fraction_indices(metric, fraction):
     return valid.nlargest(count).index.tolist()
 
 
-def _apply_budget(candidates, target_count, max_mild_fraction):
+def _apply_budget(candidates, target_count, max_mild_fraction, severity_fractions=None):
     target_count = min(max(int(target_count), 1), len(candidates))
     max_mild = int(np.floor(target_count * max_mild_fraction))
     max_mild = max(1, max_mild) if candidates["_is_mild"].any() else 0
+    severity_targets = _severity_target_counts(
+        candidates,
+        target_count,
+        max_mild=max_mild,
+        severity_fractions=severity_fractions,
+    )
 
     selected_indices = []
     mild_count = 0
@@ -549,17 +631,48 @@ def _apply_budget(candidates, target_count, max_mild_fraction):
         selected_indices.append(index)
         mild_count += int(bool(row["_is_mild"]))
 
-    for index, row in candidates.iterrows():
-        if len(selected_indices) >= target_count:
-            break
-        if index in selected_indices:
-            continue
-        is_mild = bool(row["_is_mild"])
-        if is_mild and mild_count >= max_mild:
-            continue
-        selected_indices.append(index)
-        mild_count += int(is_mild)
+    if severity_targets:
+        for band in severity_targets:
+            selected_in_band = int(
+                candidates.loc[selected_indices, "severity_band"].astype(str).eq(str(band)).sum()
+            ) if selected_indices else 0
+            needed = max(int(severity_targets[band]) - selected_in_band, 0)
+            if needed <= 0:
+                continue
+            band_candidates = candidates[candidates.get("severity_band", pd.Series(index=candidates.index)).astype(str).eq(str(band))]
+            for index, row in band_candidates.iterrows():
+                if len(selected_indices) >= target_count or needed <= 0:
+                    break
+                if index in selected_indices:
+                    continue
+                is_mild = bool(row["_is_mild"])
+                if is_mild and mild_count >= max_mild:
+                    continue
+                selected_indices.append(index)
+                mild_count += int(is_mild)
+                needed -= 1
+    else:
+        for index, row in candidates.iterrows():
+            if len(selected_indices) >= target_count:
+                break
+            if index in selected_indices:
+                continue
+            is_mild = bool(row["_is_mild"])
+            if is_mild and mild_count >= max_mild:
+                continue
+            selected_indices.append(index)
+            mild_count += int(is_mild)
 
+    if len(selected_indices) < target_count:
+        for index, _ in candidates.iterrows():
+            if len(selected_indices) >= target_count:
+                break
+            if index not in selected_indices:
+                is_mild = bool(candidates.at[index, "_is_mild"]) if "_is_mild" in candidates else False
+                if is_mild and mild_count >= max_mild:
+                    continue
+                selected_indices.append(index)
+                mild_count += int(is_mild)
     if len(selected_indices) < target_count:
         for index, _ in candidates.iterrows():
             if len(selected_indices) >= target_count:
@@ -567,6 +680,52 @@ def _apply_budget(candidates, target_count, max_mild_fraction):
             if index not in selected_indices:
                 selected_indices.append(index)
     return candidates.loc[selected_indices]
+
+
+def _severity_target_counts(candidates, target_count, *, max_mild, severity_fractions=None):
+    if not severity_fractions or "severity_band" not in candidates:
+        return {}
+    fractions = dict(severity_fractions)
+    bands = [band for band in fractions if band in set(candidates["severity_band"].astype(str))]
+    if not bands:
+        return {}
+    total_fraction = sum(float(fractions[band]) for band in bands)
+    if total_fraction <= 0:
+        return {}
+    raw = {
+        band: target_count * float(fractions[band]) / total_fraction
+        for band in bands
+    }
+    targets = {band: int(np.floor(raw[band])) for band in bands}
+    remainder = target_count - sum(targets.values())
+    for band in sorted(bands, key=lambda value: (raw[value] - targets[value], raw[value]), reverse=True):
+        if remainder <= 0:
+            break
+        targets[band] += 1
+        remainder -= 1
+    if "mild" in targets:
+        targets["mild"] = min(targets["mild"], max_mild)
+    available = candidates["severity_band"].astype(str).value_counts()
+    deficit = 0
+    for band in list(targets):
+        capped = min(targets[band], int(available.get(band, 0)))
+        deficit += targets[band] - capped
+        targets[band] = capped
+    while deficit > 0:
+        progressed = False
+        for band in sorted(bands, key=lambda value: float(fractions[value]), reverse=True):
+            if band == "mild" and targets.get(band, 0) >= max_mild:
+                continue
+            if targets.get(band, 0) >= int(available.get(band, 0)):
+                continue
+            targets[band] = targets.get(band, 0) + 1
+            deficit -= 1
+            progressed = True
+            if deficit <= 0:
+                break
+        if not progressed:
+            break
+    return {band: targets[band] for band in bands if targets.get(band, 0) > 0}
 
 
 def _format_benchmarks(values):

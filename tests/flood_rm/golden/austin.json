@@ -1,0 +1,357 @@
+{
+  "aoi": {
+    "alpha_ratio": 0.05,
+    "metadata_output": "data/static/aoi/study_area.json",
+    "output": "data/static/aoi/study_area.geojson",
+    "preserve_disconnected_subregions": true,
+    "source": "data/smart_ds/2016",
+    "source_format": "smart_ds_buscoords",
+    "subregion_bridge_max_edge_degrees": 0.03
+  },
+  "coastal_waves": false,
+  "collection": {
+    "aorc_sst": {
+      "check_every_n_hours": 6,
+      "decluster_hours": 72,
+      "end_date": "2022-12-31",
+      "min_precip_threshold": 2.5,
+      "start_date": "1979-02-01",
+      "storm_duration_hours": 72,
+      "top_n_events": 440,
+      "transposition_region": {
+        "buffer_km": 50,
+        "geometry_file": "data/sources/aorc_sst/transposition_regions/transposition_region.geojson",
+        "id": "austin-inland-review-required"
+      },
+      "transposition_stride_cells": 4,
+      "variable": "APCP_surface",
+      "write_event_windows": true,
+      "zarr_year_pattern": "s3://noaa-nws-aorc-v1-1-1km/{year}.zarr"
+    },
+    "end": "2022-12-31",
+    "national_hydrography": {
+      "basemap_source_resolution_degrees": 0.000925925925925926,
+      "catchments": "data/sources/national_hydrography/nhdplus_hr_catchments.gpkg",
+      "collect_review_vectors": true,
+      "hydromt_basemap": "data/wflow/hydrography/us_hydrography_basemap.nc",
+      "river_geometry": "data/sources/national_hydrography/nhdplus_hr_river_geometry.gpkg",
+      "service": "usgs_3dhp_or_nhdplus_hr",
+      "wflow_soil_parameters": "data/wflow/static/ssurgo_wflow_soil_parameters.nc"
+    },
+    "nwm": {
+      "bucket": "noaa-nwm-retrospective-3-0-pds",
+      "end": "2022-12-31",
+      "soil_moisture": {
+        "crs": "+proj=lcc +units=m +a=6370000.0 +b=6370000.0 +lat_1=30.0 +lat_2=60.0 +lat_0=40.0 +lon_0=-97.0 +x_0=0 +y_0=0 +k_0=1.0 +nadgrids=@null +wktext +no_defs",
+        "points_file": "data/static/aoi/nwm_soil_moisture_points.geojson",
+        "points_source": "data/static/aoi/evaluation_footprint.geojson",
+        "selection_method": "footprint_centroid_corners_and_edges_snapped_to_nearest_nwm_cell",
+        "soilsat_top_layers": [
+          0,
+          1
+        ],
+        "variables": [
+          "SOIL_M",
+          "SOILSAT_TOP"
+        ],
+        "x": "x",
+        "y": "y",
+        "zarr": "s3://noaa-nwm-retrospective-3-0-pds/CONUS/zarr/ldasout.zarr"
+      },
+      "start": "1979-02-01",
+      "streamflow": {
+        "available": false,
+        "feature_ids": [],
+        "reason": "Austin production streamflow frequency should use reviewed active USGS streamgage records."
+      },
+      "version": "3.0"
+    },
+    "start": "1979-02-01",
+    "usgs_streamgages": {
+      "active_records_only": true,
+      "candidate_output": "data/sources/usgs_streamgages/streamgage_candidates.geojson",
+      "discovery": {
+        "has_data_type_cd": "dv",
+        "hydrologic_buffer_km": 50,
+        "parameter_cd": "00060",
+        "search_geometry": "data/static/aoi/wflow_nhdplus_watersheds.geojson",
+        "service": "nwis",
+        "site_status": "active"
+      },
+      "exclude_inactive_gages": true,
+      "reviewed_network": "data/sources/usgs_streamgages/streamgage_network.geojson",
+      "streamflow_records": {
+        "collect": false,
+        "output": "data/sources/usgs_streamgages/streamflow_records.csv",
+        "service": "dv",
+        "stat_cd": "00003"
+      }
+    }
+  },
+  "evaluation": {
+    "asset_source": "data/smart_ds",
+    "multi_domain_merge": {
+      "method": "max_depth_per_asset",
+      "retain_source_domain_id": true,
+      "write_overlap_diagnostics": true
+    },
+    "output_root": "data/evaluation"
+  },
+  "event_drivers": [
+    "rainfall",
+    "streamflow",
+    "soil_moisture"
+  ],
+  "flood_setting": "inland",
+  "grid": {
+    "asset_registry": "data/power_grid/asset_registry",
+    "augmented_artifacts": "data/power_grid/augmented",
+    "critical_facilities": {
+      "source": "data/static/grid/critical_facilities.geojson"
+    },
+    "figures": "data/power_grid/figures",
+    "onm_export": "data/power_grid/onm_export",
+    "power_grid_root": "data/smart_ds",
+    "smart_ds_root": "data/smart_ds",
+    "smart_ds_year": 2016,
+    "source_area": {
+      "reference_extent": "data/static/aoi/study_area.geojson",
+      "source": "smart_ds_footprint"
+    }
+  },
+  "grid_footprint": {
+    "source": "data/static/aoi/study_area.geojson"
+  },
+  "includes": {
+    "data_sources": "data_sources.yaml",
+    "grid": "grid.yaml",
+    "sfincs": "sfincs.yaml",
+    "sfincs_build": "sfincs_build.yml",
+    "sfincs_update_forcing": "sfincs_update_forcing.yml",
+    "wflow_build": "wflow_build.yml",
+    "wflow_update_forcing": "wflow_update_forcing.yml"
+  },
+  "inland_coupling": {
+    "direct_rainfall": {
+      "buffer_m": 30000,
+      "cumulative_input": true,
+      "enabled": true,
+      "time_label": "right",
+      "variable": "APCP_surface"
+    },
+    "discharge_forcing": {
+      "fallback_river_geometry": "data/sources/national_hydrography/nhdplus_hr_river_geometry.gpkg",
+      "handoff_location": "stream_boundary_intersection",
+      "handoff_manifest": "data/wflow/domain_set_handoff.yaml",
+      "source": "wflow"
+    },
+    "enabled": true,
+    "forcing_mode": "dual_fluvial_pluvial",
+    "infiltration": {
+      "block_size": 2000,
+      "effective": 0.5,
+      "effective_source": "scalar_until_event_nwm_soilsat_top_update",
+      "enabled": true,
+      "factor_ksat": 0.2777777777777778,
+      "hsg": "data/static/soils/hsg_austin.tif",
+      "ksat": "data/static/soils/ksat_mmhr_austin.tif",
+      "ksat_effective": "data/static/soils/ksat_mmhr_austin_effective.tif",
+      "ksat_max_mmhr": 75.0,
+      "ksat_scale_factor": 0.1,
+      "lulc": "data/static/processed/landcover_region_setup.tif",
+      "method": "cn_with_recovery",
+      "reclass_table": null,
+      "review_required": true
+    },
+    "rainfall_member_scope": "shared_between_wflow_and_sfincs",
+    "soil_moisture": {
+      "lookback_hours": 24,
+      "pairing": "inland_antecedent_moisture_pairing",
+      "source": "data/sources/nwm/soil_moisture.csv"
+    },
+    "streamflow_reference_time": "dominant_streamgage_network_peak"
+  },
+  "paths": {
+    "base_model_root": "data/sfincs/base",
+    "data_catalog": "data/static/data_catalogue.yaml",
+    "data_root": "locations/austin/data",
+    "design_outputs_root": "data/event_catalog",
+    "evaluation_root": "data/evaluation",
+    "observations_root": "data/sources",
+    "outputs_root": "data/event_catalog",
+    "raw_root": "data/static/raw",
+    "run_root": "data/sfincs/run_stage",
+    "scenarios_root": "data/sfincs/scenarios",
+    "sfincs_outputs_root": "data/sfincs",
+    "static_inputs_root": "data/static",
+    "static_root": "data/static/processed",
+    "stats_root": "data/sfincs/stats",
+    "storage_root": "data/sfincs/run_outputs"
+  },
+  "project": {
+    "country": "US",
+    "model_crs": "EPSG:32614",
+    "name": "austin",
+    "place_name": "Austin, TX, USA",
+    "reference_crs": "EPSG:4326"
+  },
+  "scenario_build": {
+    "design_scenario": "base",
+    "forcing_variable": "auto",
+    "timing": {
+      "drain_down_hours": 24,
+      "max_run_hours": 168,
+      "min_run_hours": 72,
+      "spinup_hours": 12
+    },
+    "tref": "2000-01-01 00:00:00",
+    "zsini_mode": "dry"
+  },
+  "scenario_run": {
+    "sfincs_bin": "/usr/local/bin/sfincs",
+    "sfincs_bin_env": "SFINCS_BIN",
+    "workers": 1
+  },
+  "scenario_stats": {
+    "huthresh_m": 0.01,
+    "impact_threshold_m": 0.1,
+    "land_threshold_m": 0.0,
+    "workers": 4
+  },
+  "sfincs": {
+    "boundary_file": "data/sfincs/base/sfincs.bnd",
+    "grid_resolution_m": 100,
+    "outflow_boundary_elevation_quantile": 0.05
+  },
+  "sfincs_domain_set": {
+    "allow_multiple_domains": true,
+    "domain_manifest": "data/sfincs/domains/domain_set.yaml",
+    "domains": [],
+    "domains_root": "data/sfincs/domains",
+    "enabled": true,
+    "evaluation_merge": "max_depth_per_asset_with_source_domain",
+    "event_catalog_scope": "shared_across_domain_set",
+    "include_domain_ids": [
+      "austin_p4u"
+    ],
+    "region_geometry": "bounding_box",
+    "review_required": true,
+    "source": "data/static/aoi/evaluation_footprint.geojson"
+  },
+  "smart_ds_evaluation_footprint": {
+    "minimum_flood_coverage": true,
+    "output": "data/static/aoi/evaluation_footprint.geojson",
+    "source": "data/static/aoi/study_area.geojson"
+  },
+  "static_sources": {
+    "bbox": {
+      "output": "data/static/aoi/bbox.geojson"
+    },
+    "landcover": {
+      "output": "data/static/processed/landcover_region_setup.tif",
+      "raw": "data/static/raw/landcover/landcover.tif"
+    },
+    "ssurgo": {
+      "attributes_output": "data/static/soils/ssurgo_mapunit_attributes.csv",
+      "hsg_output": "data/static/soils/hsg_austin.tif",
+      "ksat_output": "data/static/soils/ksat_mmhr_austin.tif",
+      "output": "data/static/soils/ssurgo_mapunitpoly.gpkg"
+    },
+    "terrain": {
+      "output": "data/static/processed/dem_region_setup.tif",
+      "raw": "data/static/raw/topo/dem.tif"
+    },
+    "wflow_collection_extent": {
+      "boundary": "data/static/aoi/wflow_collection_region.geojson",
+      "hsg_output": "data/wflow/static/soils/hsg_wflow.tif",
+      "ksat_output": "data/wflow/static/soils/ksat_mmhr_wflow.tif",
+      "landcover_output": "data/wflow/static/processed/landcover_wflow_coarse.tif",
+      "landcover_raw": "data/wflow/static/raw/landcover/landcover_wflow.tif",
+      "method": "reviewed_nhdplus_watersheds",
+      "padding_degrees": 0.02,
+      "source_catchments": "data/sources/national_hydrography/nhdplus_hr_catchments.gpkg",
+      "source_fabric": "data/wflow/domain_set_subbasins.gpkg",
+      "ssurgo_attributes_output": "data/wflow/static/soils/ssurgo_mapunit_attributes_wflow.csv",
+      "ssurgo_output": "data/wflow/static/soils/ssurgo_mapunitpoly_wflow.gpkg",
+      "terrain_output": "data/wflow/static/processed/dem_wflow_coarse.tif",
+      "terrain_raw": "data/wflow/static/raw/topo/dem_wflow.tif",
+      "terrain_resolution_degrees": 0.0009,
+      "watersheds": "data/static/aoi/wflow_nhdplus_watersheds.geojson"
+    }
+  },
+  "wflow": {
+    "base_model_root": "data/wflow/base",
+    "build_config": "wflow_build.yml",
+    "data_catalog": "data/wflow/data_catalog.yml",
+    "domain_set": {
+      "allow_multiple_submodels": true,
+      "crossings": {
+        "min_uparea_km2": 5.0
+      },
+      "event_catalog_scope": "shared_across_domain_set",
+      "huc": {
+        "levels": [
+          8,
+          6,
+          4
+        ],
+        "output": "data/wflow/wflow_domain_huc.geojson",
+        "root": "data/wflow/domain_huc"
+      },
+      "outlet_source": "encompassing_huc",
+      "subbasin_fabric": "data/wflow/domain_set_subbasins.gpkg",
+      "subbasin_fabric_diagnostics": "data/wflow/readiness/nhdplus_subbasin_fabric.csv",
+      "submodels": []
+    },
+    "domain_set_manifest": "data/wflow/domain_set.yaml",
+    "enabled": true,
+    "event_forcing": {
+      "antecedent_moisture_pairing": "inland_antecedent_moisture_pairing",
+      "design_event_method": "scaled_streamgage_network_analog",
+      "event_reference_time": "dominant_streamgage_network_peak",
+      "rainfall_member_scope": "shared_with_sfincs",
+      "rainfall_pairing_priority": "inland_rainfall_pairing_priority"
+    },
+    "events_root": "data/wflow/events",
+    "handoff": {
+      "manifest": "data/wflow/domain_set_handoff.yaml",
+      "source_standard_name": "river_water__volume_flow_rate",
+      "source_variable": "river_q",
+      "target": "sfincs_discharge_forcing"
+    },
+    "plugin": "wflow_sbm",
+    "readiness_root": "data/wflow/readiness",
+    "run": {
+      "bin_env": "WFLOW_BIN",
+      "command": "wflow_cli {run_config}"
+    },
+    "source_strategy": {
+      "hydrography": {
+        "api": "hydromt_gis_flw_d8_from_dem",
+        "fallback": "merit_hydro",
+        "hydromt_basemap": "us_hydrography_basemap",
+        "preferred": "us_hydrography"
+      },
+      "soils": {
+        "fallback": "soilgrids",
+        "preferred": "ssurgo",
+        "wflow_parameters": "ssurgo_wflow_soil_parameters"
+      }
+    },
+    "streamgage_network": {
+      "accept_unreviewed_streamgage_network": false,
+      "active_records_only": true,
+      "allow_multiple_frequency_basis_gages": true,
+      "candidates": "data/sources/usgs_streamgages/streamgage_candidates.geojson",
+      "exclude_inactive_gages": true,
+      "reviewed_network": "data/sources/usgs_streamgages/streamgage_network.geojson",
+      "roles": [
+        "frequency",
+        "calibration",
+        "validation",
+        "sfincs_handoff"
+      ]
+    },
+    "update_forcing_config": "wflow_update_forcing.yml"
+  }
+}

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+from matplotlib.table import Table
 
 matplotlib.use("Agg")
 
@@ -62,6 +63,57 @@ def test_antecedent_pairing_diagnostics_reports_reference_lag():
     assert diagnostics["configured_lag_hours"] == 24
     assert diagnostics["median_lag_hours"] == 24
     assert diagnostics["on_lag_rows"] == 2
+
+
+def test_forcing_pairing_diagnostics_uses_inland_event_reference_time():
+    catalog = pd.DataFrame(
+        {
+            "event_reference_time": ["2021-06-01T00:00:00"],
+            "rainfall_member_time": ["2020-06-15T00:00:00"],
+            "rainfall_member_id": ["rain_jun"],
+            "rainfall_pairing_policy": ["seasonal_window_permutation"],
+            "rainfall_pairing_window_days": [45],
+        }
+    )
+
+    diagnostics = plotting.forcing_pairing_diagnostics(catalog, forcings=["rainfall"]).iloc[0]
+
+    assert diagnostics["forcing"] == "rainfall"
+    assert diagnostics["policy"] == "seasonal_window_permutation"
+    assert diagnostics["paired_rows"] == 1
+    assert diagnostics["in_window_rows"] == 1
+
+
+def test_forcing_pairing_diagnostics_normalizes_inland_alias_policies():
+    catalog = pd.DataFrame(
+        {
+            "event_reference_time": ["2021-06-01T00:00:00"],
+            "rainfall_member_time": ["2020-06-15T00:00:00"],
+            "rainfall_member_id": ["rain_jun"],
+            "rainfall_pairing_window_days": [45],
+            "soil_moisture_member_time": ["2020-06-14T00:00:00"],
+            "soil_moisture_pairing_reference_time": ["2020-06-15T00:00:00"],
+            "soil_moisture_pairing_lag_hours": [24],
+        }
+    )
+
+    diagnostics = plotting.forcing_pairing_diagnostics(
+        catalog,
+        forcings=["rainfall", "soil_moisture"],
+        policies={
+            "rainfall": {"strategy": "inland_rainfall_pairing_priority", "window_days": 45},
+            "soil_moisture": {
+                "strategy": "inland_antecedent_moisture_pairing",
+                "lead_time_hours": 24,
+            },
+        },
+    )
+
+    assert diagnostics["policy"].tolist() == [
+        "seasonal_window_permutation",
+        "antecedent_to_forcing",
+    ]
+    assert diagnostics["paired_rows"].tolist() == [1, 1]
 
 
 def test_plot_configured_pairing_dispatches_antecedent_policy():
@@ -148,6 +200,22 @@ def test_severity_band_distribution_prefers_probability_weight_when_available():
     assert round(rare["probability_mass"], 6) == 0.2
 
 
+def test_severity_band_distribution_derives_missing_band_from_return_period():
+    catalog = pd.DataFrame(
+        {
+            "sample_rp_years": [1.2, 5.0, 75.0],
+            "sampling_weight": [1.0, 1.0, 1.0],
+        }
+    )
+
+    distribution = plotting.severity_band_distribution(catalog)
+
+    rows = distribution.set_index("severity_band")
+    assert rows.loc["mild", "event_count"] == 1
+    assert rows.loc["common", "event_count"] == 1
+    assert rows.loc["rare", "event_count"] == 1
+
+
 def test_plot_severity_bands_shows_unweighted_and_weighted_views():
     catalog = pd.DataFrame(
         {
@@ -162,6 +230,28 @@ def test_plot_severity_bands_shows_unweighted_and_weighted_views():
     assert len(fig.axes) == 2
     assert "Unweighted event count" in fig.axes[0].get_title()
     assert "Probability-weighted mass" in fig.axes[1].get_title()
+
+
+def test_plot_original_vs_design_severity_shows_row_and_probability_views():
+    original = pd.DataFrame(
+        {
+            "sample_rp_years": [1.1, 1.4, 3.0, 80.0],
+            "sampling_weight": [1.0, 1.0, 1.0, 1.0],
+        }
+    )
+    design = pd.DataFrame(
+        {
+            "severity_band": ["mild", "rare", "rare", "extreme"],
+            "sampling_weight": [10.0, 0.1, 0.1, 0.05],
+            "probability_weight": [0.8, 0.05, 0.05, 0.1],
+        }
+    )
+
+    fig = plotting.plot_original_vs_design_severity(original, design)
+
+    assert len(fig.axes) == 2
+    assert "Original vs design row distribution" in fig.axes[0].get_title()
+    assert "Probability-weighted distribution" in fig.axes[1].get_title()
 
 
 def test_nearest_benchmark_events_reports_standard_annual_chance_slices():
@@ -191,22 +281,74 @@ def test_plot_return_period_benchmark_coverage_marks_standard_slices():
             "sample_rp_years": [10.0, 50.0, 100.0, 500.0],
             "severity_band": ["significant", "rare", "extreme", "extreme"],
             "probability_weight": [0.25, 0.25, 0.25, 0.25],
+            "catalog_role": ["design", "design", "design", "design"],
         }
     )
 
     fig = plotting.plot_return_period_benchmark_coverage(catalog)
 
     assert "10/50/100/500-year" in fig.axes[0].get_title()
+    assert "event-driver" in fig.axes[0].get_xlabel()
+    assert "Selected Design Catalog" in fig.axes[0].get_legend().get_texts()[0].get_text()
     labels = [text.get_text() for text in fig.axes[0].texts]
     assert any("0.2%" in label for label in labels)
+    table_text = [
+        cell.get_text().get_text()
+        for child in fig.axes[1].get_children()
+        if isinstance(child, Table)
+        for cell in child.get_celld().values()
+    ]
+    assert "500-yr" in table_text
+    assert "0.2% AEP" in table_text
+    assert "5000" not in table_text
 
 
-def test_plot_catalog_set_severity_comparison_contrasts_probability_and_stress_sets():
+def test_plot_return_period_benchmark_coverage_labels_inland_streamflow_axis():
+    catalog = pd.DataFrame(
+        {
+            "event_id": ["usgs_02095500_20220103T000000", "usgs_02094500_20200320T000000"],
+            "basis_site_no": ["02095500", "02094500"],
+            "sample_rp_years": [10.1, 53.0],
+            "peak_flow_cfs": [4300.0, 8200.0],
+            "severity_band": ["significant", "rare"],
+            "probability_weight": [0.5, 0.5],
+        }
+    )
+
+    fig = plotting.plot_return_period_benchmark_coverage(catalog, benchmarks=[10, 50])
+
+    title_and_labels = " ".join(
+        [fig.axes[0].get_title(), fig.axes[0].get_xlabel(), fig.axes[1].get_title()]
+    ).lower()
+    assert "coastal" not in title_and_labels
+    assert "streamgage-network" in fig.axes[0].get_title()
+    assert "streamgage-network return period" in fig.axes[0].get_xlabel()
+
+
+def test_plot_return_period_benchmark_coverage_preserves_coastal_axis_for_coastal_catalog():
+    catalog = pd.DataFrame(
+        {
+            "event_id": ["coastal_001", "coastal_002"],
+            "coastal_peak_m": [1.2, 2.4],
+            "sample_rp_years": [10.0, 50.0],
+            "severity_band": ["significant", "rare"],
+            "probability_weight": [0.5, 0.5],
+        }
+    )
+
+    fig = plotting.plot_return_period_benchmark_coverage(catalog, benchmarks=[10, 50])
+
+    assert "coastal-driver" in fig.axes[0].get_title()
+    assert "coastal driver return period" in fig.axes[0].get_xlabel()
+
+
+def test_plot_catalog_set_severity_comparison_contrasts_design_and_stress_sets():
     probability_catalog = pd.DataFrame(
         {
             "severity_band": ["mild", "mild", "mild", "extreme"],
             "probability_weight": [0.3, 0.3, 0.3, 0.1],
             "sampling_weight": [1.0, 1.0, 1.0, 1.0],
+            "catalog_role": ["design", "design", "design", "design"],
         }
     )
     stress_catalog = pd.DataFrame(
@@ -219,8 +361,33 @@ def test_plot_catalog_set_severity_comparison_contrasts_probability_and_stress_s
 
     fig = plotting.plot_catalog_set_severity_comparison(probability_catalog, stress_catalog)
 
-    assert "Probability Catalog vs Resilience Stress/Training Set" in fig.axes[0].get_title()
+    assert "Selected Design Catalog vs Resilience Stress/Training Set" in fig.axes[0].get_title()
     assert len(fig.axes[0].patches) >= 4
+
+
+def test_plot_joint_tail_budget_labels_selected_design_catalog():
+    catalog = pd.DataFrame(
+        {
+            "severity_band": ["mild", "common", "extreme", "extreme"],
+            "probability_weight": [0.8, 0.15, 0.025, 0.025],
+            "catalog_role": ["design", "design", "design", "design"],
+            "candidate_pool_count": [100_000, 100_000, 100_000, 100_000],
+            "pool_band_support": [80_000, 15_000, 5_000, 5_000],
+            "pool_band_probability": [0.80, 0.15, 0.05, 0.05],
+            "driver_u": [0.1, 0.5, 0.98, 0.99],
+        }
+    )
+    stress = {
+        "target_event_count": 4,
+        "severity_band_fractions": {"mild": 0.25, "common": 0.25, "extreme": 0.5},
+    }
+
+    fig = plotting.plot_joint_tail_budget(catalog, stress)
+
+    assert "100,000 -> 4" in fig.axes[0].get_title()
+    assert "candidate pool (n=100,000)" in fig.axes[0].get_legend().get_texts()[0].get_text()
+    assert "Selection rate" in fig.axes[1].get_title()
+    assert "Fitted probability mass" in fig.axes[2].get_title()
 
 
 def test_wave_analog_diagnostics_reports_same_analog_completeness():
@@ -298,6 +465,7 @@ def test_forcing_marginal_and_joint_plots_compare_selected_member_values():
             "event_id": ["evt_0001", "evt_0002", "evt_0003"],
             "sample_rp_years": [2.0, 25.0, 100.0],
             "severity_band": ["common", "significant", "extreme"],
+            "coastal_peak_m": [1.0, 1.8, 2.4],
             "rainfall_member_id": ["rain_001", "rain_002", "rain_001"],
             "sampling_weight": [1.0, 1.0, 1.0],
             "probability_weight": [0.6, 0.3, 0.1],
@@ -316,6 +484,93 @@ def test_forcing_marginal_and_joint_plots_compare_selected_member_values():
     assert "rainfall marginal comparison" in marginal.axes[0].get_title()
     assert "Coastal driver return period vs rainfall" in joint.axes[0].get_title()
     assert joint.axes[0].get_xscale() == "log"
+
+
+def test_driver_forcing_joint_labels_inland_streamflow_axis():
+    catalog = pd.DataFrame(
+        {
+            "event_id": ["evt_001", "evt_002"],
+            "basis_site_no": ["02095000", "02095500"],
+            "peak_flow_cfs": [1200.0, 2400.0],
+            "sample_rp_years": [2.0, 100.0],
+            "rainfall_member_id": ["rain_001", "rain_002"],
+            "probability_weight": [0.6, 0.4],
+        }
+    )
+    members = pd.DataFrame(
+        {
+            "member_id": ["rain_001", "rain_002"],
+            "mean_precip_mm": [100.0, 180.0],
+        }
+    )
+
+    fig = plotting.plot_coastal_forcing_joint(catalog, members, "rainfall")
+
+    text = fig.axes[0].get_title() + " " + fig.axes[0].get_xlabel()
+    assert "coastal" not in text.lower()
+    assert "Streamgage-network return period vs rainfall" in fig.axes[0].get_title()
+
+
+def test_plot_streamflow_pot_members_shows_reviewed_gage_events():
+    members = pd.DataFrame(
+        {
+            "site_no": ["02095000", "02095000", "02095500"],
+            "event_time": ["2020-01-01T00:00:00", "2020-02-01T00:00:00", "2020-01-15T00:00:00"],
+            "peak_flow_cfs": [1200.0, 2200.0, 1800.0],
+            "sampling_region": ["body", "tail", "body"],
+        }
+    )
+
+    fig = plotting.plot_streamflow_pot_members(members)
+
+    assert "USGS streamflow POT members" in fig.axes[0].get_title()
+    assert fig.axes[0].get_ylabel() == "peak discharge [cfs]"
+    assert len(fig.axes[0].collections) == 2
+
+
+def test_plot_streamflow_return_period_distribution_uses_log_axes():
+    members = pd.DataFrame(
+        {
+            "event_id": ["evt_001", "evt_002"],
+            "site_no": ["02095000", "02095500"],
+            "event_time": ["2020-01-01T00:00:00", "2021-01-01T00:00:00"],
+            "peak_flow_cfs": [1200.0, 2400.0],
+            "sample_rp_years": [2.0, 100.0],
+            "sampling_region": ["body", "tail"],
+        }
+    )
+
+    fig = plotting.plot_streamflow_return_period_distribution(members)
+
+    assert "Return-period ranked streamflow members" in fig.axes[0].get_title()
+    assert fig.axes[0].get_xscale() == "log"
+    assert fig.axes[0].get_yscale() == "log"
+
+
+def test_plot_streamflow_pot_extraction_marks_threshold_like_coastal_pot_plot():
+    times = pd.date_range("2020-01-01", periods=120, freq="h")
+    records = pd.DataFrame(
+        {
+            "site_no": ["02095000"] * len(times),
+            "time": times,
+            "discharge_cfs": [100.0] * 20 + [900.0] + [100.0] * 49 + [1400.0] + [100.0] * 49,
+        }
+    )
+    members = pd.DataFrame(
+        {
+            "site_no": ["02095000", "02095000"],
+            "event_time": [times[20].isoformat(), times[70].isoformat()],
+            "peak_flow_cfs": [900.0, 1400.0],
+            "site_threshold_cfs": [800.0, 800.0],
+        }
+    )
+
+    fig = plotting.plot_streamflow_pot_extraction(records, members, threshold_quantile=0.9)
+
+    assert len(fig.axes) == 2
+    assert "Streamflow POT extraction" in fig.axes[0].get_title()
+    assert any("threshold = 800 cfs" in text.get_text() for text in fig.axes[0].get_legend().texts)
+    assert fig.axes[1].get_xlabel() == "peak discharge [cfs]"
 
 
 def test_plot_rainfall_member_distribution_shows_depth_and_seasonality():

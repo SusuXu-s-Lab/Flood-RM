@@ -111,7 +111,9 @@ def build_paths(config=None, scenario=None):
     source_artifacts_root = sources_root / "source_artifacts"
     aorc_sst_root = sources_root / "aorc_sst"
     nwm_root = sources_root / "nwm"
+    usgs_streamgages_root = sources_root / "usgs_streamgages"
     era5_waves_root = sources_root / "era5_waves"
+    hurdat2_root = sources_root / "hurdat2"
     era5_waves_output = config.get("collection", {}).get("era5_waves", {}).get("output_path")
     era5_waves_nc = (
         _location_or_absolute_path(location, era5_waves_output)
@@ -123,6 +125,13 @@ def build_paths(config=None, scenario=None):
         _location_or_absolute_path(location, cora_output)
         if cora_output
         else data_root / f"{project_name}_cora_boundary_hourly_msl.csv"
+    )
+    nwm_soil_moisture_spec = config.get("collection", {}).get("nwm", {}).get("soil_moisture", {})
+    nwm_soil_moisture_points_value = (
+        nwm_soil_moisture_spec.get("points_file") or "data/static/aoi/nwm_soil_moisture_points.geojson"
+    )
+    nwm_soil_moisture_points_geojson = _location_or_repo_path(
+        location, Path(nwm_soil_moisture_points_value)
     )
     events_dirname = "events" if scenario_info["name"] == "base" else f"events_{scenario_info['name']}"
     events_root = outputs_root / events_dirname
@@ -140,14 +149,20 @@ def build_paths(config=None, scenario=None):
         "cache_root": cache_root,
         "waterlevel_csv": waterlevel_csv,
         "source_artifacts_root": source_artifacts_root,
+        "usgs_streamgages_root": usgs_streamgages_root,
+        "usgs_streamgage_candidates_geojson": usgs_streamgages_root / "streamgage_candidates.geojson",
+        "usgs_streamgage_network_geojson": usgs_streamgages_root / "streamgage_network.geojson",
         "aorc_sst_root": aorc_sst_root,
         "aorc_sst_rainfall_members_csv": aorc_sst_root / "rainfall_members.csv",
         "cora_source_artifact_json": source_artifacts_root / "cora_boundary_water_level.json",
         "nwm_root": nwm_root,
         "nwm_streamflow_csv": nwm_root / "streamflow.csv",
         "nwm_soil_moisture_csv": nwm_root / "soil_moisture.csv",
+        "nwm_soil_moisture_points_geojson": nwm_soil_moisture_points_geojson,
         "era5_waves_root": era5_waves_root,
         "era5_waves_nc": era5_waves_nc,
+        "hurdat2_root": hurdat2_root,
+        "hurdat2_tracks_csv": hurdat2_root / "hurdat2_tracks.csv",
         "catalog_root": catalog_root,
         "historical_peaks_csv": catalog_root / "historical_peaks.csv",
         "marginal_params_csv": catalog_root / "marginal_params.csv",

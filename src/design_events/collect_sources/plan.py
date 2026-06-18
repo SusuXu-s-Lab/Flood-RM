@@ -63,7 +63,15 @@ class SourceCollectionPlan:
         ]
 
 
-source_order = ("cora", "nwm", "aorc_sst", "era5_waves")
+source_order = (
+    "cora",
+    "usgs_streamgages",
+    "national_hydrography",
+    "nwm",
+    "aorc_sst",
+    "era5_waves",
+    "hurdat2",
+)
 
 
 def build_source_collection_plan(config, paths, *, start=None, end=None):

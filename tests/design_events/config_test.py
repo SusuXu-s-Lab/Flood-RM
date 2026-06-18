@@ -30,8 +30,10 @@ def test_marshfield_config_yaml_preserves_design_event_paths():
     assert suffix(paths["resilience_stress_training_catalog_csv"]) == "locations/marshfield/data/event_catalog/catalog/resilience_stress_training_catalog.csv"
     assert suffix(paths["nwm_root"]) == "locations/marshfield/data/sources/nwm"
     assert suffix(paths["nwm_streamflow_csv"]) == "locations/marshfield/data/sources/nwm/streamflow.csv"
+    assert suffix(paths["usgs_streamgages_root"]) == "locations/marshfield/data/sources/usgs_streamgages"
+    assert suffix(paths["usgs_streamgage_candidates_geojson"]) == "locations/marshfield/data/sources/usgs_streamgages/streamgage_candidates.geojson"
     assert suffix(paths["aorc_sst_root"]) == "locations/marshfield/data/sources/aorc_sst"
     assert suffix(paths["aorc_sst_rainfall_members_csv"]) == "locations/marshfield/data/sources/aorc_sst/rainfall_members.csv"
     assert suffix(paths["era5_waves_nc"]) == "locations/marshfield/data/sources/era5_waves/era5_mfield_offshore_hourly.nc"
-    assert config["sampling"]["return_period_max_years"] == 500.0
-    assert config["resilience_stress_training"]["benchmark_return_period_years"] == [10, 50, 100, 500]
+    assert "sampling" not in config
+    assert "resilience_stress_training" not in config

@@ -3,9 +3,9 @@
 Flood-RM builds:
 
 1. Synthetic distribution-scale feeder network, augmented with operational components needed for dynamic microgrid studies.
-2. Stochastic design event catalogue referenced from 40 years of historical reanalysis datasets in the US. These are provided as forcings for SFINCS ensembles.
+2. Stochastic flood-driver catalogues from historical reanalysis and observation products. These are sampled into coupled SFINCS-Snapwave for coastal regions and coupled Wflow-SFINCS forcings for inland regions.
 
-The Reference Study Location for network development is Marshfield, Massachusetts. Network build process occurs through interactive Jupyter notebooks. 
+The reference network location is Marshfield, Massachusetts; inland coupled flood examples currently include Greensboro, North Carolina and Austin, Texas. Workflows are organized as interactive Jupyter notebooks under each `locations/<name>` directory.
 
 ## Pipeline Overview
 
@@ -29,27 +29,39 @@ The audit notebook `01_grid/03_audit_network/` validates the synthetic-grid arti
 
 ### 2. Stochastic Design Events and Hydrodynamic Truth Set
 
-The flood workflow builds a staged stochastic compound-flood scenario ensemble. It supports both coastal and inland drivers:
+The flood workflow builds staged stochastic scenario ensembles for coastal, pluvial, and fluvial studies. It supports both coastal and inland drivers:
 
 - coastal water levels from CORA or NOAA CO-OPS sources
 - coastal waves from ERA5-derived wave conditions for SnapWave-capable runs
 - rainfall from AORC stochastic storm transposition (SST)
-- streamflow from USGS or NWM where relevant
+- routed streamflow from USGS/NWM-informed Wflow domains where relevant
 - antecedent soil moisture from NWM retrospective products
 
-The event generator builds source manifests, driver marginals, paired event members, sea level rise scenario capabilities, and probability weights given to scenario generation. Coastal peaks use extreme-value tail treatment; AORC SST rainfall members preserve observed storm structure; waves are paired with coastal water levels through the same historical analog; soil moisture is provided as an antecedent condition.
+The event generator builds source manifests, driver marginals, paired event members, sea level rise scenario capabilities, and probability weights for scenario generation. Coastal peaks use extreme-value tail treatment; inland examples use tail-sampled design drivers from large candidate catalogues; AORC SST rainfall members preserve observed storm structure; waves are paired with coastal water levels through the same historical analog; soil moisture is provided as an antecedent condition.
 
-SFINCS is built in two modes:
+Hydrodynamic models are built in three modes:
 - **Wave-enabled**: quadtree SFINCS with SnapWave and infragravity-wave coupling for coastal truth-set production. Flood-RM uses the `sfincs-snapwave_latest.sif` Apptainer image built from the SFINCS v2.3.0 mt Faber release for this path [3].
 - **Standard**: regular hydrodynamic SFINCS for comparison, smoke tests, or locations that do not require wave coupling
+- **Inland coupled**: HydroMT-Wflow routes upstream rainfall-runoff to SFINCS discharge handoff points while SFINCS receives local direct rainfall using Wflow.jl v1.0.2 [4]
 
-Both modes use configured mitigation and hydraulic-structure inputs, such as weirs and thin dams, when those layers were manually incorporated for the Study Location.
+For inland coupled locations, `02_flood/01_region_setup.ipynb` should stay narrow:
+load the merged Region config, build or read the SMART-DS evaluation footprint,
+select the SFINCS domain only from `sfincs_domain_set.include_domain_ids` in the
+Location override, encapsulate that selected coverage in the Wflow HUC watershed
+domain, collect required static data for Wflow and then SFINCS, and plot the
+collected inputs. The notebook should fail clearly when the configured SFINCS
+domain cannot be derived from the `01_grid`/SMART-DS subregions. Do not add
+extra notebook-side domain selection, static-source inventory tables, HydroMT
+data-catalog checks, or broad QA cells there; put that behavior behind deeper
+`src/` modules or in the later model-activation notebooks.
 
-For the Marshfield defaults, the intended dataset scale is:
+These modes use configured mitigation and hydraulic-structure inputs, such as weirs and thin dams, when those layers were manually incorporated for the Study Location.
 
-- 2,500 events in the full Probability Catalog
-- 500 flood-significant events in the Resilience Stress/Training Set
-- one SFINCS scenario folder per flood-significant event
+Current design-event defaults are:
+
+- 100,000 candidate driver combinations before tail filtering
+- 500 tail-sampled design drivers in the stress/training catalogue
+- one SFINCS or coupled Wflow-SFINCS scenario folder per selected design driver
 - run outputs and evaluation products
 
 ## References
@@ -59,3 +71,5 @@ For the Marshfield defaults, the intended dataset scale is:
 [2] Krishnan, V., Bugbee, B., Elgindy, T., Mateo, C., Duenas, P., Postigo, F., Lacroix, J. S., Gomez San Roman, T., & Palmintier, B. (2020). Validation of synthetic U.S. electric power distribution system data sets. *IEEE Transactions on Smart Grid, 11*(5), 4477-4489. https://doi.org/10.1109/TSG.2020.2981077
 
 [3] *SFINCS v2.3.0 mt Faber release: https://github.com/Deltares/SFINCS/releases/tag/v2.3.0_mt_Faber_release
+
+[4] *Wflow.jl v1.0.2 release: https://github.com/Deltares/Wflow.jl/releases/tag/v1.0.2

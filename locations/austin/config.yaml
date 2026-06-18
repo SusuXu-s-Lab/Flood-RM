@@ -1,0 +1,45 @@
+project:
+  name: austin
+  place_name: Austin, TX, USA
+  country: US
+  model_crs: EPSG:32614
+  reference_crs: EPSG:4326
+
+flood_setting: inland
+
+event_drivers:
+- rainfall
+- streamflow
+- soil_moisture
+
+coastal_waves: false
+
+includes:
+  grid: grid.yaml
+  sfincs: domain.yaml
+  sfincs_build: sfincs_build.yml
+  sfincs_update_forcing: sfincs_update_forcing.yml
+  wflow_build: wflow_build.yml
+  wflow_update_forcing: wflow_update_forcing.yml
+
+static_sources:
+  ssurgo:
+    hsg_output: data/static/soils/hsg_austin.tif
+    ksat_output: data/static/soils/ksat_mmhr_austin.tif
+
+collection:
+  national_hydrography:
+    basemap_source_resolution_degrees: 0.000925925925925926
+  aorc_sst:
+    transposition_region:
+      id: austin-inland-review-required
+      geometry_file: data/sources/aorc_sst/transposition_regions/transposition_region.geojson
+  nwm:
+    streamflow:
+      reason: Austin production streamflow frequency should use HUC-selected active USGS streamgage records.
+
+event_catalog:
+  dependence:
+    driver_records:
+      rainfall:
+        path: data/sources/aorc_sst/austin/72hr-events/storm-stats.csv

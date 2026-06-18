@@ -11,13 +11,19 @@ def _default_funcs():
     from design_events.collect_sources.aorc_sst import collect_aorc_sst
     from design_events.collect_sources.cora import collect_cora
     from design_events.collect_sources.era5_waves import collect_era5_waves
+    from design_events.collect_sources.hurdat2 import collect_hurdat2
+    from design_events.collect_sources.national_hydrography import collect_national_hydrography
     from design_events.collect_sources.nwm import collect_nwm
+    from design_events.collect_sources.usgs_streamgages import collect_usgs_streamgages
 
     return {
         "collect_aorc_sst": collect_aorc_sst,
         "collect_cora": collect_cora,
         "collect_era5_waves": collect_era5_waves,
+        "collect_hurdat2": collect_hurdat2,
+        "collect_national_hydrography": collect_national_hydrography,
         "collect_nwm": collect_nwm,
+        "collect_usgs_streamgages": collect_usgs_streamgages,
     }
 
 
@@ -79,6 +85,17 @@ def run_collect(
                     rows=len(frame),
                     artifact=str(paths["waterlevel_csv"]),
                 )
+            elif step.name == "usgs_streamgages":
+                result = funcs["collect_usgs_streamgages"](settings, skip_existing=skip_existing, smoke=False)
+                status = "reused" if result.get("reused") else "collected"
+                _record(
+                    rows,
+                    step.name,
+                    status,
+                    started,
+                    rows=result.get("candidate_count", 0),
+                    artifact=str(result.get("candidate_geojson")),
+                )
             elif step.name == "nwm":
                 result = funcs["collect_nwm"](settings, skip_existing=skip_existing, smoke=False)
                 status = "reused" if result.get("reused") else "collected"
@@ -89,6 +106,17 @@ def run_collect(
                     started,
                     rows=result.get("soil_moisture_rows", 0),
                     artifact=str(result.get("soil_moisture_csv")),
+                )
+            elif step.name == "national_hydrography":
+                result = funcs["collect_national_hydrography"](settings, skip_existing=skip_existing, smoke=False)
+                status = "reused" if result.get("reused") else "collected"
+                _record(
+                    rows,
+                    step.name,
+                    status,
+                    started,
+                    rows=result.get("artifact_count", 0),
+                    artifact=str(result.get("hydromt_basemap")),
                 )
             elif step.name == "aorc_sst":
                 result = funcs["collect_aorc_sst"](settings, skip_existing=skip_existing)
@@ -110,7 +138,18 @@ def run_collect(
                     rows=result.get("time_count", 0),
                     artifact=str(result.get("wave_netcdf")),
                 )
+            elif step.name == "hurdat2":
+                result = funcs["collect_hurdat2"](settings, skip_existing=skip_existing, smoke=False)
+                _record(
+                    rows,
+                    step.name,
+                    "reused" if result.get("reused") else "collected",
+                    started,
+                    rows=result.get("track_points", 0),
+                    artifact=str(result.get("hurdat2_tracks_csv")),
+                )
         except Exception as exc:
+            print(f"{step.name}: failed with {type(exc).__name__}: {exc}")
             _record(
                 rows,
                 step.name,

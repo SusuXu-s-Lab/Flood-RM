@@ -69,6 +69,41 @@ def test_marshfield_notebooks_have_stage_contract_cards():
         assert "Next:" in text, notebook_path
 
 
+def test_flood_notebooks_use_direct_location_workspace_startup():
+    notebooks = sorted((repo_root / "locations").glob("*/02_flood/**/*.ipynb"))
+    notebooks += sorted((repo_root / "locations").glob("*/03_clean_flood/**/*.ipynb"))
+    banned_startup_fragments = [
+        "find_location_root",
+        "next(p for p in [Path.cwd(), *Path.cwd().parents]",
+        "next(path for path in [Path.cwd(), *Path.cwd().parents]",
+        "workspace_candidates",
+        "FLOOD_RM_LOCATION_CONFIG",
+        "FLOOD_RM_LOCATION",
+        "location_root = Path.cwd().resolve()",
+        "../../1_data",
+        "../../4_results",
+        "Buzi",
+        "Pungwe",
+        "Beira",
+    ]
+
+    assert notebooks
+    for notebook_path in notebooks:
+        notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
+        text = "\n".join("".join(cell.get("source", [])) for cell in notebook["cells"])
+
+        for fragment in banned_startup_fragments:
+            assert fragment not in text, notebook_path
+
+        if "config.yaml" not in text:
+            continue
+        assert "notebook_root = Path.cwd().resolve()" in text, notebook_path
+        if notebook_path.parent.name == "04":
+            assert "location_root = notebook_root.parents[1]" in text, notebook_path
+        else:
+            assert "location_root = notebook_root.parent" in text, notebook_path
+
+
 def test_old_top_level_workflow_folders_are_drained():
     assert not (repo_root / "notebooks").exists()
     assert not (repo_root / "scripts").exists()
@@ -116,6 +151,83 @@ def test_marshfield_notebooks_preserve_location_specific_workflow_content():
         assert len(notebook["cells"]) >= min_cells
 
 
+def test_marshfield_wave_example_derives_precip_state_locally():
+    notebook = json.loads(
+        (repo_root / "locations/marshfield/02_flood/04/b_example_waves.ipynb").read_text(
+            encoding="utf-8"
+        )
+    )
+    text = "\n".join("".join(cell.get("source", [])) for cell in notebook["cells"])
+
+    assert 'hydrology_cfg = (config.get("coastal_wave_coupling") or {}).get("hydrology") or {}' in text
+    assert 'set(config.get("event_drivers") or []) & {"rainfall", "soil_moisture"}' in text
+    assert "include_precip = bool(hydrology_enabled and hydrologic_drivers)" not in text
+
+
+def test_marshfield_wave_example_derives_runup_gauge_names_locally():
+    notebook = json.loads(
+        (repo_root / "locations/marshfield/02_flood/04/b_example_waves.ipynb").read_text(
+            encoding="utf-8"
+        )
+    )
+    text = "\n".join("".join(cell.get("source", [])) for cell in notebook["cells"])
+
+    assert 'gauge_names=[entry["name"] for entry in (runup_cfg.get("transects") or [])] or None' in text
+    assert "for t in transects" not in text
+
+
+def test_marshfield_wave_example_derives_model_crs_locally():
+    notebook = json.loads(
+        (repo_root / "locations/marshfield/02_flood/04/b_example_waves.ipynb").read_text(
+            encoding="utf-8"
+        )
+    )
+    text = "\n".join("".join(cell.get("source", [])) for cell in notebook["cells"])
+
+    assert 'model_crs=str(config["project"].get("model_crs") or "EPSG:26919")' in text
+    assert "model_crs=model_crs" not in text
+
+
+def test_marshfield_wave_example_loads_precip_animation_domain_locally():
+    notebook = json.loads(
+        (repo_root / "locations/marshfield/02_flood/04/b_example_waves.ipynb").read_text(
+            encoding="utf-8"
+        )
+    )
+    text = "\n".join("".join(cell.get("source", [])) for cell in notebook["cells"])
+
+    assert (
+        'domain_gdf=gpd.read_file(paths["location_root"] / config["static_sources"]["bbox"]["output"])'
+        in text
+    )
+    assert "domain_gdf=domain_gdf" not in text
+
+
+def test_marshfield_create_scenarios_notebook_force_rebuilds_after_catalog_changes():
+    notebook = json.loads(
+        (repo_root / "locations/marshfield/02_flood/05_create_scenarios.ipynb").read_text(
+            encoding="utf-8"
+        )
+    )
+    text = "\n".join("".join(cell.get("source", [])) for cell in notebook["cells"])
+
+    assert "force_rebuild = True" in text
+    assert "resume_existing = False" in text
+    assert "resume_existing = True" not in text
+    assert "workers_per_cpu_node = 32" in text
+    assert 'scenario_catalog = pd.read_csv(scenario_root / "scenario_catalog.csv")' in text
+    assert 'scenario_root.glob("evt_*")' not in text
+    assert "EVENT_IDS=evt_0001" not in text
+    assert "cluster_debug_event_id" in text
+
+
+def test_marshfield_cluster_runner_uses_scenario_catalog_event_ids():
+    script = (repo_root / "cluster/run_sfincs_dsai_wave_coupled.slurm").read_text(encoding="utf-8")
+
+    assert 'catalog = root / "scenario_catalog.csv"' in script
+    assert 'Path("$SCENARIOS_DIR").glob("evt_*")' not in script
+
+
 def test_marshfield_event_catalog_notebook_tells_staged_catalog_story():
     notebook = json.loads(
         (repo_root / "locations/marshfield/02_flood/03_build_event_catalog.ipynb").read_text(
@@ -126,32 +238,24 @@ def test_marshfield_event_catalog_notebook_tells_staged_catalog_story():
     stages = [
         "## Stage 1 — Source inventory",
         "## Stage 2 — Driver libraries and marginal evidence",
-        "## Stage 3 — Coastal-driver sampling and benchmark design slices",
-        "## Stage 4 — Build event hydrographs",
-        "## Stage 5 — Compound forcing pairing",
-        "## Stage 6 — Probability catalog and resilience stress/training set",
-        "## Stage 7 — SLR scenario comparison",
-        "## Stage 8 — Hand off to SFINCS",
+        "## Stage 3 — Per-storm-type copula-joint compound dependence",
+        "## Stage 4 — Copula-joint design catalog and resilience stress/training set",
+        "## Stage 5 — Hand off to SFINCS (tide-preserving NTR realization + SLR)",
     ]
     positions = [text.index(stage) for stage in stages]
 
     assert positions == sorted(positions)
     assert "source_inventory_frame" in text
     assert "plot_rainfall_member_distribution" in text
-    assert "wave_analog_diagnostics" in text
-    assert "forcing_selection_frame" in text
-    assert "plot_forcing_marginal_comparison" in text
     assert "Coastal Driver Return Period" in text
     assert "probability_weight" in text
-    assert "Probability Catalog" in text
+    assert "joint_catalog" in text
     assert "Resilience Stress/Training Set" in text
     assert "select_resilience_stress_training_set" in text
     assert "plot_return_period_benchmark_coverage" in text
-    assert "plot_catalog_set_severity_comparison" in text
-    assert "coastal_driver_return_period_range" in text
-    assert "0.2% annual-chance" in text
-    assert "plot_distinct_oscillatory_proxies" in text
-    assert "plot_msl_shift_scenario_comparison" in text
+    assert "plot_joint_tail_budget" in text
+    assert "candidate_pool_count" in text
+    assert "build_coastal_event_timeseries" in text
     assert "notebook-only" not in text
 
 
@@ -166,39 +270,44 @@ def test_marshfield_region_setup_notebook_uses_modular_bbox_not_hand_mesh():
     for index, cell in enumerate(notebook["cells"]):
         if cell.get("cell_type") == "code":
             compile("".join(cell.get("source", [])), f"01_region_setup.ipynb:cell{index}", "exec")
+            assert len("".join(cell.get("source", [])).splitlines()) <= 50, f"cell {index} is too long"
 
+    helper_text = (repo_root / "src/sfincs_runs/build_base/region_notebook.py").read_text(encoding="utf-8")
     assert "bbox_geom_wgs = box(*study_area_bbox(config, repo_root, buffer_degrees=0.01))" in text
     assert "bbox_wgs84 = tuple(float(v) for v in bbox_gdf.total_bounds)" in text
-    assert "def fetch_worldcover_landcover" in text
-    assert "esa-worldcover" in text
-    assert "if region_setup.landcover_raw.exists()" in text
+    assert "collect_coastal_terrain_landcover_inputs(" in text
+    assert "ensure_usgs_3dep_dem_covers_bbox(" in text
+    assert "plot_coastal_static_input_qa(" in text
+    assert "worldcover_tile_urls" in helper_text
+    assert "_fetch_worldcover_for_bbox_geometry" in helper_text
+    assert "if region_setup.landcover_raw.exists()" in helper_text
     assert "fetch_ssurgo_mapunit_polygons" in text
     assert "normalize_ssurgo_axis_order" in text
     assert "features_from_bbox" in text
-    assert "rio.clip_box" in text
-    assert "raw coastline" in text
-    assert "coastal land mask" in text
+    assert "rio.clip_box" in helper_text
+    assert "raw coastline" in helper_text
+    assert "coastal land mask" in helper_text
     assert "SSURGO map units" in text
     assert "write_ssurgo_infiltration_rasters" in text
-    assert "hsg_summary" in text
-    assert "hsg_abcd" in text
-    assert "LogNorm" in text
-    assert "ksat_positive" in text
-    assert "ssurgo_infiltration_rasters" in text
-    assert "ListedColormap" in text
+    assert "coastal_static_qa.hsg_summary" in text
+    assert "hsg_abcd" in helper_text
+    assert "LogNorm" in helper_text
+    assert "ksat_positive" in helper_text
+    assert "ssurgo_infiltration_rasters" in helper_text
+    assert "ListedColormap" in helper_text
     assert "top_soil_types" not in text
     assert '"other"' not in text
     assert "study_area.to_crs(dem.rio.crs).boundary.plot" not in text
     assert "study_area.to_crs(landcover_clip.rio.crs).boundary.plot" not in text
     assert "study_area.boundary.plot(ax=soils_ax" not in text
     assert 'label="study area"' not in text
-    assert "coastal_region.boundary.plot(ax=ax" in text
-    assert "Patch(facecolor=\"none\", edgecolor=\"#00a884\", label=\"coastal land mask\")" in text
+    assert "coastal_region.boundary.plot(ax=ax" in helper_text
+    assert "Patch(facecolor=\"none\", edgecolor=\"#00a884\", label=\"coastal land mask\")" in helper_text
     assert "## Raster Detail" not in text
-    assert "fig, dem_ax = plt.subplots" in text
-    assert "fig, landcover_ax = plt.subplots" in text
-    assert "fig, axes = plt.subplots(1, 2" in text
-    assert "plt.subplots(1, 4" not in text
+    assert "fig, dem_ax = plt.subplots" in helper_text
+    assert "fig, landcover_ax = plt.subplots" in helper_text
+    assert "fig, axes = plt.subplots(1, 2" in helper_text
+    assert "plt.subplots(1, 4" not in helper_text
     assert "load_unstructured_mesh_from_hdf" not in text
     assert "mfield_mesh_v2.hdf" not in text
 
@@ -309,9 +418,9 @@ def test_marshfield_event_catalog_notebook_writes_catalog_audit():
         if cell.get("cell_type") == "code":
             compile("".join(cell.get("source", [])), f"03_build_event_catalog.ipynb:cell{index}", "exec")
 
-    assert "from design_events.build_events.event_catalog import build_event_catalog" in text
-    assert "event_catalog = build_event_catalog(config, paths)" in text
-    assert "paths[\"event_catalog_audit_json\"]" in text
+    assert "from design_events.build_events.joint_catalog import build_historical_tail_catalog, build_joint_design_catalog" in text
+    assert "joint_result = build_joint_design_catalog(" in text
+    assert "write_joint_catalog_sfincs_handoff" in text
 
 
 def test_marshfield_config_is_location_definition_not_notebook_index():
@@ -321,6 +430,8 @@ def test_marshfield_config_is_location_definition_not_notebook_index():
     assert "data_sources: data_sources.yaml" in config
     assert "grid: grid.yaml" in config
     assert "sfincs: sfincs.yaml" in config
+    assert "sfincs_build: sfincs_build.yml" in config
+    assert "sfincs_update_forcing: sfincs_update_forcing.yml" in config
 
 
 def test_marshfield_augment_network_notebooks_use_current_artifact_apis():

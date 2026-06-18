@@ -357,6 +357,9 @@ def stage_event_precipitation(sf, run_root, forcing: EventForcing, *, paths, con
     hydrology_cfg = (config.get("coastal_wave_coupling") or {}).get("hydrology") or {}
     precip_cfg = hydrology_cfg.get("precipitation") or {}
     window_alignment = str(precip_cfg.get("window_alignment", "wettest"))
+    rainfall_scale_factor = _nullable_float(forcing.catalog.get("rainfall_scale_factor"))
+    if rainfall_scale_factor is None or not (rainfall_scale_factor > 0):
+        rainfall_scale_factor = 1.0
     prepared_precip = prepare_aorc_precip_for_sfincs(
         hydrology["rainfall_source_nc"],
         Path(run_root) / "aorc_precip_for_sfincs.nc",
@@ -366,6 +369,7 @@ def stage_event_precipitation(sf, run_root, forcing: EventForcing, *, paths, con
         align_start_to_run=True,
         window_alignment=window_alignment,
         precip_start=_catalog_rainfall_start(forcing.catalog),
+        scale_factor=rainfall_scale_factor,
     )
     soil_manifest = _stage_event_soil_moisture(Path(run_root), hydrology)
     sf.data_catalog.from_dict(
@@ -409,6 +413,7 @@ def stage_event_precipitation(sf, run_root, forcing: EventForcing, *, paths, con
         **soil_manifest,
         "prepared_precip": str(prepared_precip),
         "netamprfile": "sfincs_netampr.nc",
+        "rainfall_scale_factor": rainfall_scale_factor,
         "rainfall_window_alignment": window_alignment,
         "rainfall_start_offset_hours": _nullable_float(forcing.catalog.get("rainfall_start_offset_hours")),
     }

@@ -8,11 +8,14 @@ requirement.
 
 from __future__ import annotations
 
+import argparse
 import colorsys
 import csv
 import json
 import webbrowser
+from functools import partial
 from html import escape
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
@@ -683,3 +686,29 @@ def display_asset_registry_viewer(
 
     viewer_path = write_asset_registry_viewer(assets_dir, output, load_bus_limit=load_bus_limit)
     return HTML(iframe_html(viewer_path, height=height))
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Serve the Marshfield power-grid HTML viewers."
+    )
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=DEFAULT_VIEWER_PORT)
+    args = parser.parse_args()
+
+    handler = partial(SimpleHTTPRequestHandler, directory=str(POWER_GRID))
+    urls = viewer_urls(args.host, args.port)
+
+    print("Serving Marshfield sandbox visualizations")
+    print(f"Directory: {POWER_GRID}")
+    print(f"Recommended Asset Registry viewer: {urls['recommended']}")
+    print(f"Optional deck.gl Asset Registry:   {urls['deckgl']}")
+    print(f"Legacy OpenDSS infrastructure map: {urls['grid_map']}")
+    print("Press Ctrl-C to stop.")
+
+    with ThreadingHTTPServer((args.host, args.port), handler) as server:
+        server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

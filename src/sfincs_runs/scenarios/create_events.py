@@ -221,6 +221,31 @@ def _report_row(manifest, *, row, index, event_dir, args, status):
     }
 
 
+def _validate_snapwave_source_windows(df, *, paths):
+    if not {"event_id", "snapwave_member_file", "snapwave_valid_start_time", "snapwave_valid_end_time"}.issubset(df.columns):
+        return
+    issues = []
+    for wave_file_value, group in df.groupby("snapwave_member_file", dropna=True):
+        wave_file = event_forcing._resolve_catalog_path(wave_file_value, paths=paths or {})
+        with xr.open_dataset(wave_file) as ds:
+            time_name = "time" if "time" in ds.coords else "valid_time" if "valid_time" in ds.coords else None
+            if time_name is None or ds[time_name].size == 0:
+                continue
+            source_start = pd.Timestamp(ds[time_name].values[0])
+            source_stop = pd.Timestamp(ds[time_name].values[-1])
+        starts = pd.to_datetime(group["snapwave_valid_start_time"], errors="coerce")
+        stops = pd.to_datetime(group["snapwave_valid_end_time"], errors="coerce")
+        bad = group[(starts < source_start) | (stops > source_stop) | starts.isna() | stops.isna()]
+        for row in bad.head(10).itertuples(index=False):
+            issues.append(
+                f"{row.event_id}: {row.snapwave_valid_start_time}..{row.snapwave_valid_end_time} "
+                f"outside {source_start}..{source_stop}"
+            )
+    if issues:
+        detail = "; ".join(issues)
+        raise RuntimeError(f"Selected Event Catalog SnapWave windows are outside ERA5 wave coverage: {detail}")
+
+
 def build_scenarios(args, *, config=None, runtime_paths=None, sf_model=None):
     config = args.runtime_config if config is None else config
     runtime_paths = args.runtime_paths if runtime_paths is None else runtime_paths
@@ -230,6 +255,8 @@ def build_scenarios(args, *, config=None, runtime_paths=None, sf_model=None):
     # 1. Read design-event inputs with the full forcing-pairing metadata.
     df, ds = read_event_catalog_inputs(args.design_outputs, scenario=args.design_scenario)
     df = select_rows(df, args.event_ids, args.limit)
+    if args.include_waves:
+        _validate_snapwave_source_windows(df, paths=runtime_paths)
 
     # 2. Set up clean output folder. stage_event_run hardlinks static base files
     # where possible, so a 500-event batch does not duplicate the quadtree grid.

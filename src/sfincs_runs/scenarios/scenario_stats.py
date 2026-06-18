@@ -29,11 +29,13 @@ def event_id(x):
         return f"evt_{int(text[4:]):04d}"
     if text.isdigit() and int(text) > 0:
         return f"evt_{int(text):04d}"
+    if text and "/" not in text and "\\" not in text and text not in {".", ".."}:
+        return text
     raise ValueError(f"Bad event id: {x!r}")
 
 
 def event_dirs(root, ids=None, limit=None):
-    selected = sorted(p for p in Path(root).iterdir() if p.is_dir() and p.name.startswith("evt_"))
+    selected = sorted(p for p in Path(root).iterdir() if p.is_dir() and not p.name.startswith("."))
     if ids:
         wanted = {event_id(x) for x in ids}
         selected = [p for p in selected if p.name in wanted]
@@ -41,6 +43,42 @@ def event_dirs(root, ids=None, limit=None):
         if missing:
             raise FileNotFoundError(f"Missing events: {', '.join(sorted(missing))}")
     return selected[:limit] if limit is not None else selected
+
+
+def _self_contained_run_output(event_dir):
+    event_dir = Path(event_dir)
+    return all((event_dir / name).exists() for name in ["sfincs_map.nc", "sfincs.inp", "sfincs.bzs", "forcing_manifest.json"])
+
+
+def completed_event_inventory(scenarios_root, storage_root, ids=None, limit=None):
+    scenario_events = event_dirs(scenarios_root)
+    storage_events = event_dirs(storage_root)
+    if ids:
+        wanted = {event_id(x) for x in ids}
+        scenario_events = [p for p in scenario_events if p.name in wanted]
+        storage_events = [p for p in storage_events if p.name in wanted]
+        missing = wanted - {p.name for p in [*scenario_events, *storage_events]}
+        if missing:
+            raise FileNotFoundError(f"Missing events: {', '.join(sorted(missing))}")
+    scenario_completed = [d for d in scenario_events if (Path(storage_root) / d.name / "sfincs_map.nc").exists()]
+    storage_completed = [d for d in storage_events if _self_contained_run_output(d)]
+
+    use_storage_outputs = len(storage_completed) > len(scenario_completed)
+    all_events = storage_events if use_storage_outputs else scenario_events
+    completed_events = storage_completed if use_storage_outputs else scenario_completed
+    if limit is not None:
+        completed_events = completed_events[:limit]
+
+    return {
+        "scenario_events": scenario_events,
+        "storage_events": storage_events,
+        "scenario_completed": scenario_completed,
+        "storage_completed": storage_completed,
+        "all_events": all_events,
+        "completed_events": completed_events,
+        "event_source_root": Path(storage_root) if use_storage_outputs else Path(scenarios_root),
+        "use_storage_outputs": use_storage_outputs,
+    }
 
 
 def parse_args(argv=None):
@@ -129,6 +167,29 @@ def metric(a, fn):
 
 def area(mask, cell_area_m2):
     return None if cell_area_m2 <= 0 else float(np.count_nonzero(mask) * cell_area_m2 / 1_000_000.0)
+
+
+def cell_area_m2(event_dir, inp):
+    cell_area = float(inp.get("dx", "nan")) * float(inp.get("dy", "nan"))
+    if np.isfinite(cell_area) and cell_area > 0:
+        return cell_area
+
+    qtrfile = inp.get("qtrfile")
+    if not qtrfile:
+        return 0.0
+    qtr_path = Path(event_dir) / qtrfile
+    if not qtr_path.exists():
+        return 0.0
+
+    with xr.open_dataset(qtr_path, decode_times=False) as ds:
+        dx = float(ds.attrs.get("dx", "nan"))
+        dy = float(ds.attrs.get("dy", "nan"))
+        if not (np.isfinite(dx) and np.isfinite(dy) and dx > 0 and dy > 0):
+            return 0.0
+        levels = np.asarray(ds["level"].values) if "level" in ds else np.asarray([])
+        if levels.size and np.nanmax(levels) > np.nanmin(levels):
+            return 0.0
+        return dx * dy
 
 
 def to_ft(x):
@@ -221,8 +282,7 @@ def event_stats(event_dir, storage_dir, land_threshold_m, huthresh_m, impact_thr
         impact = np.isfinite(incremental) & (incremental > impact_threshold_m)
         newly_wet = impact & dry_t0[None, :, :]
 
-        cell_area = float(inp.get("dx", "nan")) * float(inp.get("dy", "nan"))
-        cell_area = cell_area if np.isfinite(cell_area) and cell_area > 0 else 0.0
+        cell_area = cell_area_m2(event_dir, inp)
 
         peak_map = np.full(land.shape, np.nan, float)
         impacted_cells = np.any(impact, axis=0)
@@ -336,7 +396,7 @@ def write_plots(df, plots_dir):
 
 def write_report(df, aggregate, path):
     lines = [
-        "# Surge-only flood statistics",
+        "# SFINCS flood statistics",
         "",
         f"- Event count: {len(df)}",
         f"- CSV: `{aggregate['scenario_stats_csv']}`",
@@ -358,15 +418,17 @@ def write_report(df, aggregate, path):
 def main():
     args = parse_args()
     args.stats_dir.mkdir(parents=True, exist_ok=True)
-    selected = event_dirs(args.scenarios_dir, args.event_ids, args.limit)
+    inventory = completed_event_inventory(args.scenarios_dir, args.storage_dir, args.event_ids, args.limit)
+    selected = inventory["completed_events"]
     if not selected:
-        print("No scenario directories matched.")
+        print("No completed event directories matched.")
         return 1
 
     scenario_summary, scenario_rows = load_scenario_build(args.scenarios_dir)
     design_rows, design_attrs = load_design_events(scenario_summary)
 
     print(f"Processing {len(selected)} events with {args.workers} workers ...")
+    print(f"Event source: {inventory['event_source_root']}")
     print(f"Design scenario: {first(design_attrs.get('scenario_name'), scenario_summary.get('design_scenario'))}")
     print(f"Design SLR offset: {design_attrs.get('slr_offset_m')} m")
     rows, failures, t0 = [], [], time.time()

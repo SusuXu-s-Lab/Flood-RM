@@ -11,6 +11,7 @@ from .fit_history.extreme_value import (
     observed_return_periods,
     score_fit,
 )
+from .build_events.event_distribution import assign_severity_bands
 
 
 # Stage 1.1: SFINCS offshore boundary + chosen CORA snap node centroid.
@@ -43,7 +44,7 @@ def plot_raw_waterlevel(waterlevel, window_slice=("2018-01-01", "2018-03-31")):
     window = waterlevel.loc[window_slice[0]:window_slice[1]]
     fig, axes = plt.subplots(1, 2, figsize=(14, 4))
     axes[0].plot(window.index, window.values, lw=1.0)
-    axes[0].set_title(f"Stage 2.1 — Raw CORA hourly water level ({window_slice[0]} to {window_slice[1]})")
+    axes[0].set_title(f"Raw CORA hourly water level ({window_slice[0]} to {window_slice[1]})")
     axes[0].set_ylabel("water level [m+MSL]")
     axes[0].grid(True, alpha=0.3)
     axes[1].hist(waterlevel.values, bins=60, color="0.4", alpha=0.85)
@@ -79,7 +80,7 @@ def plot_detrending(waterlevel, detrend_meta):
                 bbox=dict(boxstyle="round", fc="white", alpha=0.8))
     ax.set_xlabel("year")
     ax.set_ylabel("annual-mean water level [m+MSL]")
-    ax.set_title("Stage 2.2 — Detrending: secular MSL trend at the CORA boundary node")
+    ax.set_title("Detrending: secular MSL trend at the CORA boundary node")
     ax.legend(loc="lower right", fontsize=9)
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
@@ -98,7 +99,7 @@ def plot_pot_extraction(waterlevel, peaks, threshold_m,
     axes[0].axhline(threshold_m, color="black", ls="--", lw=1.0,
                     label=f"threshold = {threshold_m:.2f} m")
     axes[0].set_ylabel("water level [m+MSL]")
-    axes[0].set_title("Stage 2.3 — POT extraction (sample window)")
+    axes[0].set_title("POT extraction (sample window)")
     axes[0].grid(True, alpha=0.3)
     axes[0].legend(loc="best", fontsize=9)
     axes[1].hist(peaks.dropna().values, bins=35, color="steelblue", alpha=0.85)
@@ -137,7 +138,7 @@ def plot_aic_model_selection(peaks, marginal):
                      label=f"{dist.upper()} fit (AIC={aic:.1f}{'  ←AIC pick' if chosen else ''})")
     axes[0].set_xlabel("peak height h [m+MSL_ref]")
     axes[0].set_ylabel("F(h) = P(peak ≤ h)")
-    axes[0].set_title("Stage 2.4 — Which distribution best matches the historical peaks?")
+    axes[0].set_title("Which distribution best matches the historical peaks?")
     axes[0].legend(loc="lower right", fontsize=9)
     axes[0].grid(True, alpha=0.3)
 
@@ -244,7 +245,7 @@ def plot_return_curve_with_ci(peaks, marginal, bootstrap, rps=None,
     ax.grid(True, alpha=0.3, which="both")
 
     fig.suptitle(
-        f"Stage 2.5 — From fitted distribution to return-period curve  "
+        f"From fitted distribution to return-period curve  "
         f"(per-peak P  →  × {rate:.1f}/yr  →  invert)",
         y=1.02, fontsize=11,
     )
@@ -268,7 +269,7 @@ def plot_stationarity(peaks, report):
                   f"[{ts.low_slope*1000:+.2f}, {ts.high_slope*1000:+.2f}]")
     mk_p = float(report.get("mann_kendall_p", float("nan")))
     note = "stationary" if mk_p >= 0.05 else "trend detected"
-    ax.set_title(f"Stage 2.6 — Stationarity diagnostic: Mann-Kendall p={mk_p:.3f} ({note})")
+    ax.set_title(f"Stationarity diagnostic: Mann-Kendall p={mk_p:.3f} ({note})")
     ax.set_ylabel("peak [m+MSL_ref]")
     ax.legend(loc="best", fontsize=9)
     ax.grid(True, alpha=0.3)
@@ -308,6 +309,96 @@ def _annual_chance_label(return_period_years):
     return f"{aep:g}% annual chance"
 
 
+def _return_period_axis_context(catalog):
+    columns = set(catalog.columns)
+    if columns & {"basis_site_no", "peak_flow_cfs", "streamflow_member_id", "streamflow_source"}:
+        return {
+            "kind": "streamflow",
+            "axis_label": "streamgage-network return period [years]",
+            "title_label": "streamgage-network benchmark coverage",
+            "joint_label": "Streamgage-network return period",
+        }
+    if columns & {"coastal_peak_m", "coastal_member_id", "coastal_analog_id", "coastal_source"}:
+        return {
+            "kind": "coastal",
+            "axis_label": "coastal driver return period [years]",
+            "title_label": "coastal-driver benchmark coverage",
+            "joint_label": "Coastal driver return period",
+        }
+    return {
+        "kind": "generic",
+        "axis_label": "event-driver return period [years]",
+        "title_label": "event-driver benchmark coverage",
+        "joint_label": "Event-driver return period",
+    }
+
+
+def _short_event_label(value, *, max_length=28):
+    text = "" if pd.isna(value) else str(value)
+    if len(text) <= max_length:
+        return text
+    return text[: max_length - 1] + "…"
+
+
+def _catalog_display_label(catalog, *, default="Catalog"):
+    if catalog is None or "catalog_role" not in catalog:
+        return default
+    roles = {
+        str(role).strip().lower()
+        for role in catalog["catalog_role"].dropna().unique()
+        if str(role).strip()
+    }
+    if roles == {"design"}:
+        return "Selected Design Catalog"
+    if roles == {"probability"}:
+        return "Probability Catalog"
+    if "design" in roles:
+        return "Design Catalog"
+    if "probability" in roles:
+        return "Probability Catalog"
+    return default
+
+
+def _candidate_pool_band_counts(catalog, bands):
+    counts = pd.Series(0.0, index=list(bands), dtype=float)
+    if catalog is None or "severity_band" not in catalog:
+        return counts, 0
+
+    keyed = catalog.copy()
+    keyed["severity_band"] = keyed["severity_band"].astype(str)
+    if "pool_band_support" in keyed:
+        counts = (
+            pd.to_numeric(keyed["pool_band_support"], errors="coerce")
+            .groupby(keyed["severity_band"])
+            .max()
+            .reindex(bands)
+            .fillna(0.0)
+        )
+    elif {"pool_band_probability", "candidate_pool_count"}.issubset(keyed.columns):
+        pool_count = pd.to_numeric(keyed["candidate_pool_count"], errors="coerce").dropna()
+        total = float(pool_count.iloc[0]) if len(pool_count) else float(len(keyed))
+        probabilities = (
+            pd.to_numeric(keyed["pool_band_probability"], errors="coerce")
+            .groupby(keyed["severity_band"])
+            .max()
+            .reindex(bands)
+            .fillna(0.0)
+        )
+        counts = (probabilities * total).round()
+    else:
+        counts = keyed["severity_band"].value_counts().reindex(bands).fillna(0.0)
+
+    total_column = pd.to_numeric(catalog.get("candidate_pool_count", pd.Series(dtype=float)), errors="coerce").dropna()
+    total = int(round(float(total_column.iloc[0]))) if len(total_column) else int(round(float(counts.sum())))
+    return counts.astype(float), total
+
+
+def _format_return_period_label(value):
+    value = float(value)
+    number = f"{int(round(value))}" if value.is_integer() else f"{value:g}"
+    return f"{number}-yr"
+
+
 def nearest_benchmark_events(catalog, *, benchmarks=None):
     benchmarks = benchmarks or [10, 50, 100, 500]
     frame = catalog.copy()
@@ -331,6 +422,8 @@ def nearest_benchmark_events(catalog, *, benchmarks=None):
                 "severity_band": row.get("severity_band", pd.NA),
                 "probability_weight": row.get("probability_weight", pd.NA),
                 "coastal_peak_m": row.get("coastal_peak_m", row.get("peak_m", pd.NA)),
+                "basis_site_no": row.get("basis_site_no", pd.NA),
+                "peak_flow_cfs": row.get("peak_flow_cfs", pd.NA),
                 "absolute_log_error": float(abs(np.log(row["sample_rp_years"]) - np.log(benchmark))),
             }
         )
@@ -339,6 +432,8 @@ def nearest_benchmark_events(catalog, *, benchmarks=None):
 
 def plot_return_period_benchmark_coverage(catalog, stress_catalog=None, *, benchmarks=None):
     benchmarks = benchmarks or [10, 50, 100, 500]
+    axis = _return_period_axis_context(catalog)
+    catalog_label = _catalog_display_label(catalog, default="Catalog")
     frame = catalog.copy()
     frame["sample_rp_years"] = pd.to_numeric(frame["sample_rp_years"], errors="coerce")
     rp = frame["sample_rp_years"].replace([np.inf, -np.inf], np.nan).dropna()
@@ -349,7 +444,7 @@ def plot_return_period_benchmark_coverage(catalog, stress_catalog=None, *, bench
         lower = max(0.01, float(rp.min()))
         upper = max(float(rp.max()), max(benchmarks))
         bins = np.geomspace(lower, upper, 32)
-        axes[0].hist(rp, bins=bins, color="#4c78a8", alpha=0.70, label="Probability Catalog")
+        axes[0].hist(rp, bins=bins, color="#4c78a8", alpha=0.70, label=catalog_label)
         if stress_catalog is not None and "sample_rp_years" in stress_catalog:
             stress_rp = pd.to_numeric(stress_catalog["sample_rp_years"], errors="coerce").dropna()
             stress_rp = stress_rp[stress_rp > 0]
@@ -371,27 +466,47 @@ def plot_return_period_benchmark_coverage(catalog, stress_catalog=None, *, bench
             fontsize=8,
             rotation=0,
         )
-    axes[0].set_xlabel("coastal driver return period [years]")
+    axes[0].set_xlabel(axis["axis_label"])
     axes[0].set_ylabel("event count")
-    axes[0].set_title("Stage 3.2 — 10/50/100/500-year coastal-driver benchmark coverage")
+    axes[0].set_title(f"10/50/100/500-year {axis['title_label']}")
     axes[0].legend(loc="best", fontsize=9)
     axes[0].grid(True, alpha=0.3, which="both")
 
     axes[1].axis("off")
     if not nearest.empty:
-        table = nearest[
-            [
-                "benchmark_return_period_years",
-                "annual_chance_label",
-                "event_id",
-                "sample_rp_years",
-                "severity_band",
-            ]
-        ].copy()
+        table_columns = [
+            "benchmark_return_period_years",
+            "annual_chance_label",
+            "event_id",
+        ]
+        labels = ["target RP", "AEP", "nearest event"]
+        col_widths = [0.15, 0.18, 0.27]
+        if axis["kind"] == "streamflow":
+            table_columns.extend(["basis_site_no", "peak_flow_cfs"])
+            labels.extend(["basis gage", "peak cfs"])
+            col_widths.extend([0.14, 0.13])
+        elif axis["kind"] == "coastal":
+            table_columns.append("coastal_peak_m")
+            labels.append("peak m")
+            col_widths.append(0.12)
+        table_columns.extend(["sample_rp_years", "severity_band"])
+        labels.extend(["event RP", "band"])
+        col_widths.extend([0.12, 0.14])
+        table = nearest[table_columns].copy()
+        table["benchmark_return_period_years"] = table["benchmark_return_period_years"].map(_format_return_period_label)
+        table["annual_chance_label"] = table["annual_chance_label"].str.replace(" annual chance", " AEP", regex=False)
+        table["event_id"] = table["event_id"].map(_short_event_label)
         table["sample_rp_years"] = table["sample_rp_years"].map(lambda value: f"{value:.1f}")
-        labels = ["target RP", "AEP", "nearest event", "event RP", "band"]
+        if "peak_flow_cfs" in table:
+            table["peak_flow_cfs"] = pd.to_numeric(table["peak_flow_cfs"], errors="coerce").map(
+                lambda value: "" if pd.isna(value) else f"{value:,.0f}"
+            )
+        if "coastal_peak_m" in table:
+            table["coastal_peak_m"] = pd.to_numeric(table["coastal_peak_m"], errors="coerce").map(
+                lambda value: "" if pd.isna(value) else f"{value:.2f}"
+            )
         cell_text = table.to_numpy().tolist()
-        rendered = axes[1].table(cellText=cell_text, colLabels=labels, loc="center")
+        rendered = axes[1].table(cellText=cell_text, colLabels=labels, colWidths=col_widths, loc="center")
         rendered.auto_set_font_size(False)
         rendered.set_fontsize(8)
         rendered.scale(1, 1.45)
@@ -499,22 +614,46 @@ def _circular_day_gap(a, b):
     return np.minimum(diff, 366.0 - diff)
 
 
+def _catalog_time_series(catalog, columns):
+    for column in columns:
+        if column in catalog:
+            return pd.to_datetime(catalog[column], errors="coerce"), column
+    return pd.Series(pd.NaT, index=catalog.index, dtype="datetime64[ns]"), None
+
+
+def _normalize_pairing_strategy(strategy, forcing=None):
+    if strategy == "inland_rainfall_pairing_priority":
+        return "seasonal_window_permutation"
+    if strategy == "inland_antecedent_moisture_pairing":
+        return "antecedent_to_forcing"
+    return strategy
+
+
 def _seasonal_pairing_values(catalog, forcing):
-    coastal_time = pd.to_datetime(catalog.get("coastal_template_peak_time"), errors="coerce")
-    member_time = pd.to_datetime(catalog.get(f"{forcing}_member_time"), errors="coerce")
-    mask = coastal_time.notna() & member_time.notna()
-    coastal_doy = coastal_time[mask].dt.dayofyear.to_numpy(dtype=float)
+    reference_time, reference_column = _catalog_time_series(
+        catalog,
+        [
+            "coastal_template_peak_time",
+            "event_reference_time",
+            "template_peak_time",
+            "event_time",
+            "event_date",
+        ],
+    )
+    member_time, _ = _catalog_time_series(catalog, [f"{forcing}_member_time"])
+    mask = reference_time.notna() & member_time.notna()
+    reference_doy = reference_time[mask].dt.dayofyear.to_numpy(dtype=float)
     member_doy = member_time[mask].dt.dayofyear.to_numpy(dtype=float)
-    diff = _circular_day_gap(coastal_doy, member_doy)
+    diff = _circular_day_gap(reference_doy, member_doy)
     member_id = catalog.get(f"{forcing}_member_id")
     if member_id is None:
         member_id = pd.Series(["<missing>"] * len(catalog), index=catalog.index)
     members = member_id.loc[mask].astype(str)
-    return coastal_doy, member_doy, diff, members
+    return reference_doy, member_doy, diff, members, reference_column
 
 
 def seasonal_pairing_diagnostics(catalog, forcing, *, window_days=None):
-    coastal_doy, member_doy, diff, members = _seasonal_pairing_values(catalog, forcing)
+    _, member_doy, diff, members, _ = _seasonal_pairing_values(catalog, forcing)
     reuse = members.value_counts()
     window = float(window_days) if window_days is not None else np.nan
     in_window = int((diff <= window).sum()) if np.isfinite(window) else int(len(diff))
@@ -586,6 +725,7 @@ def forcing_pairing_diagnostics(catalog, forcings=None, policies=None):
         if strategy is None and f"{forcing}_pairing_policy" in catalog:
             values = catalog[f"{forcing}_pairing_policy"].dropna().astype(str)
             strategy = values.iloc[0] if len(values) else None
+        strategy = _normalize_pairing_strategy(strategy, forcing)
         if strategy == "seasonal_window_permutation":
             window = policy.get("window_days")
             if window is None and f"{forcing}_pairing_window_days" in catalog:
@@ -659,6 +799,7 @@ def plot_configured_pairing(catalog, forcing, *, policy=None, ax=None):
     if strategy is None and f"{forcing}_pairing_policy" in catalog:
         values = catalog[f"{forcing}_pairing_policy"].dropna().astype(str)
         strategy = values.iloc[0] if len(values) else None
+    strategy = _normalize_pairing_strategy(strategy, forcing)
     if strategy == "antecedent_to_forcing":
         return plot_antecedent_pairing(catalog, forcing, ax=ax)
     window = policy.get("window_days")
@@ -702,7 +843,7 @@ def plot_rainfall_member_distribution(members):
     axes[0].plot(x, frame[depth_column], "o-", color="steelblue", ms=3, lw=1)
     axes[0].set_xlabel("SST member rank")
     axes[0].set_ylabel(depth_column)
-    axes[0].set_title(f"Stage 5.1 — AORC SST rainfall member depths (n={len(frame):,})")
+    axes[0].set_title(f"AORC SST rainfall member depths (n={len(frame):,})")
     axes[0].grid(True, alpha=0.3)
     axes[1].bar(month_counts.index, month_counts.values, color="0.45", alpha=0.85)
     axes[1].set_xlabel("storm-start month")
@@ -737,21 +878,21 @@ def _shade_circular_window(ax, window):
 
 
 # Stage 5.2: seasonal-window pairing diagnostic. Day-of-year (DOY) of each
-# coastal template peak vs. DOY of the paired non-coastal member, with the
-# configured circular ±window_days band overlaid. The methodology
-# (Zscheischler 2018, Wahl 2015) motivates seasonal alignment; this plot makes
-# the constraint auditable per Event Catalog row.
+# catalog reference event vs. DOY of the paired member, with the configured
+# circular ±window_days band overlaid. The reference event is coastal for
+# Marshfield and streamgage-network based for inland locations.
 def plot_seasonal_pairing(catalog, forcing, *, window_days=None, ax=None):
-    coastal_doy, member_doy, diff, _ = _seasonal_pairing_values(catalog, forcing)
+    reference_doy, member_doy, diff, _, reference_column = _seasonal_pairing_values(catalog, forcing)
     if ax is None:
         fig, ax = plt.subplots(figsize=(7, 6))
     else:
         fig = ax.figure
     if window_days is not None:
         _shade_circular_window(ax, float(window_days))
-    ax.scatter(coastal_doy, member_doy, c=diff, cmap="viridis", s=10, alpha=0.65)
+    ax.scatter(reference_doy, member_doy, c=diff, cmap="viridis", s=10, alpha=0.65)
     ax.plot([1, 366], [1, 366], ls=":", color="black", lw=0.8)
-    ax.set_xlabel("coastal template peak DOY")
+    reference_label = (reference_column or "event reference").replace("_", " ")
+    ax.set_xlabel(f"{reference_label} DOY")
     ax.set_ylabel(f"paired {forcing} member DOY")
     in_window = int((diff <= float(window_days)).sum()) if window_days is not None else len(diff)
     title = f"Stage 5.2 — Seasonal-window pairing: {forcing} (n={len(diff):,})"
@@ -792,8 +933,18 @@ def plot_sampling_weights(catalog):
     return fig
 
 
-def severity_band_distribution(catalog, *, band_order=None):
+def _catalog_with_severity(catalog, *, severity_bands=None):
+    frame = catalog.copy()
+    if "severity_band" not in frame:
+        if "sample_rp_years" not in frame:
+            raise ValueError("catalog needs severity_band or sample_rp_years")
+        frame["severity_band"] = assign_severity_bands(frame["sample_rp_years"], severity_bands)
+    return frame
+
+
+def severity_band_distribution(catalog, *, band_order=None, severity_bands=None):
     band_order = band_order or ["mild", "common", "significant", "rare", "extreme", "beyond_design"]
+    catalog = _catalog_with_severity(catalog, severity_bands=severity_bands)
     counts = catalog["severity_band"].value_counts()
     weights = pd.to_numeric(catalog["sampling_weight"], errors="coerce").fillna(0.0)
     weighted = weights.groupby(catalog["severity_band"].astype(str)).sum()
@@ -855,13 +1006,14 @@ def plot_severity_bands(catalog, *, band_order=None):
     axes[1].grid(True, alpha=0.3, axis="y")
     for ax in axes:
         ax.tick_params(axis="x", rotation=20)
-    fig.suptitle("Stage 6.2 — Severity-band coverage", y=1.03)
+    fig.suptitle("Severity-band coverage", y=1.03)
     fig.tight_layout()
     return fig
 
 
 def plot_catalog_set_severity_comparison(probability_catalog, stress_catalog, *, band_order=None):
     band_order = band_order or ["mild", "common", "significant", "rare", "extreme", "beyond_design"]
+    catalog_label = _catalog_display_label(probability_catalog, default="Catalog")
     probability = severity_band_distribution(probability_catalog, band_order=band_order)
     stress = severity_band_distribution(stress_catalog, band_order=band_order)
     bands = [band for band in band_order if band in set(probability["severity_band"]) | set(stress["severity_band"])]
@@ -870,7 +1022,7 @@ def plot_catalog_set_severity_comparison(probability_catalog, stress_catalog, *,
     x = np.arange(len(bands))
     fig, ax = plt.subplots(figsize=(11, 4.5))
     ax.bar(x - 0.18, probability_counts, width=0.36, color="#4c78a8", alpha=0.75,
-           label=f"Probability Catalog (n={int(probability_counts.sum()):,})")
+           label=f"{catalog_label} (n={int(probability_counts.sum()):,})")
     ax.bar(x + 0.18, stress_counts, width=0.36, color="#d62728", alpha=0.75,
            label=f"Resilience Stress/Training Set (n={int(stress_counts.sum()):,})")
     for xpos, value in zip(x - 0.18, probability_counts):
@@ -881,9 +1033,59 @@ def plot_catalog_set_severity_comparison(probability_catalog, stress_catalog, *,
             ax.text(xpos, value, f"{int(value)}", ha="center", va="bottom", fontsize=8)
     ax.set_xticks(x, bands, rotation=20, ha="right")
     ax.set_ylabel("event count")
-    ax.set_title("Stage 6.3 — Probability Catalog vs Resilience Stress/Training Set")
+    ax.set_title(f"Stage 6.3 — {catalog_label} vs Resilience Stress/Training Set")
     ax.legend(loc="best", fontsize=9)
     ax.grid(True, alpha=0.3, axis="y")
+    fig.tight_layout()
+    return fig
+
+
+def plot_original_vs_design_severity(original_catalog, design_catalog, *, band_order=None, severity_bands=None):
+    band_order = band_order or ["mild", "common", "significant", "rare", "extreme", "beyond_design"]
+    original = severity_band_distribution(
+        original_catalog,
+        band_order=band_order,
+        severity_bands=severity_bands,
+    )
+    design = severity_band_distribution(
+        design_catalog,
+        band_order=band_order,
+        severity_bands=severity_bands,
+    )
+    bands = [band for band in band_order if band in set(original["severity_band"]) | set(design["severity_band"])]
+    original_counts = original.set_index("severity_band")["event_count"].reindex(bands).fillna(0)
+    design_counts = design.set_index("severity_band")["event_count"].reindex(bands).fillna(0)
+    original_total = max(float(original_counts.sum()), 1.0)
+    design_total = max(float(design_counts.sum()), 1.0)
+    original_mass = original.set_index("severity_band")["probability_mass"].reindex(bands).fillna(0.0)
+    design_mass = design.set_index("severity_band")["probability_mass"].reindex(bands).fillna(0.0)
+    if float(original_mass.sum()) <= 0:
+        original_mass = original_counts / original_total
+    if float(design_mass.sum()) <= 0:
+        design_mass = design_counts / design_total
+
+    x = np.arange(len(bands))
+    fig, axes = plt.subplots(1, 2, figsize=(14, 4.5))
+    axes[0].bar(x - 0.18, original_counts / original_total, width=0.36, color="#4c78a8", alpha=0.75,
+                label=f"Original POT members (n={int(original_counts.sum()):,})")
+    axes[0].bar(x + 0.18, design_counts / design_total, width=0.36, color="#d62728", alpha=0.75,
+                label=f"Design catalog count (n={int(design_counts.sum()):,})")
+    axes[0].set_ylabel("fraction of rows")
+    axes[0].set_title("Stage 6.2 — Original vs design row distribution")
+    axes[0].legend(loc="best", fontsize=9)
+    axes[0].grid(True, alpha=0.3, axis="y")
+
+    axes[1].bar(x - 0.18, original_mass, width=0.36, color="#4c78a8", alpha=0.75,
+                label="Original POT mass")
+    axes[1].bar(x + 0.18, design_mass, width=0.36, color="#d62728", alpha=0.75,
+                label="Design probability mass")
+    axes[1].set_ylabel("probability mass")
+    axes[1].set_title("Probability-weighted distribution")
+    axes[1].legend(loc="best", fontsize=9)
+    axes[1].grid(True, alpha=0.3, axis="y")
+
+    for ax in axes:
+        ax.set_xticks(x, bands, rotation=20, ha="right")
     fig.tight_layout()
     return fig
 
@@ -1068,7 +1270,147 @@ def plot_forcing_marginal_comparison(catalog, members, forcing, *, value_column=
     return fig
 
 
+def _streamflow_member_frame(members):
+    frame = members.copy()
+    required = {"site_no", "event_time", "peak_flow_cfs"}
+    missing = required - set(frame.columns)
+    if missing:
+        raise ValueError("streamflow members missing required columns: " + ", ".join(sorted(missing)))
+    frame["site_no"] = frame["site_no"].astype(str)
+    frame["event_time"] = pd.to_datetime(frame["event_time"], errors="coerce")
+    frame["peak_flow_cfs"] = pd.to_numeric(frame["peak_flow_cfs"], errors="coerce")
+    if "sample_rp_years" in frame:
+        frame["sample_rp_years"] = pd.to_numeric(frame["sample_rp_years"], errors="coerce")
+    else:
+        frame["sample_rp_years"] = np.nan
+    if "sampling_region" not in frame:
+        frame["sampling_region"] = "body"
+    return frame.dropna(subset=["event_time", "peak_flow_cfs"]).copy()
+
+
+def _streamflow_record_frame(records):
+    frame = records.copy()
+    frame = frame.rename(
+        columns={
+            "datetime": "time",
+            "dateTime": "time",
+            "value": "discharge_cfs",
+            "flow_cfs": "discharge_cfs",
+            "00060": "discharge_cfs",
+        }
+    )
+    required = {"site_no", "time", "discharge_cfs"}
+    missing = required - set(frame.columns)
+    if missing:
+        raise ValueError("streamflow records missing required columns: " + ", ".join(sorted(missing)))
+    frame["site_no"] = frame["site_no"].astype(str)
+    frame["time"] = pd.to_datetime(frame["time"], errors="coerce")
+    frame["discharge_cfs"] = pd.to_numeric(frame["discharge_cfs"], errors="coerce")
+    return frame.dropna(subset=["site_no", "time", "discharge_cfs"]).sort_values(["site_no", "time"])
+
+
+def _streamflow_plot_site(records, members, site_no=None):
+    if site_no is not None:
+        return str(site_no)
+    counts = members["site_no"].astype(str).value_counts()
+    if not counts.empty:
+        return str(counts.index[0])
+    return str(records["site_no"].astype(str).iloc[0])
+
+
+def _streamflow_site_threshold(records, members, site_no, threshold_quantile):
+    member_thresholds = pd.to_numeric(
+        members.loc[members["site_no"].astype(str) == str(site_no), "site_threshold_cfs"]
+        if "site_threshold_cfs" in members
+        else pd.Series(dtype=float),
+        errors="coerce",
+    ).dropna()
+    if len(member_thresholds):
+        return float(member_thresholds.median())
+    site_records = records.loc[records["site_no"].astype(str) == str(site_no), "discharge_cfs"]
+    if site_records.empty:
+        return np.nan
+    return float(site_records.quantile(float(threshold_quantile)))
+
+
+def plot_streamflow_pot_extraction(records, members, *, threshold_quantile=0.98, site_no=None, window_slice=None):
+    records = _streamflow_record_frame(records)
+    members = _streamflow_member_frame(members)
+    selected_site = _streamflow_plot_site(records, members, site_no=site_no)
+    site_records = records[records["site_no"].astype(str) == selected_site].set_index("time")["discharge_cfs"].sort_index()
+    site_peaks = members[members["site_no"].astype(str) == selected_site].set_index("event_time")["peak_flow_cfs"].sort_index()
+    if window_slice is None:
+        if len(site_peaks):
+            center = site_peaks.sort_values(ascending=False).index[0]
+        else:
+            center = site_records.idxmax()
+        window_slice = (
+            pd.Timestamp(center) - pd.Timedelta(days=45),
+            pd.Timestamp(center) + pd.Timedelta(days=45),
+        )
+    window = site_records.loc[window_slice[0]:window_slice[1]]
+    peak_window = site_peaks.loc[window_slice[0]:window_slice[1]]
+    threshold = _streamflow_site_threshold(records, members, selected_site, threshold_quantile)
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 4))
+    axes[0].plot(window.index, window.values, lw=1.0, label="raw discharge")
+    axes[0].scatter(peak_window.index, peak_window.values, color="crimson", s=22, zorder=3, label="POT peaks")
+    if np.isfinite(threshold):
+        axes[0].axhline(threshold, color="black", ls="--", lw=1.0, label=f"threshold = {threshold:,.0f} cfs")
+    axes[0].set_ylabel("discharge [cfs]")
+    axes[0].set_title(f"Stage 2.3 — Streamflow POT extraction ({selected_site})")
+    axes[0].grid(True, alpha=0.3)
+    axes[0].legend(loc="best", fontsize=9)
+
+    values = site_peaks.dropna().values
+    if len(values):
+        axes[1].hist(values, bins=min(35, max(5, int(np.sqrt(len(values)) * 2))), color="steelblue", alpha=0.85)
+    if np.isfinite(threshold):
+        axes[1].axvline(threshold, color="black", ls="--", lw=1.0)
+    axes[1].set_title(f"Historical streamflow peak magnitudes (n={len(values)})")
+    axes[1].set_xlabel("peak discharge [cfs]")
+    axes[1].grid(True, alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
+def plot_streamflow_pot_members(members):
+    frame = _streamflow_member_frame(members)
+    fig, ax = plt.subplots(figsize=(12, 4.5))
+    for site_no, group in frame.groupby("site_no", sort=True):
+        ax.scatter(group["event_time"], group["peak_flow_cfs"], s=18, alpha=0.55, label=site_no)
+    ax.set_ylabel("peak discharge [cfs]")
+    ax.set_title("USGS streamflow POT members by reviewed gage")
+    ax.grid(True, alpha=0.3)
+    if frame["site_no"].nunique() <= 10:
+        ax.legend(loc="best", fontsize=8)
+    fig.tight_layout()
+    return fig
+
+
+def plot_streamflow_return_period_distribution(members):
+    frame = _streamflow_member_frame(members).dropna(subset=["sample_rp_years"])
+    fig, ax = plt.subplots(figsize=(8, 5))
+    colors = frame["sampling_region"].astype(str).map({"tail": "#b91c1c", "body": "#2563eb"}).fillna("#6b7280")
+    ax.scatter(
+        frame["sample_rp_years"],
+        frame["peak_flow_cfs"],
+        s=24,
+        alpha=0.65,
+        c=colors,
+    )
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlabel("sample return period [years]")
+    ax.set_ylabel("peak discharge [cfs]")
+    ax.set_title("Return-period ranked streamflow members")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
 def plot_coastal_forcing_joint(catalog, members, forcing, *, value_column=None):
+    axis = _return_period_axis_context(catalog)
     joined = _selected_forcing_values(catalog, members, forcing, value_column=value_column)
     rp = pd.to_numeric(joined["sample_rp_years"], errors="coerce")
     value = pd.to_numeric(joined["member_value"], errors="coerce")
@@ -1077,10 +1419,10 @@ def plot_coastal_forcing_joint(catalog, members, forcing, *, value_column=None):
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.scatter(rp, value, s=sizes, alpha=0.65, color="teal", edgecolor="white", linewidth=0.3)
     ax.set_xscale("log")
-    ax.set_xlabel("coastal driver return period [years]")
+    ax.set_xlabel(axis["axis_label"])
     value_label = joined["value_column"].iloc[0] if len(joined) else "member value"
     ax.set_ylabel(value_label.replace("_", " "))
-    ax.set_title(f"Stage 5.5 — Coastal driver return period vs {forcing} forcing")
+    ax.set_title(f"Stage 5.5 — {axis['joint_label']} vs {forcing} forcing")
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     return fig
@@ -1282,4 +1624,334 @@ def plot_msl_shift_scenario_comparison(
     ref_epoch = float(params["detrend_reference_epoch_year"].dropna().iloc[0])
     fig.suptitle(f"Stage 7 — MSL-shift scenarios | reference epoch {ref_epoch:.1f}", y=1.02, fontsize=11)
     fig.tight_layout()
+    return fig
+
+
+# --- Copula-Joint compound-dependence figures (ADR-0011) -------------------------------
+# These visualize the production copula_joint method: the paired co-occurrence sample,
+# the fitted vine, AND joint-exceedance isolines, the tail-enrichment budget, and the
+# field-preserving realization. Heavy imports are local to avoid import cycles.
+
+def plot_driver_cooccurrence(paired, x, y, *, ax=None):
+    """Scatter the two-sided POT co-occurrence sample, colored by conditioning driver."""
+    from scipy.stats import kendalltau
+
+    fig = None
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(6.5, 5.5))
+    for cond, color in zip(sorted(paired["conditioned_on"].unique()), ["#4c78a8", "#f58518", "#54a24b"]):
+        sub = paired[paired["conditioned_on"] == cond]
+        ax.scatter(sub[x], sub[y], s=16, alpha=0.55, color=color, label=f"conditioned on {cond} (n={len(sub)})")
+    tau, p = kendalltau(paired[x], paired[y])
+    ax.set_xlabel(x)
+    ax.set_ylabel(y)
+    ax.set_title(f"Two-sided POT co-occurrence — Kendall τ={tau:.2f} (p={p:.1e})")
+    ax.legend(loc="best", fontsize=9)
+    ax.grid(True, alpha=0.3)
+    if fig is not None:
+        fig.tight_layout()
+    return fig
+
+
+def plot_copula_fit_diagnostics(model, paired, *, n=5000, seed=11):
+    """Observed vs simulated dependence on the uniform (pseudo-observation) scale."""
+    import pyvinecopulib as pv
+
+    names = list(model.driver_names)
+    observed = pv.to_pseudo_obs(np.asfortranarray(paired[names].to_numpy(dtype=float)), ties_method="random", seeds=[int(seed)])
+    simulated = np.asarray(model.vine.simulate(int(n), qrng=True, seeds=[int(seed)]), dtype=float)
+    fig, ax = plt.subplots(figsize=(6.0, 6.0))
+    ax.hexbin(
+        simulated[:, 0],
+        simulated[:, 1],
+        gridsize=34,
+        extent=(0, 1, 0, 1),
+        mincnt=1,
+        cmap="Greys",
+        alpha=0.65,
+        label=f"fitted vine sample (n={len(simulated):,})",
+    )
+    ax.scatter(observed[:, 0], observed[:, 1], s=22, alpha=0.80, color="#d62728", label=f"observed pseudo-obs (n={len(observed):,})")
+    families = ", ".join(sorted({str(f) for row in model.vine.families for f in row})) if hasattr(model.vine, "families") else ""
+    ax.set_xlabel(f"u[{names[0]}]")
+    ax.set_ylabel(f"u[{names[1]}]")
+    ax.set_title(f"Vine copula fit (semiparametric, simulated n={len(simulated):,})\nfamilies: {families}")
+    ax.legend(loc="best", fontsize=9)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    return fig
+
+
+def plot_and_joint_isolines(
+    model,
+    *,
+    return_periods=(10, 50, 100, 500),
+    n_sample=4000,
+    grid=60,
+    seed=11,
+    ax=None,
+    paired=None,
+    catalog=None,
+):
+    """AND joint-exceedance isolines over two drivers (Maduwantha 2026 Fig. 3 style)."""
+    from design_events.build_events.joint_exceedance import and_return_period, and_survival_from_cdf
+
+    if model.dim != 2:
+        raise ValueError("AND isoline plot supports exactly two drivers")
+    names = list(model.driver_names)
+    u = np.asarray(model.vine.simulate(int(n_sample), qrng=True, seeds=[int(seed)]), dtype=float)
+    x = np.asarray(model.marginals[0].ppf(np.clip(u[:, 0], 1e-9, 1 - 1e-9)), dtype=float)
+    y = np.asarray(model.marginals[1].ppf(np.clip(u[:, 1], 1e-9, 1 - 1e-9)), dtype=float)
+    _, rp_points = and_return_period(and_survival_from_cdf(u, model.vine.cdf), model.event_rate)
+
+    xs = np.linspace(np.quantile(x, 0.01), np.quantile(x, 0.999), grid)
+    ys = np.linspace(np.quantile(y, 0.01), np.quantile(y, 0.999), grid)
+    xx, yy = np.meshgrid(xs, ys)
+    ug = np.column_stack([
+        np.asarray(model.marginals[0].cdf(xx.ravel()), dtype=float),
+        np.asarray(model.marginals[1].cdf(yy.ravel()), dtype=float),
+    ])
+    _, rp_grid = and_return_period(and_survival_from_cdf(ug, model.vine.cdf), model.event_rate)
+    rp_grid = rp_grid.reshape(xx.shape)
+    # The vine CDF is a QMC estimate, so the raw RP surface is noisy; smooth in log space
+    # to give clean, single-segment isolines (removes jaggedness and duplicate labels).
+    from scipy.ndimage import gaussian_filter
+
+    rp_cap = 10.0 * float(max(return_periods))
+    finite_grid = rp_grid[np.isfinite(rp_grid)]
+    fill = float(finite_grid.max()) if finite_grid.size else rp_cap
+    rp_filled = np.clip(np.where(np.isfinite(rp_grid), rp_grid, fill), 1e-3, rp_cap)
+    rp_smooth = 10.0 ** gaussian_filter(np.log10(rp_filled), sigma=1.2)
+
+    fig = None
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(7.0, 5.6))
+    finite = np.isfinite(rp_points)
+    sc = ax.scatter(x[finite], y[finite], c=np.log10(np.clip(rp_points[finite], 1e-3, None)), s=10, alpha=0.5, cmap="viridis")
+    contour = ax.contour(xx, yy, rp_smooth, levels=sorted(return_periods), colors="crimson", linewidths=1.6)
+    ax.clabel(contour, inline=True, fontsize=8, fmt=lambda v: f"{v:g}-yr AND")
+    if paired is not None and all(name in paired for name in names):
+        ax.scatter(
+            paired[names[0]],
+            paired[names[1]],
+            s=14,
+            facecolors="none",
+            edgecolors="black",
+            alpha=0.28,
+            linewidths=0.8,
+            label=f"observed POT pairs (n={len(paired):,})",
+        )
+    if catalog is not None and all(name in catalog for name in names):
+        catalog_label = _catalog_display_label(catalog, default="Selected Catalog")
+        ax.scatter(
+            catalog[names[0]],
+            catalog[names[1]],
+            s=20,
+            color="#d62728",
+            marker="x",
+            linewidths=0.8,
+            alpha=0.72,
+            label=f"{catalog_label} (n={len(catalog):,})",
+        )
+    cbar = (fig or ax.figure).colorbar(sc, ax=ax)
+    cbar.set_label("log10 AND joint return period [yr]")
+    ax.set_xlabel(names[0])
+    ax.set_ylabel(names[1])
+    ax.set_title("AND joint-exceedance isolines with observed and selected events")
+    if paired is not None or catalog is not None:
+        ax.legend(loc="best", fontsize=8)
+    ax.grid(True, alpha=0.3)
+    if fig is not None:
+        fig.tight_layout()
+    return fig
+
+
+def plot_tide_ntr_decomposition(components, window_slice=("2018-01-01", "2018-03-31")):
+    """CORA total water level split into MSL + tide + non-tidal residual (Fix 2)."""
+    sub = components.loc[slice(*window_slice)] if window_slice else components
+    fig, axes = plt.subplots(2, 1, figsize=(12, 6), sharex=True)
+    axes[0].plot(sub.index, sub["wl"], color="#4c78a8", lw=0.7, label="total water level")
+    axes[0].plot(sub.index, sub["msl"] + sub["tide"], color="#f58518", lw=0.7, alpha=0.85, label="MSL + astronomical tide")
+    axes[0].set_ylabel("m (MSL datum)")
+    axes[0].legend(fontsize=9)
+    axes[0].grid(True, alpha=0.3)
+    axes[0].set_title("CORA total water level vs reconstructed MSL + tide (utide harmonic analysis)")
+    axes[1].plot(sub.index, sub["ntr"], color="#e45756", lw=0.7, label="non-tidal residual (surge)")
+    axes[1].axhline(0.0, color="k", lw=0.5)
+    axes[1].set_ylabel("NTR (m)")
+    axes[1].set_xlabel("time")
+    axes[1].legend(fontsize=9)
+    axes[1].grid(True, alpha=0.3)
+    axes[1].set_title("Non-tidal residual = storm surge — the coastal copula axis and scaled quantity")
+    fig.tight_layout()
+    return fig
+
+
+def plot_storm_type_cooccurrence(paired, x, y, *, ax=None):
+    """Scatter the co-occurrence sample colored by storm-type population (Fix 3)."""
+    fig = None
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(6.5, 5.5))
+    palette = {"nor_easter": "#4c78a8", "other_non_tropical": "#54a24b", "tc": "#e45756", "unresolved": "#bab0ac"}
+    for storm_type in [s for s in palette if s in set(paired["storm_type"])]:
+        sub = paired[paired["storm_type"] == storm_type]
+        ax.scatter(sub[x], sub[y], s=20, alpha=0.65, color=palette[storm_type], label=f"{storm_type} (n={len(sub)})")
+    ax.set_xlabel(x)
+    ax.set_ylabel(y)
+    ax.set_title("Compound drivers by storm-type population")
+    ax.legend(loc="best", fontsize=9)
+    ax.grid(True, alpha=0.3)
+    if fig is not None:
+        fig.tight_layout()
+    return fig
+
+
+def plot_population_copula_fits(model, paired, *, n=4000, seed=11):
+    """Per-population observed vs fitted dependence on the uniform scale (small multiples)."""
+    import pyvinecopulib as pv
+
+    names = list(model.driver_names)
+    pops = list(model.populations)
+    fig, axes = plt.subplots(1, len(pops), figsize=(5.2 * len(pops), 5.0), squeeze=False)
+    for ax, pop in zip(axes[0], pops):
+        sub = paired[paired["storm_type"] == pop.storm_type]
+        simulated = np.asarray(pop.vine.simulate(int(n), qrng=True, seeds=[int(seed)]), dtype=float)
+        ax.hexbin(simulated[:, 0], simulated[:, 1], gridsize=30, extent=(0, 1, 0, 1), mincnt=1, cmap="Greys", alpha=0.65)
+        if len(sub) >= 2:
+            observed = pv.to_pseudo_obs(np.asfortranarray(sub[names].to_numpy(dtype=float)), ties_method="random", seeds=[int(seed)])
+            ax.scatter(observed[:, 0], observed[:, 1], s=22, alpha=0.85, color="#d62728")
+        flag = "  [low-confidence fit]" if pop.low_confidence else ""
+        ax.set_title(f"{pop.storm_type}  (n={pop.n_events}, λ={pop.rate:.2f}/yr){flag}", fontsize=10)
+        ax.set_xlabel(f"u[{names[0]}]")
+        ax.set_ylabel(f"u[{names[1]}]")
+        ax.grid(True, alpha=0.3)
+    fig.suptitle("Per-storm-type vine fits: observed pseudo-obs (red) vs fitted sample (grey)")
+    fig.tight_layout()
+    return fig
+
+
+def plot_combined_and_isolines(model, *, return_periods=(10, 50, 100, 500), grid=60, n_sample=4000, seed=11, paired=None, catalog=None, ax=None):
+    """Combined AND isolines across storm-type populations (the paper's pooled-AEP surface)."""
+    from scipy.ndimage import gaussian_filter
+
+    from design_events.build_events.joint_exceedance import combined_return_period
+
+    names = list(model.driver_names)
+    # mixture pool for axis ranges and the scatter
+    phys_parts, type_parts = [], []
+    for k, pop in enumerate(model.populations):
+        n_pop = max(50, int(round(int(n_sample) * pop.rate / model.total_rate)))
+        u = np.asarray(pop.vine.simulate(n_pop, qrng=True, seeds=[int(seed) + k]), dtype=float)
+        phys_parts.append(np.column_stack([np.asarray(m.ppf(np.clip(u[:, j], 1e-9, 1 - 1e-9)), dtype=float) for j, m in enumerate(pop.marginals)]))
+        type_parts.append(np.array([pop.storm_type] * n_pop))
+    phys = np.vstack(phys_parts)
+    _, rp_points = combined_return_period(phys, model.populations)
+
+    xs = np.linspace(np.quantile(phys[:, 0], 0.01), np.quantile(phys[:, 0], 0.999), grid)
+    ys = np.linspace(np.quantile(phys[:, 1], 0.01), np.quantile(phys[:, 1], 0.999), grid)
+    xx, yy = np.meshgrid(xs, ys)
+    _, rp_grid = combined_return_period(np.column_stack([xx.ravel(), yy.ravel()]), model.populations)
+    rp_grid = rp_grid.reshape(xx.shape)
+    rp_cap = 10.0 * float(max(return_periods))
+    finite = rp_grid[np.isfinite(rp_grid)]
+    fill = float(finite.max()) if finite.size else rp_cap
+    rp_smooth = 10.0 ** gaussian_filter(np.log10(np.clip(np.where(np.isfinite(rp_grid), rp_grid, fill), 1e-3, rp_cap)), sigma=1.2)
+
+    fig = None
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(7.0, 5.6))
+    palette = {"nor_easter": "#4c78a8", "other_non_tropical": "#54a24b", "tc": "#e45756", "unresolved": "#bab0ac"}
+    pool_type = np.concatenate(type_parts)
+    for storm_type in [s for s in palette if s in set(pool_type)]:
+        m = pool_type == storm_type
+        ax.scatter(phys[m, 0], phys[m, 1], s=8, alpha=0.30, color=palette[storm_type], label=f"{storm_type} pool")
+    contour = ax.contour(xx, yy, rp_smooth, levels=sorted(return_periods), colors="crimson", linewidths=1.6)
+    ax.clabel(contour, inline=True, fontsize=8, fmt=lambda v: f"{v:g}-yr AND")
+    if catalog is not None and all(name in catalog for name in names):
+        ax.scatter(catalog[names[0]], catalog[names[1]], s=16, color="black", marker="x", linewidths=0.7, alpha=0.6, label=f"selected catalog (n={len(catalog):,})")
+    ax.set_xlabel(names[0])
+    ax.set_ylabel(names[1])
+    ax.set_title("Combined AND isolines across storm-type populations")
+    ax.legend(loc="best", fontsize=8)
+    ax.grid(True, alpha=0.3)
+    if fig is not None:
+        fig.tight_layout()
+    return fig
+
+
+def plot_joint_tail_budget(catalog, stress_settings, *, severity_bands=None, band_order=None):
+    """Compare the fitted candidate pool against the selected design/stress set."""
+    from design_events.build_events.dependence import check_stress_budget
+
+    catalog_label = _catalog_display_label(catalog, default="Catalog")
+    report = check_stress_budget(catalog, stress_settings or {}, severity_bands=severity_bands, raise_on_shortfall=False)
+    order = band_order or ["mild", "common", "significant", "rare", "extreme", "beyond_design"]
+    report = report.set_index("severity_band").reindex([b for b in order if b in report["severity_band"].values]).dropna(how="all").reset_index()
+    mass = catalog.groupby("severity_band")["probability_weight"].sum()
+    pool_counts, pool_total = _candidate_pool_band_counts(catalog, report["severity_band"].astype(str).tolist())
+    report["candidate_pool_count"] = report["severity_band"].map(pool_counts).fillna(0.0).to_numpy(dtype=float)
+    keep = (
+        (report["candidate_pool_count"] > 0)
+        | (pd.to_numeric(report["catalog_count"], errors="coerce").fillna(0) > 0)
+        | (pd.to_numeric(report["stress_budget_count"], errors="coerce").fillna(0) > 0)
+    )
+    report = report[keep].reset_index(drop=True)
+
+    fig, axes = plt.subplots(1, 3, figsize=(16, 4.6))
+    pos = np.arange(len(report))
+    pool_label = f"candidate pool (n={pool_total:,})" if pool_total else "candidate pool"
+    selected_label = f"{catalog_label} / stress set (n={len(catalog):,})"
+    axes[0].bar(pos - 0.24, report["candidate_pool_count"], width=0.24, color="#9ecae9", label=pool_label)
+    axes[0].bar(pos, report["catalog_count"], width=0.24, color="#4c78a8", label=selected_label)
+    axes[0].bar(pos + 0.24, report["stress_budget_count"], width=0.24, color="#e45756", label="configured stress budget")
+    axes[0].set_xticks(pos, report["severity_band"], rotation=25, ha="right")
+    axes[0].set_ylabel("events")
+    axes[0].set_yscale("log")
+    positive_counts = report[["candidate_pool_count", "catalog_count", "stress_budget_count"]].to_numpy(dtype=float)
+    positive_counts = positive_counts[positive_counts > 0]
+    if positive_counts.size:
+        axes[0].set_ylim(max(0.8, positive_counts.min() * 0.6), positive_counts.max() * 1.8)
+    axes[0].set_title(f"Candidate pool to selected stress set ({pool_total:,} -> {len(catalog):,})")
+    axes[0].legend(fontsize=9)
+    flags = report["meets_budget"].astype(bool).all()
+    axes[0].text(0.02, 0.95, "budget MET" if flags else "BUDGET SHORTFALL", transform=axes[0].transAxes,
+                 color=("#2a7" if flags else "#c33"), fontsize=10, va="top")
+
+    selected = pd.to_numeric(report["catalog_count"], errors="coerce").fillna(0).to_numpy(dtype=float)
+    pool = report["candidate_pool_count"].to_numpy(dtype=float)
+    selection_rate = np.divide(selected, pool, out=np.zeros_like(selected), where=pool > 0)
+    axes[1].bar(pos, 100.0 * selection_rate, color="#72b7b2")
+    axes[1].set_xticks(pos, report["severity_band"], rotation=25, ha="right")
+    axes[1].set_ylabel("selected from pool [%]")
+    axes[1].set_title("Selection rate by severity band")
+    axes[1].grid(True, alpha=0.3, axis="y")
+
+    band_mass = [float(mass.get(b, 0.0)) for b in report["severity_band"]]
+    axes[2].bar(pos, band_mass, color="#f58518")
+    axes[2].set_xticks(pos, report["severity_band"], rotation=25, ha="right")
+    axes[2].set_ylabel("probability mass")
+    axes[2].set_title("Fitted probability mass by band")
+    for ax in axes:
+        ax.grid(True, alpha=0.3, axis="y")
+    fig.tight_layout()
+    return fig
+
+
+def plot_realization_scaling(catalog, driver, *, ax=None):
+    """Field-Preserving Realization diagnostics: scale-factor spread + analog diversity."""
+    scale_col, member_col = f"{driver}_scale_factor", f"{driver}_template_member_id"
+    scales = pd.to_numeric(catalog[scale_col], errors="coerce").dropna()
+    fig = None
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(6.5, 4.5))
+    ax.hist(scales, bins=40, color="#4c78a8", alpha=0.8)
+    ax.axvline(1.0, color="crimson", ls="--", lw=1.5, label="K=1 (no scaling)")
+    distinct = int(catalog[member_col].nunique()) if member_col in catalog else 0
+    ax.set_xlabel(f"{driver} scale factor K = target / observed")
+    ax.set_ylabel("events")
+    ax.set_title(f"{driver}: field-preserving realization\n{distinct} distinct observed analogs used (n={len(scales)})")
+    ax.legend(loc="best", fontsize=9)
+    ax.grid(True, alpha=0.3)
+    if fig is not None:
+        fig.tight_layout()
     return fig

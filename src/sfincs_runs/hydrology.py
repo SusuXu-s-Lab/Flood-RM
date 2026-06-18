@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import suppress
 from pathlib import Path
 import re
 
@@ -151,10 +152,8 @@ def write_ssurgo_infiltration_rasters(
     hsg_profile.update(count=1, dtype="uint8", nodata=0, compress="deflate")
     ksat_profile = profile.copy()
     ksat_profile.update(count=1, dtype="float32", nodata=np.nan, compress="deflate")
-    with rasterio.open(hsg_out, "w", **hsg_profile) as dst:
-        dst.write(hsg, 1)
-    with rasterio.open(ksat_out, "w", **ksat_profile) as dst:
-        dst.write(ksat.astype("float32"), 1)
+    _write_single_band_raster_atomically(hsg_out, hsg, hsg_profile)
+    _write_single_band_raster_atomically(ksat_out, ksat.astype("float32"), ksat_profile)
 
     return {
         "hsg": str(hsg_out),
@@ -198,8 +197,7 @@ def prepare_ksat_raster_for_cn_recovery(
             conditioned[capped] = float(max_mmhr)
         conditioned[~valid] = np.nan
         profile.update(count=1, dtype="float32", nodata=np.nan, compress="deflate")
-        with rasterio.open(output, "w", **profile) as dst:
-            dst.write(conditioned.astype("float32"), 1)
+        _write_single_band_raster_atomically(output, conditioned.astype("float32"), profile)
 
     return {
         "ksat": str(output),
@@ -257,6 +255,18 @@ def _ksat_to_mmhr(value, *, units):
     raise ValueError("ksat_units must be 'um/s' or 'mm/hr'")
 
 
+def _write_single_band_raster_atomically(path, values, profile):
+    import rasterio
+
+    path = Path(path)
+    temp_path = path.with_name(f".{path.stem}.tmp{path.suffix}")
+    with suppress(FileNotFoundError):
+        temp_path.unlink()
+    with rasterio.open(temp_path, "w", **profile) as dst:
+        dst.write(values, 1)
+    temp_path.replace(path)
+
+
 def validate_infiltration_config(
     infiltration_cfg: dict | None,
     *,
@@ -281,7 +291,7 @@ def validate_infiltration_config(
         if missing:
             raise RuntimeError(
                 "Rainfall/soil-moisture drivers require CN-with-recovery inputs. "
-                f"Missing coastal_wave_coupling.hydrology.infiltration keys: {missing}. "
+                f"Missing SFINCS hydrology infiltration keys: {missing}. "
                 "Add HSG and Ksat rasters plus an event/soil-moisture-derived "
                 "effective soil-retention fraction before running pluvial SFINCS. "
                 "The SSURGO mapunit polygons currently fetched in 01_region_setup.ipynb "
@@ -290,7 +300,7 @@ def validate_infiltration_config(
     elif method == "cn":
         if infiltration_cfg.get("cn") in (None, ""):
             raise RuntimeError(
-                "CN infiltration requires coastal_wave_coupling.hydrology.infiltration.cn "
+                "CN infiltration requires SFINCS hydrology infiltration.cn "
                 "pointing to a gridded Curve Number raster with cn/cn_avg variables."
             )
     elif method == "constant_lulc":
@@ -304,7 +314,7 @@ def validate_infiltration_config(
 
 
 def setup_hydromt_infiltration(sf, config, paths, *, datadir=None):
-    hydrology_cfg = (config.get("coastal_wave_coupling") or {}).get("hydrology") or {}
+    hydrology_cfg = _sfincs_hydrology_config(config)
     infiltration_cfg = hydrology_cfg.get("infiltration") or {}
     hydrology_enabled = bool(infiltration_cfg.get("enabled", True))
     hydrologic_drivers = (
@@ -325,7 +335,7 @@ def setup_hydromt_infiltration(sf, config, paths, *, datadir=None):
         event_drivers=config.get("event_drivers") or [],
     )
     method = str(infiltration_cfg.get("method", "cn_with_recovery")).lower()
-    component = getattr(sf, "quadtree_infiltration", None) or getattr(sf, "infiltration", None)
+    component = _select_hydromt_infiltration_component(sf)
     if component is None:
         raise RuntimeError("HydroMT-SFINCS model has no infiltration component")
 
@@ -353,7 +363,12 @@ def setup_hydromt_infiltration(sf, config, paths, *, datadir=None):
             # internally. A conditioned raster from this module is already mm/hr.
             factor_ksat = 1.0 / 3.6 if ksat_conditioning else 1.0
         component.create_cn_with_recovery(
-            lulc=infiltration_cfg.get("lulc", "worldcover"),
+            lulc=_register_raster_source_or_name(
+                sf,
+                paths,
+                "lulc",
+                infiltration_cfg.get("lulc", "worldcover"),
+            ),
             hsg=_register_raster_source(sf, paths, "hsg", infiltration_cfg["hsg"]),
             ksat=_register_raster_source(sf, paths, "ksat", ksat_source),
             reclass_table=reclass_table,
@@ -383,6 +398,36 @@ def setup_hydromt_infiltration(sf, config, paths, *, datadir=None):
     }
 
 
+def _sfincs_hydrology_config(config):
+    coastal = (config.get("coastal_wave_coupling") or {}).get("hydrology") or {}
+    if coastal:
+        return coastal
+
+    inland = config.get("inland_coupling") or {}
+    if not inland:
+        return {}
+
+    hydrology = {}
+    if "direct_rainfall" in inland:
+        hydrology["precipitation"] = inland.get("direct_rainfall") or {}
+    if "infiltration" in inland:
+        hydrology["infiltration"] = inland.get("infiltration") or {}
+    if "soil_moisture" in inland:
+        hydrology["soil_moisture"] = inland.get("soil_moisture") or {}
+    return hydrology
+
+
+def _select_hydromt_infiltration_component(sf):
+    if str(getattr(sf, "grid_type", "") or "").lower() == "quadtree":
+        # Quadtree CN recovery must write onto sf.quadtree_grid; the regular
+        # component dereferences sf.grid.nmax/mmax and fails before write.
+        return getattr(sf, "quadtree_infiltration", None)
+    regular = getattr(sf, "infiltration", None)
+    if regular is not None:
+        return regular
+    return getattr(sf, "quadtree_infiltration", None)
+
+
 def _resolve_location_path(paths, value):
     if value in (None, ""):
         return None
@@ -406,6 +451,16 @@ def _register_raster_source(sf, paths, name, value):
         }
     )
     return name
+
+
+def _register_raster_source_or_name(sf, paths, name, value):
+    if value in (None, ""):
+        return name
+    path = Path(str(value))
+    is_path = path.is_absolute() or len(path.parts) > 1 or bool(path.suffix)
+    if not is_path:
+        return str(value)
+    return _register_raster_source(sf, paths, name, value)
 
 
 def find_aorc_event_window(
@@ -459,6 +514,7 @@ def prepare_aorc_precip_for_sfincs(
     align_start_to_run: bool = False,
     window_alignment: str = "start",
     precip_start: str | pd.Timestamp | None = None,
+    scale_factor: float = 1.0,
 ) -> Path:
     """Normalize AORC storm-window precipitation for HydroMT-SFINCS.
 
@@ -466,7 +522,15 @@ def prepare_aorc_precip_for_sfincs(
     interval. HydroMT-SFINCS expects a variable named ``precip`` on
     ``time/y/x`` coordinates and converts interval totals to mm/hr when
     called with ``cumulative_input=True``.
+
+    ``scale_factor`` multiplies the whole spatio-temporal field by
+    ``K = target / observed`` so a sampled rainfall design target is realized by
+    scaling the selected observed AORC SST field rather than collapsing it to a
+    scalar (the Field-Preserving Realization; see ``build_events.realization``).
     """
+    scale_factor = float(scale_factor)
+    if not (np.isfinite(scale_factor) and scale_factor > 0):
+        raise ValueError(f"scale_factor must be finite and > 0, got {scale_factor!r}")
     source_nc = Path(source_nc)
     output_nc = Path(output_nc)
     if not source_nc.exists():
@@ -500,8 +564,12 @@ def prepare_aorc_precip_for_sfincs(
         )
 
     da = da.sortby("y").sortby("x").reindex(time=full_time, fill_value=0.0)
+    if scale_factor != 1.0:
+        da = da * scale_factor
     da = da.astype("float32")
-    da.attrs.update({"units": "mm", "crs": "EPSG:4326"})
+    # NB: avoid the reserved CF attribute name "scale_factor" — xarray would
+    # re-apply it as a packing factor on read and double-scale the field.
+    da.attrs.update({"units": "mm", "crs": "EPSG:4326", "applied_scale_factor": scale_factor})
 
     output_nc.parent.mkdir(parents=True, exist_ok=True)
     out = da.to_dataset()

@@ -44,11 +44,13 @@ def event_id(x):
         return f"evt_{int(text[4:]):04d}"
     if text.isdigit() and int(text) > 0:
         return f"evt_{int(text):04d}"
+    if text and "/" not in text and "\\" not in text and text not in {".", ".."}:
+        return text
     raise ValueError(f"Bad event id: {x!r}")
 
 
 def event_dirs(root, ids=None, limit=None):
-    selected = sorted(p for p in Path(root).iterdir() if p.is_dir() and p.name.startswith("evt_"))
+    selected = sorted(p for p in Path(root).iterdir() if p.is_dir() and not p.name.startswith("."))
     if ids:
         wanted = {event_id(x) for x in ids}
         selected = [p for p in selected if p.name in wanted]

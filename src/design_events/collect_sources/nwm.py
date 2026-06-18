@@ -82,6 +82,10 @@ def collect_streamflow(settings, open_zarr=_open_zarr):
     nwm = settings["nwm"]
     spec = nwm.get("streamflow", {})
     output_csv = _configured(paths["nwm_root"] / "streamflow.csv", paths, "nwm_streamflow_csv")
+    if spec.get("available") is False:
+        reason = spec.get("reason", "NWM streamflow is not configured as a source for this location.")
+        print(f"NWM streamflow: disabled; {reason}")
+        return _empty(output_csv, ["time", "feature_id", "streamflow"])
     feature_ids = spec.get("feature_ids", [])
     if not feature_ids:
         print("NWM streamflow: no feature IDs configured; writing empty artifact")
@@ -102,14 +106,22 @@ def collect_streamflow(settings, open_zarr=_open_zarr):
 
 
 def collect_soil_moisture(settings, open_zarr=_open_zarr):
+    from design_events.collect_sources.soil_moisture_points import load_points
+
     paths = settings["paths"]
     nwm = settings["nwm"]
     spec = nwm.get("soil_moisture", {})
     output_csv = _configured(paths["nwm_root"] / "soil_moisture.csv", paths, "nwm_soil_moisture_csv")
-    points = spec.get("points", [])
+    # Representative cells are derived from the location footprint (see
+    # soil_moisture_points.load_points), not hand-typed in the location YAML.
+    points = load_points(spec, paths)
     if not points:
         print("NWM soil moisture: no points configured; writing empty artifact")
-        return _empty(output_csv, ["time", "point_id", "soil_moisture"])
+        # Carry the configured variable columns (e.g. SOILSAT_TOP) so an uncollected
+        # location stays schema-consistent with a populated CSV: downstream member-library
+        # building then yields an empty library instead of a missing-column KeyError.
+        variables = [str(value) for value in spec.get("variables", ["soil_m"])]
+        return _empty(output_csv, ["time", "point_id", *variables])
     print(f"NWM soil moisture: opening {spec['zarr']}")
     ds = _time_slice(open_zarr(spec["zarr"], chunks=spec.get("chunks", {})), settings["start"], settings["end"])
     variables = [str(value) for value in spec.get("variables", ["soil_m"])]
@@ -122,26 +134,55 @@ def collect_soil_moisture(settings, open_zarr=_open_zarr):
         )
     x_name = spec.get("x", "x")
     y_name = spec.get("y", "y")
-    frames = []
-    point_iter = iter_progress(
-        points,
-        total=len(points),
-        desc="NWM soil points",
-        unit="point",
-        dynamic_ncols=True,
-    )
-    for point in point_iter:
-        point_id = point.get("id", f"{point[x_name]}_{point[y_name]}")
-        if hasattr(point_iter, "set_postfix_str"):
-            point_iter.set_postfix_str(str(point_id), refresh=False)
-        selected = ds[selected_variables].sel({x_name: point[x_name], y_name: point[y_name]}, method="nearest")
-        frame = selected.to_dataframe().reset_index()
-        frame = _derive_soilsat_top(frame, requested=variables, spec=spec)
-        frame["point_id"] = point_id
-        frames.append(frame)
-    frame = pd.concat(frames, ignore_index=True)
+    print(f"NWM soil moisture: extracting {len(points)} representative points")
+    frame = _soil_moisture_points_frame(ds, selected_variables, variables, spec, points, x_name, y_name)
+    if spec.get("aggregate_points", False):
+        frame = _aggregate_soil_moisture_points(frame)
     print(f"NWM soil moisture: writing {len(frame):,} rows to {output_csv}")
     return _write_frame(frame, output_csv)
+
+
+def _soil_moisture_points_frame(ds, selected_variables, requested_variables, spec, points, x_name, y_name):
+    import xarray as xr
+
+    point_ids = [str(point.get("id", f"{point[x_name]}_{point[y_name]}")) for point in points]
+    x_values = xr.DataArray(
+        [float(point[x_name]) for point in points],
+        dims="point",
+        coords={"point_id": ("point", point_ids)},
+    )
+    y_values = xr.DataArray(
+        [float(point[y_name]) for point in points],
+        dims="point",
+        coords={"point_id": ("point", point_ids)},
+    )
+    selected = ds[selected_variables].sel({x_name: x_values, y_name: y_values}, method="nearest")
+    frame = selected.to_dataframe().reset_index()
+    if "point" in frame.columns:
+        frame = frame.drop(columns=["point"])
+    return _derive_soilsat_top(frame, requested=requested_variables, spec=spec)
+
+
+def _aggregate_soil_moisture_points(frame):
+    frame = frame.copy()
+    frame["time"] = pd.to_datetime(frame["time"], errors="coerce")
+    frame = frame.dropna(subset=["time"])
+    aggregations = {}
+    for column in ["SOIL_M", "SOILSAT_TOP"]:
+        if column in frame:
+            aggregations[column] = (column, "mean")
+    if "SOILSAT_TOP" in frame:
+        aggregations["SOILSAT_TOP_min"] = ("SOILSAT_TOP", "min")
+        aggregations["SOILSAT_TOP_max"] = ("SOILSAT_TOP", "max")
+    if "point_id" in frame:
+        aggregations["point_count"] = ("point_id", "nunique")
+    if "soil_layers_stag" in frame:
+        aggregations["layer_count"] = ("soil_layers_stag", "nunique")
+    grouped = frame.groupby("time", as_index=False).agg(**aggregations)
+    if "SOILSAT_TOP_source" in frame:
+        grouped["SOILSAT_TOP_source"] = frame["SOILSAT_TOP_source"].dropna().astype(str).iloc[0]
+    grouped["source"] = "nwm"
+    return grouped
 
 
 def _available_soil_variables(ds, variables):
@@ -193,6 +234,14 @@ def _derive_soilsat_top(frame, *, requested, spec):
 
     frame["SOILSAT_TOP_source"] = source
     return frame
+
+
+def _soil_point_count(soil):
+    if "point_id" in soil.columns:
+        return int(soil["point_id"].nunique())
+    if "point_count" in soil.columns and len(soil):
+        return int(soil["point_count"].iloc[0])
+    return 0
 
 
 def collect_nwm(settings, skip_existing=False, smoke=False):
@@ -259,9 +308,12 @@ def collect_nwm(settings, skip_existing=False, smoke=False):
         metadata={
             "version": nwm.get("version", "2.1"),
             "bucket": nwm.get("bucket"),
+            "streamflow_available": nwm.get("streamflow", {}).get("available"),
+            "streamflow_reason": nwm.get("streamflow", {}).get("reason"),
             "streamflow_zarr": nwm.get("streamflow", {}).get("zarr"),
             "soil_moisture_zarr": nwm.get("soil_moisture", {}).get("zarr"),
             "soil_moisture_variables": nwm.get("soil_moisture", {}).get("variables", []),
+            "soil_moisture_point_count": _soil_point_count(soil),
             "smoke": bool(smoke),
         },
     )

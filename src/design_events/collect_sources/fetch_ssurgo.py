@@ -80,13 +80,28 @@ def fetch_ssurgo_mapunit_polygons(
     keep_gml=False,
     session_get=None,
     read_file=None,
+    fallback_tile_degrees=0.5,
 ):
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     url = build_ssurgo_wfs_url(bbox_wgs84)
     get = session_get or requests.get
     response = get(url, timeout=timeout_seconds)
-    response.raise_for_status()
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        status_code = getattr(getattr(exc, "response", None), "status_code", None)
+        if status_code != 400 or not _bbox_needs_tiling(bbox_wgs84, fallback_tile_degrees):
+            raise
+        return _fetch_ssurgo_mapunit_polygon_tiles(
+            bbox_wgs84,
+            output_path,
+            timeout_seconds=timeout_seconds,
+            keep_gml=keep_gml,
+            session_get=get,
+            read_file=read_file,
+            tile_degrees=fallback_tile_degrees,
+        )
 
     gml_path = output_path.with_suffix(".gml")
     gml_path.write_bytes(response.content)
@@ -103,6 +118,62 @@ def fetch_ssurgo_mapunit_polygons(
     return soils
 
 
+def _bbox_needs_tiling(bbox_wgs84, tile_degrees):
+    west, south, east, north = bbox_wgs84
+    return east - west > tile_degrees or north - south > tile_degrees
+
+
+def _split_bbox(bbox_wgs84, tile_degrees):
+    west, south, east, north = bbox_wgs84
+    y = south
+    while y < north:
+        tile_north = min(y + tile_degrees, north)
+        x = west
+        while x < east:
+            tile_east = min(x + tile_degrees, east)
+            yield (x, y, tile_east, tile_north)
+            x = tile_east
+        y = tile_north
+
+
+def _fetch_ssurgo_mapunit_polygon_tiles(
+    bbox_wgs84,
+    output_path,
+    *,
+    timeout_seconds,
+    keep_gml,
+    session_get,
+    read_file,
+    tile_degrees,
+):
+    reader = read_file or gpd.read_file
+    frames = []
+    for index, tile_bbox in enumerate(_split_bbox(bbox_wgs84, tile_degrees)):
+        response = session_get(build_ssurgo_wfs_url(tile_bbox), timeout=timeout_seconds)
+        response.raise_for_status()
+        gml_path = output_path.with_name(f"{output_path.stem}_tile_{index:03d}.gml")
+        gml_path.write_bytes(response.content)
+        tile = reader(gml_path)
+        if tile.crs is None:
+            tile = tile.set_crs("EPSG:4326")
+        else:
+            tile = tile.to_crs("EPSG:4326")
+        tile = normalize_ssurgo_axis_order(tile, tile_bbox)
+        if not tile.empty:
+            frames.append(tile)
+        if not keep_gml:
+            gml_path.unlink(missing_ok=True)
+
+    soils = (
+        gpd.GeoDataFrame(pd.concat(frames, ignore_index=True), geometry="geometry", crs="EPSG:4326")
+        if frames
+        else gpd.GeoDataFrame(columns=["mukey", "geometry"], geometry="geometry", crs="EPSG:4326")
+    )
+    soils = normalize_ssurgo_axis_order(soils, bbox_wgs84)
+    soils.to_file(output_path, driver="GPKG")
+    return soils
+
+
 def fetch_ssurgo_mapunit_attributes(
     mukeys,
     output_path,
@@ -114,7 +185,7 @@ def fetch_ssurgo_mapunit_attributes(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     keys = sorted({str(value).strip() for value in mukeys if str(value).strip()})
     if not keys:
-        frame = pd.DataFrame(columns=["mukey", "hydgrp", "ksat_r", "hzdept_r", "hzdepb_r"])
+        frame = pd.DataFrame(columns=ssurgo_attribute_columns())
         frame.to_csv(output_path, index=False)
         return frame
 
@@ -141,21 +212,43 @@ SELECT
   co.hydgrp,
   ch.ksat_r,
   ch.hzdept_r,
-  ch.hzdepb_r
+  ch.hzdepb_r,
+  ch.sandtotal_r,
+  ch.silttotal_r,
+  ch.claytotal_r,
+  ch.dbthirdbar_r,
+  ch.om_r,
+  ch.ph1to1h2o_r
 FROM mapunit AS mu
 INNER JOIN component AS co ON mu.mukey = co.mukey
 LEFT JOIN chorizon AS ch ON co.cokey = ch.cokey
 WHERE mu.mukey IN ({key_list})
   AND co.majcompflag = 'Yes'
-  AND (ch.hzdept_r IS NULL OR ch.hzdept_r <= 40)
+  AND (ch.hzdept_r IS NULL OR ch.hzdept_r <= 200)
 ORDER BY mu.mukey, co.comppct_r DESC, ch.hzdept_r
 """.strip()
+
+
+def ssurgo_attribute_columns():
+    return [
+        "mukey",
+        "hydgrp",
+        "ksat_r",
+        "hzdept_r",
+        "hzdepb_r",
+        "sandtotal_r",
+        "silttotal_r",
+        "claytotal_r",
+        "dbthirdbar_r",
+        "om_r",
+        "ph1to1h2o_r",
+    ]
 
 
 def _soil_data_access_table(payload):
     rows = payload.get("Table", [])
     if not rows:
-        return pd.DataFrame(columns=["mukey", "hydgrp", "ksat_r", "hzdept_r", "hzdepb_r"])
+        return pd.DataFrame(columns=ssurgo_attribute_columns())
     columns, values = rows[0], rows[1:]
     return pd.DataFrame(values, columns=columns)
 

@@ -48,6 +48,11 @@ dependencies = [
     "torch-geometric>=2.7.0",
     "floodsr>=0.1.4",
     "cdsapi>=0.7.0",
+    "hydromt-wflow>=1.0.2",
+    "utide>=0.3.1",
+    "pydeck>=0.9.2",
+    "numpy>=2.4.4",
+    "pyextremes>=2.2.4",
 ]
 
 [build-system]
@@ -62,9 +67,6 @@ packages = [
 ]
 force-include = { "src/study_location.py" = "study_location.py" }
 
-[tool.pytest.ini_options]
-pythonpath = ["src"]
-
 [[tool.uv.index]]
 name = "pytorch-cu130"
 url = "https://download.pytorch.org/whl/cu130"
@@ -72,6 +74,11 @@ explicit = true
 
 [tool.uv]
 default-groups = ["power-systems"]
+# hydromt-wflow 1.0.1/1.0.2 carry a blanket `rasterio<1.5` cap, but 1.0.2 is the
+# release that fixes setup_soilmaps' do_curve_fit under numpy 2.x. hydromt-wflow
+# 1.0.0 already runs on rasterio 1.5.0 here and the soilgrids fix is
+# rasterio-independent, so we override the over-tight transitive cap.
+override-dependencies = ["rasterio>=1.5.0"]
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu130" }]
@@ -87,3 +94,7 @@ power-systems = [
     "nrel-shift>=0.2.0",          # SHIFT synthetic feeder builder (git source above)
     "opendssdirect-py>=0.9.4",    # OpenDSS Python interface for audit notebook
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+addopts = ["-p", "no:cacheprovider"]

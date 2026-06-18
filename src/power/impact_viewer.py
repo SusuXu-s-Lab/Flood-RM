@@ -7,8 +7,8 @@ from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import sys
 
+import power.impact_analysis as impact_analysis
 from power.asset_registry_viewer import POWER_GRID
-from power import impact_analysis
 
 
 DEFAULT_IMPACT_VIEWER_PORT = 8766

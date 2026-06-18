@@ -32,7 +32,7 @@ def _region(region_id: str, code: str, subregions: tuple[str, ...]) -> RegionCon
         region_id,
         code,
         subregions,
-        Path("artifacts") / "regions" / region_id,
+        Path("locations") / region_id / "data",
     )
 
 
