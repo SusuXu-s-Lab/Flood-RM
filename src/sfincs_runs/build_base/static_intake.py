@@ -286,7 +286,11 @@ def collect_wflow_static_region_inputs(
 
     setup = _wflow_region_setup(config, paths, boundary, bbox_wgs84)
     target_resolution = extent.get("terrain_resolution_degrees")
-    dem_covers_extent = _raster_covers_bounds(setup.dem_raw, bbox_wgs84)
+    dem_input = setup.dem_raw
+    dem_covers_extent = _raster_covers_bounds(dem_input, bbox_wgs84)
+    if not dem_covers_extent and _raster_covers_bounds(setup.dem_output, bbox_wgs84):
+        dem_input = setup.dem_output
+        dem_covers_extent = True
     if fetch_dem and not dem_covers_extent:
         fetch_usgs_3dep_dem(
             bbox_wgs84,
@@ -295,12 +299,17 @@ def collect_wflow_static_region_inputs(
             target_resolution_degrees=target_resolution,
             force=setup.dem_raw.exists(),
         )
+        dem_input = setup.dem_raw
     elif not dem_covers_extent:
         raise RuntimeError(
             f"Wflow raw DEM does not cover Wflow collection boundary {bbox_wgs84}: {setup.dem_raw}. "
             "Set FLOOD_RM_FETCH_DEM=1 to collect it over the larger Wflow region."
         )
-    landcover_covers_extent = _raster_covers_bounds(setup.landcover_raw, bbox_wgs84)
+    landcover_input = setup.landcover_raw
+    landcover_covers_extent = _raster_covers_bounds(landcover_input, bbox_wgs84)
+    if not landcover_covers_extent and _raster_covers_bounds(setup.landcover_output, bbox_wgs84):
+        landcover_input = setup.landcover_output
+        landcover_covers_extent = True
     if fetch_landcover and not landcover_covers_extent:
         fetch_worldcover_landcover(
             bbox_wgs84,
@@ -308,14 +317,15 @@ def collect_wflow_static_region_inputs(
             target_resolution_degrees=extent.get("landcover_resolution_degrees", target_resolution),
             force=setup.landcover_raw.exists(),
         )
+        landcover_input = setup.landcover_raw
     elif not landcover_covers_extent:
         raise RuntimeError(
             f"Wflow raw landcover does not cover Wflow collection boundary {bbox_wgs84}: {setup.landcover_raw}. "
             "Set FLOOD_RM_FETCH_LANDCOVER=1 to collect it over the larger Wflow region."
         )
     clip_summary = clip_dem_and_landcover_to_bbox(
-        setup.dem_raw,
-        setup.landcover_raw,
+        dem_input,
+        landcover_input,
         setup.dem_output,
         setup.landcover_output,
         bbox_gdf,
