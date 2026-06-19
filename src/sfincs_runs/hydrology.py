@@ -526,7 +526,7 @@ def prepare_aorc_precip_for_sfincs(
     ``scale_factor`` multiplies the whole spatio-temporal field by
     ``K = target / observed`` so a sampled rainfall design target is realized by
     scaling the selected observed AORC SST field rather than collapsing it to a
-    scalar (the Field-Preserving Realization; see ``build_events.realization``).
+    scalar (the Field-Preserving Realization; see ``build_events.probability.realization``).
     """
     scale_factor = float(scale_factor)
     if not (np.isfinite(scale_factor) and scale_factor > 0):

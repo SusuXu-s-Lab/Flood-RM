@@ -63,6 +63,7 @@ build-backend = "hatchling.build"
 packages = [
     "src/design_events",
     "src/sfincs_runs",
+    "src/wflow_runs",
     "src/power",
 ]
 force-include = { "src/study_location.py" = "study_location.py" }

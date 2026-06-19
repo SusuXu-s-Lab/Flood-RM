@@ -10,8 +10,8 @@ import requests
 import xarray as xr
 from pyproj import Transformer
 
-from design_events.progress import iter_progress
-from design_events.source_artifacts import write_source_artifact
+from design_events.utils import iter_progress
+from design_events.utils import write_source_artifact
 
 
 # prevent reruns if data already exists

@@ -120,8 +120,12 @@ def test_reference_and_tooling_files_have_domain_homes():
     assert (repo_root / "locations/marshfield/data/static/aoi/study_area.geojson").exists()
     assert (repo_root / "locations/marshfield/data/power_grid/asset_registry/buses.csv").exists()
     assert (repo_root / "locations/marshfield/data/power_grid/augmented/assets.parquet").exists()
-    assert (repo_root / "src/design_events/collect_sources/fetch_era5_waves.py").exists()
-    assert (repo_root / "src/design_events/collect_sources/fetch_ssurgo.py").exists()
+    assert (repo_root / "src/design_events/collect_sources/era5_waves/cds.py").exists()
+    assert (repo_root / "src/design_events/collect_sources/era5_waves/earthdatahub.py").exists()
+    assert (repo_root / "src/design_events/collect_sources/ssurgo.py").exists()
+    assert (repo_root / "src/design_events/collect_sources/workflow.py").exists()
+    assert not (repo_root / "src/design_events/collect_sources/fetch_era5_waves.py").exists()
+    assert not (repo_root / "src/design_events/collect_sources/fetch_ssurgo.py").exists()
     assert (repo_root / "cluster/run_sfincs_dsai_wave_coupled.slurm").exists()
 
 
@@ -327,8 +331,8 @@ def test_marshfield_collect_sources_notebook_is_collection_ready():
     assert "run_collection = True" in text
     assert "from tqdm.auto import tqdm" not in text
     assert "import importlib" in text
-    assert "source_plan_module = importlib.reload(source_plan_module)" in text
-    assert "run_collect_module = importlib.reload(run_collect_module)" in text
+    assert "workflow_module = importlib.reload(workflow_module)" in text
+    assert "collect = workflow_module" in text
     assert "tqdm(plan.steps" not in text
     assert "def _record(collection_rows, source, status, started, **details):" not in text
     assert "\"rows\": rows" not in text
@@ -418,7 +422,7 @@ def test_marshfield_event_catalog_notebook_writes_catalog_audit():
         if cell.get("cell_type") == "code":
             compile("".join(cell.get("source", [])), f"03_build_event_catalog.ipynb:cell{index}", "exec")
 
-    assert "from design_events.build_events.joint_catalog import build_historical_tail_catalog, build_joint_design_catalog" in text
+    assert "from design_events.build_events.probability.design_catalog import build_historical_tail_catalog, build_joint_design_catalog" in text
     assert "joint_result = build_joint_design_catalog(" in text
     assert "write_joint_catalog_sfincs_handoff" in text
 
@@ -507,7 +511,7 @@ def test_marshfield_augment_network_notebooks_use_current_artifact_apis():
     assert "build_location_block_overview" in load_blocks_source
     assert "build_marshfield_block_overview" not in load_blocks_source
     assert "build_ocean_bluff_block_detail" in load_blocks_source
-    assert "from power.event_window import build_event_window_bundle" in onm_export_source
+    assert "from power.exports import build_event_window_bundle" in onm_export_source
     assert "build_switch_line_overlay" in onm_export_source
     assert "build_marshfield_switch_line_overlay" not in onm_export_source
     assert "display(Image(filename=result[\"output_path\"]))" in onm_export_source

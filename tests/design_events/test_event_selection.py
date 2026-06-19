@@ -1,6 +1,6 @@
 import pandas as pd
 
-from design_events.build_events.event_selection import (
+from design_events.build_events.selection import (
     apply_compound_stress_pairing,
     _soil_member_metrics,
     select_resilience_stress_training_set,

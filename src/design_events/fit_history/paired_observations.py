@@ -1,6 +1,6 @@
 """Two-sided conditional POT co-occurrence sampling of compound flood drivers.
 
-Assembles the paired-observation sample that the vine fit (`build_events.dependence`)
+Assembles the paired-observation sample that the vine fit (`build_events.probability.dependence`)
 consumes: a set of historical events where the Driver Probability Indices are observed
 *together*. The method uses two-sided conditional sampling:
 

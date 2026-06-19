@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from design_events.build_events import build_event_catalog_plan
-from design_events.config import load_runtime
+from design_events.utils import load_runtime
 
 
 def suffix(path):

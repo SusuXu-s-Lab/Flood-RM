@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from design_events.config import build_paths, load_runtime
+from design_events.utils import build_paths, load_runtime
 
 
 def suffix(path):

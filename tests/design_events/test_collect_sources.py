@@ -1,10 +1,9 @@
 import pytest
 import pandas as pd
 
-from design_events.collect_sources.all_sources import collect_all_sources
-from design_events.collect_sources.plan import build_source_collection_plan
-from design_events.collect_sources.run_collect import run_collect
-from design_events.cli import build_parser
+from design_events.collect_sources.workflow import collect_all_sources
+from design_events.collect_sources.workflow import build_source_collection_plan
+from design_events.collect_sources.workflow import run_collect
 
 
 def test_collect_all_sources_runs_configured_direct_collectors(tmp_path):
@@ -294,58 +293,8 @@ def test_run_collect_prints_source_failure_before_continuing(tmp_path, capsys):
     assert table.loc[table["source"].eq("nwm"), "status"].item() == "failed"
 
 
-def test_pipeline_accepts_collect_sources_stage_without_legacy_rainfall_options():
-    args = build_parser().parse_args(
-        [
-            "collect_sources",
-            "--config",
-            "locations/marshfield/config.yaml",
-            "--skip-existing",
-        ]
-    )
+def test_design_events_has_no_cli_parser_dependency():
+    import importlib.util
 
-    assert args.stage == "collect_sources"
-    assert args.config == "locations/marshfield/config.yaml"
-    assert args.skip_existing is True
-
-
-def test_pipeline_rejects_removed_legacy_rainfall_stages_and_options():
-    parser = build_parser()
-    legacy = "storm" + "hub"
-
-    with pytest.raises(SystemExit):
-        parser.parse_args([f"collect_{legacy}", "--config", "locations/marshfield/config.yaml"])
-    with pytest.raises(SystemExit):
-        parser.parse_args([f"preflight_{legacy}", "--config", "locations/marshfield/config.yaml"])
-    with pytest.raises(SystemExit):
-        parser.parse_args(["build_rainfall_members", "--config", "locations/marshfield/config.yaml"])
-    with pytest.raises(SystemExit):
-        parser.parse_args(["collect_sources", f"--run-{legacy}"])
-
-
-def test_pipeline_accepts_collect_aorc_sst_stage():
-    args = build_parser().parse_args(
-        [
-            "collect_aorc_sst",
-            "--config",
-            "locations/marshfield/config.yaml",
-            "--skip-existing",
-        ]
-    )
-
-    assert args.stage == "collect_aorc_sst"
-    assert args.config == "locations/marshfield/config.yaml"
-    assert args.skip_existing is True
-
-
-def test_pipeline_accepts_check_readiness_stage():
-    args = build_parser().parse_args(
-        [
-            "check_readiness",
-            "--config",
-            "locations/marshfield/config.yaml",
-        ]
-    )
-
-    assert args.stage == "check_readiness"
-    assert args.config == "locations/marshfield/config.yaml"
+    assert importlib.util.find_spec("design_events.cli") is None
+    assert importlib.util.find_spec("design_events.__main__") is None

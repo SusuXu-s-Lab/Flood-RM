@@ -1,8 +1,11 @@
-"""Grid Dataset modules for Baseline and Augmented Network workflows.
+"""Grid Dataset toolchain with stakeholder-facing module names.
 
-Import concrete modules directly, for example ``power.ssap`` or
-``power.source_inputs``. Keeping the package import shallow avoids loading the
-whole Grid Dataset toolchain just to reach one notebook helper.
+Top-level packages group the work by stakeholder-facing artifact family:
+``baseline_network`` for source network preparation, ``resilience`` for
+facilities/load profiles/DER/switches, ``exports`` for SMART-DS and ONM/RPOP
+outputs, ``impact`` for fragility and flood impact analysis, ``audit`` for
+synthetic validation, ``artifacts`` for IO/paths/stable IDs, and ``plotting``
+for notebook review figures.
 """
 
 __all__: tuple[str, ...] = ()

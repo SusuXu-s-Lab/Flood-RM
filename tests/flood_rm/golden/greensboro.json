@@ -4,9 +4,8 @@
     "metadata_output": "data/static/aoi/study_area.json",
     "output": "data/static/aoi/study_area.geojson",
     "preserve_disconnected_subregions": true,
-    "reference_extent": "data/static/aoi/dft_power_extent.geojson",
-    "source": "data/static/aoi/dft_power_extent.geojson",
-    "source_format": "geojson",
+    "source": "data/smart_ds/2016",
+    "source_format": "smart_ds_buscoords",
     "subregion_bridge_max_edge_degrees": 0.03
   },
   "coastal_waves": false,
@@ -63,12 +62,13 @@
       "streamflow": {
         "available": false,
         "feature_ids": [],
-        "reason": "Greensboro production streamflow frequency should use reviewed active USGS streamgage records."
+        "reason": "Greensboro production streamflow frequency should use HUC-selected active USGS streamgage records."
       },
       "version": "3.0"
     },
     "start": "1979-02-01",
     "usgs_streamgages": {
+      "accept_unreviewed_streamgage_network": false,
       "active_records_only": true,
       "candidate_output": "data/sources/usgs_streamgages/streamgage_candidates.geojson",
       "discovery": {
@@ -80,7 +80,20 @@
         "site_status": "active"
       },
       "exclude_inactive_gages": true,
+      "review_required": true,
       "reviewed_network": "data/sources/usgs_streamgages/streamgage_network.geojson",
+      "roles": [
+        "frequency",
+        "calibration",
+        "validation",
+        "sfincs_handoff"
+      ],
+      "scoring": {
+        "prefer_complete_record": true,
+        "prefer_drainage_area_match": true,
+        "prefer_long_period_of_record": true,
+        "prefer_sfincs_handoff_reaches": true
+      },
       "streamflow_records": {
         "collect": false,
         "output": "data/sources/usgs_streamgages/streamflow_records.csv",
@@ -98,11 +111,131 @@
     },
     "output_root": "data/evaluation"
   },
+  "event_catalog": {
+    "dependence": {
+      "catalog_band_fractions": {
+        "common": 0.28,
+        "extreme": 0.27,
+        "mild": 0.05,
+        "rare": 0.12,
+        "significant": 0.28
+      },
+      "cooccurrence": {
+        "condition_on": [
+          "streamflow"
+        ],
+        "decluster_window_hours": 120,
+        "pairing_window_hours": 72,
+        "target_rate_per_year": 5.0,
+        "threshold_quantile": 0.95
+      },
+      "copula_seed": 42,
+      "driver_records": {
+        "rainfall": {
+          "path": "data/sources/aorc_sst/greensboro/72hr-events/storm-stats.csv",
+          "time_column": "storm_date",
+          "value_column": "mean"
+        },
+        "soil_moisture": {
+          "aggregate": "mean",
+          "path": "data/sources/nwm/soil_moisture.csv",
+          "time_column": "time",
+          "value_column": "SOILSAT_TOP"
+        },
+        "streamflow": {
+          "aggregate": "max",
+          "group_column": "site_no",
+          "path": "data/sources/usgs_streamgages/streamflow_records.csv",
+          "time_column": "time",
+          "value_column": "discharge_cfs"
+        }
+      },
+      "driver_vector": [
+        "streamflow",
+        "rainfall"
+      ],
+      "enforce_stress_budget": true,
+      "event_rate_per_year": 5.0,
+      "marginals": {
+        "rainfall": {
+          "kind": "pot"
+        },
+        "streamflow": {
+          "kind": "pot"
+        }
+      },
+      "member_libraries": {
+        "rainfall": {
+          "from": "member_table"
+        },
+        "streamflow": {
+          "from": "member_table"
+        }
+      },
+      "method": "copula_joint",
+      "pool_size": 100000,
+      "primary_driver": "streamflow"
+    },
+    "forcing_members": {
+      "rainfall": "data/sources/aorc_sst/rainfall_members.csv",
+      "soil_moisture": "data/sources/nwm/soil_moisture.csv",
+      "streamflow": "data/sources/usgs_streamgages/streamflow_members.csv"
+    },
+    "pairing": {
+      "rainfall": {
+        "fallback_strategy": "seasonal_window_permutation",
+        "same_storm_when_available": true,
+        "seed": 42,
+        "strategy": "inland_rainfall_pairing_priority",
+        "window_days": 45
+      },
+      "soil_moisture": {
+        "fallback_reference": "dominant_streamgage_network_peak",
+        "lead_time_hours": 24,
+        "rainfall_relative_when_coherent": true,
+        "strategy": "inland_antecedent_moisture_pairing"
+      },
+      "streamflow": {
+        "active_records_only": true,
+        "allow_multiple_frequency_basis_gages": true,
+        "design_event_method": "scaled_streamgage_network_analog",
+        "strategy": "coherent_streamgage_network_event"
+      }
+    }
+  },
   "event_drivers": [
     "rainfall",
     "streamflow",
     "soil_moisture"
   ],
+  "extremes": {
+    "bootstrap": {
+      "confidence_level": 0.95,
+      "n_replicates": 1000,
+      "seed": 42
+    },
+    "hydrological_year_start": "YS-OCT",
+    "method": "pot",
+    "pot": {
+      "distributions": [
+        "exp",
+        "gpd"
+      ],
+      "min_peak_distance_hours": 72,
+      "threshold_quantile": 0.98
+    },
+    "return_periods": [
+      2,
+      5,
+      10,
+      25,
+      50,
+      100,
+      250,
+      500
+    ],
+    "selection_criterion": "AIC"
+  },
   "flood_setting": "inland",
   "grid": {
     "asset_registry": "data/power_grid/asset_registry",
@@ -125,9 +258,8 @@
     "source": "data/static/aoi/study_area.geojson"
   },
   "includes": {
-    "data_sources": "data_sources.yaml",
     "grid": "grid.yaml",
-    "sfincs": "sfincs.yaml",
+    "sfincs": "domain.yaml",
     "sfincs_build": "sfincs_build.yml",
     "sfincs_update_forcing": "sfincs_update_forcing.yml",
     "wflow_build": "wflow_build.yml",
@@ -197,6 +329,45 @@
     "place_name": "Greensboro, NC, USA",
     "reference_crs": "EPSG:4326"
   },
+  "sampling": {
+    "hybrid_splice_quantile": 0.95,
+    "return_period_max_years": 500.0,
+    "return_period_min_years": 1.5,
+    "severity_bands": [
+      {
+        "rp_max_years": 2.0,
+        "rp_min_years": 0.0,
+        "severity_band": "mild"
+      },
+      {
+        "rp_max_years": 10.0,
+        "rp_min_years": 2.0,
+        "severity_band": "common"
+      },
+      {
+        "rp_max_years": 50.0,
+        "rp_min_years": 10.0,
+        "severity_band": "significant"
+      },
+      {
+        "rp_max_years": 100.0,
+        "rp_min_years": 50.0,
+        "severity_band": "rare"
+      },
+      {
+        "rp_max_years": 500.0,
+        "rp_min_years": 100.0,
+        "severity_band": "extreme"
+      },
+      {
+        "rp_max_years": null,
+        "rp_min_years": 500.0,
+        "severity_band": "beyond_design"
+      }
+    ],
+    "spacing": "log",
+    "tail_sample_fraction": 0.05
+  },
   "scenario_build": {
     "design_scenario": "base",
     "forcing_variable": "auto",
@@ -234,7 +405,7 @@
     "evaluation_merge": "max_depth_per_asset_with_source_domain",
     "event_catalog_scope": "shared_across_domain_set",
     "include_domain_ids": [
-      "greensboro_east"
+      "greensboro_rural"
     ],
     "region_geometry": "bounding_box",
     "review_required": true,
@@ -290,69 +461,32 @@
       "crossings": {
         "min_uparea_km2": 5.0
       },
+      "enabled": true,
       "event_catalog_scope": "shared_across_domain_set",
       "huc": {
+        "allow_union": true,
         "levels": [
           8,
           6,
           4
         ],
-        "output": "data/wflow/wflow_domain_huc.geojson",
+        "output": "data/static/aoi/wflow_nhdplus_watersheds.geojson",
+        "query_pad_degrees": 0.1,
         "root": "data/wflow/domain_huc"
       },
       "outlet_source": "encompassing_huc",
+      "review_required": false,
       "subbasin_fabric": "data/wflow/domain_set_subbasins.gpkg",
       "subbasin_fabric_diagnostics": "data/wflow/readiness/nhdplus_subbasin_fabric.csv",
       "submodels": []
     },
     "domain_set_manifest": "data/wflow/domain_set.yaml",
     "enabled": true,
-    "event_forcing": {
-      "antecedent_moisture_pairing": "inland_antecedent_moisture_pairing",
-      "design_event_method": "scaled_streamgage_network_analog",
-      "event_reference_time": "dominant_streamgage_network_peak",
-      "rainfall_member_scope": "shared_with_sfincs",
-      "rainfall_pairing_priority": "inland_rainfall_pairing_priority"
-    },
     "events_root": "data/wflow/events",
-    "handoff": {
-      "manifest": "data/wflow/domain_set_handoff.yaml",
-      "source_standard_name": "river_water__volume_flow_rate",
-      "source_variable": "river_q",
-      "target": "sfincs_discharge_forcing"
-    },
     "plugin": "wflow_sbm",
     "readiness_root": "data/wflow/readiness",
     "run": {
-      "bin_env": "WFLOW_BIN",
       "command": "wflow_cli {run_config}"
-    },
-    "source_strategy": {
-      "hydrography": {
-        "api": "hydromt_gis_flw_d8_from_dem",
-        "fallback": "merit_hydro",
-        "hydromt_basemap": "us_hydrography_basemap",
-        "preferred": "us_hydrography"
-      },
-      "soils": {
-        "fallback": "soilgrids",
-        "preferred": "ssurgo",
-        "wflow_parameters": "ssurgo_wflow_soil_parameters"
-      }
-    },
-    "streamgage_network": {
-      "accept_unreviewed_streamgage_network": false,
-      "active_records_only": true,
-      "allow_multiple_frequency_basis_gages": true,
-      "candidates": "data/sources/usgs_streamgages/streamgage_candidates.geojson",
-      "exclude_inactive_gages": true,
-      "reviewed_network": "data/sources/usgs_streamgages/streamgage_network.geojson",
-      "roles": [
-        "frequency",
-        "calibration",
-        "validation",
-        "sfincs_handoff"
-      ]
     },
     "update_forcing_config": "wflow_update_forcing.yml"
   }

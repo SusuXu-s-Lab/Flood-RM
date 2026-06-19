@@ -15,6 +15,11 @@ import yaml
 from shapely.geometry import Point
 from shapely.ops import unary_union
 
+from wflow_runs.coupled_handoff import (
+    STREAM_BOUNDARY_HANDOFF_MODES,
+    read_stream_boundary_handoff_locations,
+)
+
 
 @dataclass(frozen=True)
 class WflowBuildPlan:
@@ -92,13 +97,6 @@ REVIEWED_STREAMGAGE_SCHEMA = [
     "review_notes",
 ]
 NULLABLE_REVIEWED_STREAMGAGE_FIELDS = {"sfincs_handoff_id", "review_notes"}
-STREAM_BOUNDARY_HANDOFF_MODES = {
-    "stream_boundary_intersection",
-    "sfincs_stream_boundary",
-    "boundary_stream_intersection",
-}
-
-
 def build_wflow_build_plan(config, paths) -> WflowBuildPlan:
     """Return the notebook-facing HydroMT-Wflow build/update plan."""
     location_root = _location_root(paths)
@@ -1278,62 +1276,12 @@ def write_wflow_sfincs_gauge_locations(config, paths, submodel: dict, *, output=
 
 
 def _sfincs_boundary_handoff_locations(config, location_root: Path, handoff_ids: set[str]) -> gpd.GeoDataFrame | None:
-    location_mode = (
-        config.get("inland_coupling", {})
-        .get("discharge_forcing", {})
-        .get("handoff_location", "reviewed_gage")
-    )
-    if str(location_mode).lower() not in STREAM_BOUNDARY_HANDOFF_MODES:
-        return None
-
-    candidate_paths = []
-    manifest_value = config.get("sfincs_domain_set", {}).get(
-        "domain_manifest",
-        "data/sfincs/domains/domain_set.yaml",
-    )
-    manifest_path = _location_path(location_root, manifest_value)
-    if manifest_path.exists():
-        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
-        for domain in manifest.get("domains", []):
-            base_root = _location_path(location_root, domain.get("base_model_root", ""))
-            candidate_paths.append(base_root / "gis/wflow_handoff_sources.geojson")
-    domains_root = _location_path(
+    return read_stream_boundary_handoff_locations(
+        config,
         location_root,
-        config.get("sfincs_domain_set", {}).get("domains_root", "data/sfincs/domains"),
+        handoff_ids,
+        location_path=_location_path,
     )
-    if domains_root.exists():
-        candidate_paths.extend(sorted(domains_root.glob("*/base/gis/wflow_handoff_sources.geojson")))
-    candidate_paths.append(location_root / "data/sfincs/base/gis/wflow_handoff_sources.geojson")
-
-    frames = []
-    seen = set()
-    for path in candidate_paths:
-        if path in seen or not path.exists():
-            continue
-        seen.add(path)
-        frame = gpd.read_file(path)
-        if not frame.empty and "sfincs_handoff_id" in frame:
-            if "handoff_placement" in frame:
-                frame = frame[
-                    frame["handoff_placement"].fillna("").astype(str).str.lower().isin(STREAM_BOUNDARY_HANDOFF_MODES)
-                ].copy()
-            else:
-                frame = frame.iloc[[]].copy()
-            frames.append(frame)
-    if not frames:
-        return None
-
-    locations = gpd.GeoDataFrame(pd.concat(frames, ignore_index=True), geometry="geometry", crs=frames[0].crs)
-    locations = locations[locations["sfincs_handoff_id"].astype(str).isin(handoff_ids)].copy()
-    if locations.empty:
-        return None
-    missing = sorted(handoff_ids - set(locations["sfincs_handoff_id"].astype(str)))
-    if missing:
-        raise ValueError(
-            "SFINCS boundary handoff source artifacts are missing IDs needed by Wflow: "
-            + ", ".join(missing)
-        )
-    return locations
 
 
 def write_wflow_crossing_gauge_locations(config, paths, submodel: dict, *, output=None) -> dict:

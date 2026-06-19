@@ -14,14 +14,14 @@ from shapely.geometry import GeometryCollection, LineString, MultiPoint, Point
 from shapely.ops import nearest_points, unary_union
 
 from sfincs_runs.hydrology import setup_hydromt_infiltration
+from wflow_runs.coupled_handoff import (
+    LEGACY_BOUNDARY_HANDOFF_MODES,
+    STREAM_BOUNDARY_HANDOFF_MODES,
+    crossing_handoff_sources,
+    uses_stream_boundary_handoff,
+)
 
 DEFAULT_OUTFLOW_ELEVATION_QUANTILE = 0.05
-STREAM_BOUNDARY_HANDOFF_MODES = {
-    "stream_boundary_intersection",
-    "sfincs_stream_boundary",
-    "boundary_stream_intersection",
-}
-LEGACY_BOUNDARY_HANDOFF_MODES = {"sfincs_domain_boundary", "domain_boundary", "boundary"}
 
 
 @dataclass(frozen=True)
@@ -233,12 +233,7 @@ def plan_inland_sfincs_domain_set(config, paths):
     assignments = _assign_handoffs_to_components(handoff, components, domain_ids=domain_ids)
     corridor_buffer_m = float(domain_set.get("handoff_corridor_buffer_m", 300.0))
     region_geometry = str(domain_set.get("region_geometry", "component")).lower()
-    handoff_location_mode = (
-        config.get("inland_coupling", {})
-        .get("discharge_forcing", {})
-        .get("handoff_location", "reviewed_gage")
-    )
-    use_stream_boundary_handoffs = str(handoff_location_mode).lower() in STREAM_BOUNDARY_HANDOFF_MODES
+    use_stream_boundary_handoffs = uses_stream_boundary_handoff(config)
     domains = []
     for index, record in enumerate(component_records):
         component = record["geometry"]
@@ -987,33 +982,7 @@ def _crossing_handoff_sources(config, location_root: Path) -> gpd.GeoDataFrame:
     plan = plan_wflow_domain_set(config, {"location_root": location_root})
     if plan.status != "ready":
         raise ValueError(f"Crossing-derived Wflow domain plan is not ready: {plan.status}: {plan.issues}")
-    rows = []
-    for submodel in plan.submodels:
-        points = submodel.get("handoff_points")
-        if points:
-            for point in points:
-                rows.append(
-                    {
-                        "site_no": str(point["sfincs_handoff_id"]),
-                        "sfincs_handoff_id": str(point["sfincs_handoff_id"]),
-                        "wflow_submodel_id": str(submodel["wflow_submodel_id"]),
-                        "sfincs_domain_id": str(point.get("sfincs_domain_id", "")),
-                        "geometry": Point(float(point["lon"]), float(point["lat"])),
-                    }
-                )
-            continue
-        outlet_xy = (submodel.get("outlet_region") or submodel["region"])["subbasin"]
-        handoff_id = next((str(value) for value in submodel.get("sfincs_handoff_ids", ()) if value), str(submodel["wflow_submodel_id"]))
-        rows.append(
-            {
-                "site_no": handoff_id,
-                "sfincs_handoff_id": handoff_id,
-                "wflow_submodel_id": str(submodel["wflow_submodel_id"]),
-                "sfincs_domain_id": next((str(value) for value in submodel.get("sfincs_domain_ids", ()) if value), ""),
-                "geometry": Point(float(outlet_xy[0]), float(outlet_xy[1])),
-            }
-        )
-    return gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326")
+    return crossing_handoff_sources(plan)
 
 
 def _accepted_handoff_gages(config, location_root: Path) -> gpd.GeoDataFrame:

@@ -5,7 +5,7 @@ import geopandas as gpd
 import requests
 from shapely.geometry import Polygon
 
-from design_events.collect_sources.fetch_ssurgo import (
+from design_events.collect_sources.ssurgo import (
     build_ssurgo_wfs_url,
     fetch_ssurgo_mapunit_attributes,
     fetch_ssurgo_mapunit_polygons,

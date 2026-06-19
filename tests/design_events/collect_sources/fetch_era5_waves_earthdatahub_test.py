@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from design_events.collect_sources.fetch_era5_waves_earthdatahub import (
+from design_events.collect_sources.era5_waves.earthdatahub import (
     chunk_time_windows,
     earthdatahub_era5_ocean_zarr,
     earthdatahub_storage_options,

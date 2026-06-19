@@ -6,15 +6,15 @@ from datetime import datetime
 import pandas as pd
 import pytest
 
-from power.blocks import BlockInvariantViolation, build_switch_bounded_load_blocks
-from power.event_window import build_event_window_bundle
-from power.powermodels_onm_export import export_powermodels_onm
-from power.ssap_notebook import (
+from power.resilience import BlockInvariantViolation, build_switch_bounded_load_blocks
+from power.exports import build_event_window_bundle
+from power.exports import export_powermodels_onm
+from power.resilience import (
     build_ssap_components,
     physical_lines_only,
     physical_switch_candidate_edges,
 )
-from power.synthetic_validation import (
+from power.audit.synthetic_validation import (
     build_audit_summary,
     plot_validation_region_report_card,
     run_operational_validation,

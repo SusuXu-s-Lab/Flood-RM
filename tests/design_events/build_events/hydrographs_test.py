@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from design_events.build_events.hydrographs import build_surge_event_artifacts
+from design_events.build_events.coastal import build_surge_event_artifacts
 
 
 def test_build_surge_event_artifacts_exports_long_tide_resolving_members(tmp_path):

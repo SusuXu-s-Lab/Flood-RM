@@ -2,7 +2,7 @@ import json
 
 import pandas as pd
 
-from design_events.build_events.event_distribution import (
+from design_events.build_events.selection import (
     assign_severity_bands,
     summarize_event_distribution,
     write_event_distribution_artifacts,

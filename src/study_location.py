@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +35,46 @@ from shapely.geometry.base import BaseGeometry
 # ---------------------------------------------------------------------------
 
 _LOCATION_RELATIVE_ROOTS: frozenset[str] = frozenset({"data", "02_flood", "01_grid"})
+
+
+def find_repo_root(start=None) -> Path:
+    return _find_repo_root(Path(start) if start is not None else Path.cwd())
+
+
+def default_location_config_path(repo_root=None, environ=None) -> Path:
+    root = Path(repo_root) if repo_root is not None else find_repo_root()
+    environ = os.environ if environ is None else environ
+    configured = environ.get("FLOOD_RM_LOCATION_CONFIG")
+    if configured:
+        path = Path(configured).expanduser()
+        return path if path.is_absolute() else (root / path).resolve()
+    location_name = environ.get("FLOOD_RM_LOCATION", "marshfield")
+    return root / "locations" / location_name / "config.yaml"
+
+
+def resolve_repo_path(path, repo_root=None) -> Path:
+    path = Path(path).expanduser()
+    if path.is_absolute():
+        return path
+    root = Path(repo_root) if repo_root is not None else find_repo_root()
+    for candidate in (Path.cwd() / path, root / path):
+        if candidate.exists():
+            return candidate.resolve()
+    return (root / path).resolve()
+
+
+def load_yaml_document(path, repo_root=None) -> dict:
+    path = resolve_repo_path(path, repo_root=repo_root)
+    with path.open(encoding="utf-8") as stream:
+        return yaml.safe_load(stream) or {}
+
+
+def load_location_config(path=None, repo_root=None) -> dict:
+    root = Path(repo_root) if repo_root is not None else find_repo_root()
+    config_path = default_location_config_path(root) if path is None else resolve_repo_path(path, root)
+    config = define_location(config_path).config
+    config.setdefault("paths", {})
+    return config
 
 
 def _resolve_under_location(repo_root, location_name: str, value) -> Path:
@@ -617,7 +658,7 @@ def _inland_methodology_defaults() -> dict:
                     "driver_vector": ["streamflow", "rainfall"],
                     "primary_driver": "streamflow",
                     "event_rate_per_year": 5.0,
-                    "copula_seed": 42,
+                    "copula_seed": 2,
                     "pool_size": 100000,
                     "enforce_stress_budget": True,
                     "catalog_band_fractions": {
@@ -786,6 +827,29 @@ def _inland_methodology_defaults() -> dict:
                 "base_model_root": "data/wflow/base",
                 "events_root": "data/wflow/events",
                 "readiness_root": "data/wflow/readiness",
+                "run": {
+                    "command": "wflow_cli {run_config}",
+                },
+                "domain_set": {
+                    "enabled": True,
+                    "review_required": True,
+                    "allow_multiple_submodels": True,
+                    "outlet_source": "encompassing_huc",
+                    "event_catalog_scope": "shared_across_domain_set",
+                    "submodels": [],
+                    "subbasin_fabric": "data/wflow/domain_set_subbasins.gpkg",
+                    "subbasin_fabric_diagnostics": "data/wflow/readiness/nhdplus_subbasin_fabric.csv",
+                    "crossings": {
+                        "min_uparea_km2": 5.0,
+                    },
+                    "huc": {
+                        "levels": [8, 6, 4],
+                        "allow_union": True,
+                        "query_pad_degrees": 0.1,
+                        "root": "data/wflow/domain_huc",
+                        "output": "data/static/aoi/wflow_nhdplus_watersheds.geojson",
+                    },
+                },
                 "domain_set_manifest": "data/wflow/domain_set.yaml",
             },
         }

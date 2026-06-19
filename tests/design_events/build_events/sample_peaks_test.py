@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from design_events.build_events.sample_peaks import (
+from design_events.build_events.coastal import (
     build_sampled_peaks,
     hybrid_peak_sample,
     hybrid_peak_sample_frame,
@@ -197,7 +197,7 @@ def test_build_sampled_peaks_preserves_probability_weight_precision(tmp_path, mo
         },
     }
     monkeypatch.setattr(
-        "design_events.build_events.sample_peaks.load_historical_peak_marginal",
+        "design_events.build_events.coastal.load_historical_peak_marginal",
         lambda path: IdentityMarginal(),
     )
 

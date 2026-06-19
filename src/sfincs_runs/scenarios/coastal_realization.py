@@ -23,8 +23,6 @@ def build_coastal_hydrograph_from_analog(components, peak_time, scale_factor, *,
     DatetimeIndex, from ``fit_history.tidal.coastal_components``). Returns a Series indexed by
     relative hour from the peak.
     """
-    if not {"msl", "tide", "ntr"}.issubset(components.columns):
-        raise ValueError("components must have msl/tide/ntr columns from coastal_components")
     scale = float(scale_factor)
     if not (np.isfinite(scale) and scale > 0):
         raise ValueError(f"scale_factor must be finite and > 0, got {scale_factor!r}")
@@ -34,8 +32,16 @@ def build_coastal_hydrograph_from_analog(components, peak_time, scale_factor, *,
     if window.empty:
         raise ValueError(f"no coastal components within +/-{window_hours}h of {peak_time}")
 
-    # rebuild total water level: tide + MSL unscaled, surge (NTR) scaled by K, plus SLR offset.
-    h = window["msl"].to_numpy() + window["tide"].to_numpy() + scale * window["ntr"].to_numpy() + float(msl_offset_m)
+    if isinstance(window, pd.Series):
+        # Legacy callers may pass a total-water-level Series. Preserve the old anomaly-scaling
+        # semantics for those tests/notebooks while the production path uses tide/NTR components.
+        baseline = float(window.min())
+        h = baseline + scale * (window.to_numpy(dtype=float) - baseline) + float(msl_offset_m)
+    else:
+        if not {"msl", "tide", "ntr"}.issubset(window.columns):
+            raise ValueError("components must have msl/tide/ntr columns from coastal_components")
+        # rebuild total water level: tide + MSL unscaled, surge (NTR) scaled by K, plus SLR offset.
+        h = window["msl"].to_numpy() + window["tide"].to_numpy() + scale * window["ntr"].to_numpy() + float(msl_offset_m)
     rel_hours = np.round((window.index - peak_time) / pd.Timedelta(hours=1)).astype(int)
     out = pd.Series(h, index=pd.Index(rel_hours, name="relative_hour"))
     return out[~out.index.duplicated(keep="first")].sort_index()

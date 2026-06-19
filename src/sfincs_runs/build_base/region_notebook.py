@@ -9,7 +9,6 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import rasterio
-import requests
 from rasterio.enums import Resampling
 from rasterio.warp import transform_bounds
 import rioxarray as rxr
@@ -17,7 +16,7 @@ from rioxarray.merge import merge_arrays
 import xarray as xr
 from shapely.geometry import box
 
-from design_events.collect_sources.fetch_ssurgo import ssurgo_attribute_columns
+from design_events.collect_sources.ssurgo import ssurgo_attribute_columns
 from design_events.collect_sources.national_hydrography import WBD_MAPSERVER, fetch_nhdplus_hr_catchments, fetch_wbd_huc
 from sfincs_runs.build_base.crossings import select_encompassing_huc
 from sfincs_runs.build_base.inland_base import (
@@ -31,6 +30,7 @@ from sfincs_runs.build_base.static_intake import (
     collect_ssurgo_infiltration_inputs,
     collect_static_region_inputs,
     collect_wflow_static_region_inputs,
+    download_file,
     fetch_usgs_3dep_dem,
     fetch_worldcover_landcover,
     worldcover_tile_urls,
@@ -480,7 +480,7 @@ def collect_configured_coastal_ssurgo(
     domain: CoastalRegionDomain,
 ) -> pd.Series:
     """Collect SSURGO polygons/attributes and write coastal infiltration rasters."""
-    from design_events.collect_sources.fetch_ssurgo import (
+    from design_events.collect_sources.ssurgo import (
         fetch_ssurgo_mapunit_attributes,
         fetch_ssurgo_mapunit_polygons,
         normalize_ssurgo_axis_order,
@@ -2089,7 +2089,7 @@ def _fetch_worldcover_for_bbox_geometry(bbox_wgs84, output_path, *, bbox_gdf, ye
     for url in worldcover_tile_urls(bbox_wgs84, year=year, version=version):
         tile_path = tile_cache / Path(url).name
         if not tile_path.exists():
-            _download_file(url, tile_path)
+            download_file(url, tile_path)
         tile_paths.append(tile_path)
     arrays = [rxr.open_rasterio(path, masked=True).squeeze(drop=True) for path in tile_paths]
     try:
@@ -2104,18 +2104,6 @@ def _fetch_worldcover_for_bbox_geometry(bbox_wgs84, output_path, *, bbox_gdf, ye
             if close:
                 close()
     return output_path, "downloaded"
-
-
-def _download_file(url, output_path, *, timeout_seconds=120):
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    response = requests.get(url, stream=True, timeout=timeout_seconds)
-    response.raise_for_status()
-    with output_path.open("wb") as stream:
-        for chunk in response.iter_content(chunk_size=1024 * 1024):
-            if chunk:
-                stream.write(chunk)
-    return output_path
 
 
 def _raster_bounds_cover_wgs84(path, bbox_wgs84, *, eps=1e-9):

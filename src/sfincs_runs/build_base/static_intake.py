@@ -13,7 +13,7 @@ from rioxarray.exceptions import NoDataInBounds
 from rioxarray.merge import merge_arrays
 from shapely.geometry import box
 
-from design_events.collect_sources.fetch_ssurgo import (
+from design_events.collect_sources.ssurgo import (
     fetch_ssurgo_mapunit_attributes,
     fetch_ssurgo_mapunit_polygons,
     normalize_ssurgo_axis_order,
@@ -62,7 +62,7 @@ def fetch_worldcover_landcover(
         elif target_resolution_degrees is not None:
             tile_paths.append(url)
         else:
-            _download_file(url, tile_path)
+            download_file(url, tile_path)
             tile_paths.append(tile_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if target_resolution_degrees is not None:
@@ -504,6 +504,10 @@ def _worldcover_tile_name(lon, lat):
     ns = "N" if south >= 0 else "S"
     ew = "E" if west >= 0 else "W"
     return f"{ns}{abs(south):02d}{ew}{abs(west):03d}"
+
+
+def download_file(url, output_path, *, timeout_seconds=120):
+    return _download_file(url, output_path, timeout_seconds=timeout_seconds)
 
 
 def _download_file(url, output_path, *, timeout_seconds=120):

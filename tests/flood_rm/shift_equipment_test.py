@@ -16,8 +16,8 @@ from shift import TransformerTypes
 from shift import TransformerVoltageMapper
 from shift import TransformerVoltageModel
 
-from power.shift_equipment import ShiftExampleEdgeEquipmentMapper
-from power.shift_equipment import build_shift_example_equipment_catalog
+from power.baseline_network.shift_equipment import ShiftExampleEdgeEquipmentMapper
+from power.baseline_network.shift_equipment import build_shift_example_equipment_catalog
 
 
 repo_root = Path(__file__).resolve().parents[2]

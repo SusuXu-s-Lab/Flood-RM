@@ -9,7 +9,7 @@ import geopandas as gpd
 import pandas as pd
 import requests
 
-from design_events.source_artifacts import read_source_artifact, source_artifact_covers, write_source_artifact
+from design_events.utils import read_source_artifact, source_artifact_covers, write_source_artifact
 
 
 USGS_SITE_SERVICE_URL = "https://waterservices.usgs.gov/nwis/site/"

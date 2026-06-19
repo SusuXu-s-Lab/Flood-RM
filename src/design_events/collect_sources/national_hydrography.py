@@ -12,7 +12,7 @@ import rioxarray as rxr
 from shapely.geometry import box
 import xarray as xr
 
-from design_events.collect_sources.fetch_ssurgo import (
+from design_events.collect_sources.ssurgo import (
     fetch_ssurgo_mapunit_attributes,
     ssurgo_attribute_columns,
 )

@@ -11,7 +11,7 @@ from .fit_history.extreme_value import (
     observed_return_periods,
     score_fit,
 )
-from .build_events.event_distribution import assign_severity_bands
+from .build_events.selection import assign_severity_bands
 
 
 # Stage 1.1: SFINCS offshore boundary + chosen CORA snap node centroid.
@@ -1694,7 +1694,7 @@ def plot_and_joint_isolines(
     catalog=None,
 ):
     """AND joint-exceedance isolines over two drivers."""
-    from design_events.build_events.joint_exceedance import and_return_period, and_survival_from_cdf
+    from design_events.build_events.probability.exceedance import and_return_period, and_survival_from_cdf
 
     if model.dim != 2:
         raise ValueError("AND isoline plot supports exactly two drivers")
@@ -1834,7 +1834,7 @@ def plot_combined_and_isolines(model, *, return_periods=(10, 50, 100, 500), grid
     """Combined AND isolines across storm-type populations."""
     from scipy.ndimage import gaussian_filter
 
-    from design_events.build_events.joint_exceedance import combined_return_period
+    from design_events.build_events.probability.exceedance import combined_return_period
 
     names = list(model.driver_names)
     # mixture pool for axis ranges and the scatter
@@ -1881,7 +1881,7 @@ def plot_combined_and_isolines(model, *, return_periods=(10, 50, 100, 500), grid
 
 def plot_joint_tail_budget(catalog, stress_settings, *, severity_bands=None, band_order=None):
     """Compare the fitted candidate pool against the selected design/stress set."""
-    from design_events.build_events.dependence import check_stress_budget
+    from design_events.build_events.probability.dependence import check_stress_budget
 
     catalog_label = _catalog_display_label(catalog, default="Catalog")
     report = check_stress_budget(catalog, stress_settings or {}, severity_bands=severity_bands, raise_on_shortfall=False)

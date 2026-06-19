@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pandas as pd
 
-from design_events.progress import iter_progress
-from design_events.source_artifacts import source_artifact_covers, write_source_artifact
+from design_events.utils import iter_progress
+from design_events.utils import source_artifact_covers, write_source_artifact
 
 
 def _configured(path_or_default, paths, key):
@@ -106,14 +106,14 @@ def collect_streamflow(settings, open_zarr=_open_zarr):
 
 
 def collect_soil_moisture(settings, open_zarr=_open_zarr):
-    from design_events.collect_sources.soil_moisture_points import load_points
+    from design_events.collect_sources.ssurgo import load_points
 
     paths = settings["paths"]
     nwm = settings["nwm"]
     spec = nwm.get("soil_moisture", {})
     output_csv = _configured(paths["nwm_root"] / "soil_moisture.csv", paths, "nwm_soil_moisture_csv")
-    # Representative cells are derived from the location footprint (see
-    # soil_moisture_points.load_points), not hand-typed in the location YAML.
+    # Representative cells are derived from the location footprint by the local
+    # soil-evidence helpers in ssurgo.load_points, not hand-typed in location YAML.
     points = load_points(spec, paths)
     if not points:
         print("NWM soil moisture: no points configured; writing empty artifact")

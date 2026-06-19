@@ -142,7 +142,7 @@ def plot_wflow_basemap(
         "gauges_usgs": dict(marker="o", markersize=35, facecolor="none", edgecolor="black", linewidth=1.0),
     }
     gauge_labels = {
-        "gauges_sfincs": "Wflow gauge at SFINCS source",
+        "gauges_sfincs": "gauges sfincs",
         "gauges_usgs": "reviewed USGS gage",
     }
     default_gauge_style = dict(marker="d", markersize=35, facecolor="red", edgecolor="red", linewidth=0.6)

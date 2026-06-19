@@ -11,7 +11,20 @@ The reference network location is Marshfield, Massachusetts; inland coupled floo
 
 See: `locations`
 
-### 1. Grid Construction
+### 1. SMART-DS Data Bootstrap
+
+Start by downloading the SMART-DS region data used by the location notebooks:
+
+```bash
+uv run python scripts/get_smartds.py sfo --execute
+```
+
+The downloader reads directly from the public OEDI SMART-DS bucket and writes to
+`locations/<region>/data/smart_ds/<year>/`. Omit `--execute` for a dry run, add
+`--subregion P1R` to fetch one subregion, or repeat `--format` to choose formats
+other than the default `opendss_no_loadshapes` plus `geojson`.
+
+### 2. Grid Construction
 
 The grid workflow starts by defining the US-based Study Location "Marshfield, MA, USA" in `config.yaml`. Following the notebook process, a synthetic radial distribution feeder via SHIFT/GDM/DiTTo is built and exported into OpenDSS format, with the inclusion of an Asset Registry informed by ResStock and ComStock data.
 
@@ -27,7 +40,7 @@ Switches are placed on transformer-bridged feeder islands using a Sectionalizing
 
 The audit notebook `01_grid/03_audit_network/` validates the synthetic-grid artifacts based on [2]. 
 
-### 2. Stochastic Design Events and Hydrodynamic Truth Set
+### 3. Stochastic Design Events and Hydrodynamic Truth Set
 
 The flood workflow builds staged stochastic scenario ensembles for coastal, pluvial, and fluvial studies. It supports both coastal and inland drivers:
 

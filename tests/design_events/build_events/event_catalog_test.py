@@ -2,18 +2,18 @@ import json
 import pandas as pd
 import yaml
 
-from design_events.build_events.event_catalog import (
+from design_events.build_events.catalog import (
     attach_forcing_members,
     build_event_catalog,
     rebuild_forcing_pairing,
     validate_event_catalog,
     write_event_catalog_audit,
 )
-from design_events.build_events.inland_event_catalog import (
+from design_events.build_events.inland import (
     build_inland_event_artifacts,
     write_wflow_sfincs_handoff_manifest,
 )
-from design_events.build_events.inland_streamflow import build_usgs_streamflow_event_members
+from design_events.build_events.inland import build_usgs_streamflow_event_members
 
 
 def test_build_event_catalog_writes_surge_recipe_rows(tmp_path):

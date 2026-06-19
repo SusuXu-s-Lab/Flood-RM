@@ -1,6 +1,6 @@
 import pandas as pd
 
-from design_events.collect_sources.fetch_era5_waves import build_cds_request_payload
+from design_events.collect_sources.era5_waves.cds import build_cds_request_payload
 
 
 def test_build_cds_request_payload_uses_north_west_south_east_bbox():

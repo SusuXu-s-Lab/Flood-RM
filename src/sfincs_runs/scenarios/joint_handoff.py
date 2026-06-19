@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from design_events.build_events.event_catalog import write_event_catalog_audit
+from design_events.build_events.catalog import write_event_catalog_audit
 from sfincs_runs.scenarios.coastal_realization import build_coastal_event_timeseries
 
 

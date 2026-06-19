@@ -1,12 +1,12 @@
 """Collect source artifacts for design-event forcing."""
 
-from design_events.collect_sources.plan import (
+from design_events.collect_sources.workflow import (
     SourceCollectionPlan,
     SourceCollectionStep,
     build_source_collection_plan,
 )
-from design_events.collect_sources.prerequisites import prepare_collection_prerequisites
-from design_events.collect_sources.run_collect import run_collect
+from design_events.collect_sources.workflow import prepare_collection_prerequisites
+from design_events.collect_sources.workflow import run_collect
 from design_events.collect_sources.usgs_streamgages import build_reviewed_streamgage_decisions
 
 __all__ = [

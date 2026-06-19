@@ -2,7 +2,7 @@ import json
 
 import pandas as pd
 
-from design_events.readiness import (
+from design_events.utils import (
     check_acquisition_dry_run,
     check_aorc_sst_collection,
     check_rainfall_catalog_smoke,

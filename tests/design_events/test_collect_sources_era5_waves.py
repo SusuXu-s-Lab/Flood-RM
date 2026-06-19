@@ -4,9 +4,8 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from design_events.collect_sources.all_sources import collect_all_sources
+from design_events.collect_sources.workflow import collect_all_sources
 from design_events.collect_sources.era5_waves import collect_era5_waves
-from design_events.cli import build_parser
 
 
 def _wave_dataset(times):
@@ -303,18 +302,7 @@ def test_collect_all_sources_runs_configured_era5_waves(tmp_path):
     assert result["era5_waves"] == {"wave_netcdf": paths["era5_waves_nc"]}
 
 
-def test_pipeline_accepts_collect_era5_waves_stage():
-    args = build_parser().parse_args(
-        [
-            "collect_era5_waves",
-            "--config",
-            "locations/marshfield/config.yaml",
-            "--smoke",
-            "--skip-existing",
-        ]
-    )
+def test_era5_wave_collection_is_not_exposed_through_design_events_cli():
+    import importlib.util
 
-    assert args.stage == "collect_era5_waves"
-    assert args.config == "locations/marshfield/config.yaml"
-    assert args.smoke is True
-    assert args.skip_existing is True
+    assert importlib.util.find_spec("design_events.cli") is None

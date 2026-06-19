@@ -1,68 +1,43 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 import sys
-
-import yaml
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[1]
 if (_SOURCE_ROOT / "study_location.py").exists():
     sys.path = [entry for entry in sys.path if entry != str(_SOURCE_ROOT)]
     sys.path.insert(0, str(_SOURCE_ROOT))
 
-from study_location import define_location, resolve_study_location
-
-
-def find_repo_root(start=None):
-    current = Path(start).expanduser() if start is not None else Path.cwd()
-    current = current.resolve()
-    candidates = [current] if current.is_dir() else [current.parent]
-    candidates.extend(candidates[0].parents)
-    for candidate in candidates:
-        if (candidate / "pyproject.toml").exists() and (candidate / "locations").exists():
-            return candidate
-    raise FileNotFoundError("could not locate repo root")
+from study_location import (
+    default_location_config_path,
+    find_repo_root,
+    load_location_config,
+    load_yaml_document,
+    resolve_repo_path,
+    resolve_study_location,
+)
 
 
 repo_root = find_repo_root(Path(__file__).resolve())
 
 
 def default_config_path():
-    configured = os.environ.get("FLOOD_RM_LOCATION_CONFIG")
-    if configured:
-        path = Path(configured).expanduser()
-        return path if path.is_absolute() else (repo_root / path).resolve()
-    location_name = os.environ.get("FLOOD_RM_LOCATION", "marshfield")
-    return repo_root / "locations" / location_name / "config.yaml"
+    return default_location_config_path(repo_root)
 
 
 project_config_path = default_config_path()
 
 
 def resolve_path(path):
-    path = Path(path)
-    if path.is_absolute():
-        return path
-    candidates = [Path.cwd() / path, repo_root / path]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate.resolve()
-    return (repo_root / path).resolve()
+    return resolve_repo_path(path, repo_root)
 
 
 def load_yaml(path):
-    path = resolve_path(path)
-    with path.open(encoding="utf-8") as stream:
-        data = yaml.safe_load(stream)
-    return data or {}
+    return load_yaml_document(path, repo_root)
 
 
 def load_config(path=None):
-    config_path = default_config_path() if path is None else resolve_path(path)
-    config = define_location(config_path).config
-    config.setdefault("paths", {})
-    return config
+    return load_location_config(default_config_path() if path is None else resolve_path(path), repo_root)
 
 
 def build_paths(config=None):

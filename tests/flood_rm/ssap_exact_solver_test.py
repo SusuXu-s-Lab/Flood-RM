@@ -1,4 +1,4 @@
-from power.ssap import RootedFeeder, SsapEdge, solve_ssap_per_feeder
+from power.resilience import RootedFeeder, SsapEdge, solve_ssap_per_feeder
 
 
 def test_tree_dp_matches_brute_force_ssap_objective_and_budget():

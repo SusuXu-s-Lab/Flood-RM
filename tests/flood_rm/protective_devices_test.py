@@ -1,7 +1,7 @@
 import pandas as pd
 
-from power.ssap_notebook import derive_lateral_fuses
-from power.synthetic_validation import _fuse_counts_by_feeder
+from power.resilience import derive_lateral_fuses
+from power.audit.synthetic_validation import _fuse_counts_by_feeder
 
 
 def test_single_lateral_off_three_phase_trunk_gets_one_fuse():

@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from design_events.config import load_runtime
+from design_events.utils import load_runtime
 
 
 repo_root = Path(__file__).resolve().parents[2]
@@ -65,7 +65,9 @@ def test_greensboro_uses_usgs_streamflow_and_derived_nwm_soil_moisture_points():
     assert nwm["soil_moisture"]["points_file"] == "data/static/aoi/nwm_soil_moisture_points.geojson"
     assert nwm["soil_moisture"]["selection_method"].endswith("snapped_to_nearest_nwm_cell")
     assert "points" not in nwm["soil_moisture"]
-    assert "event_catalog" not in config
+    assert config["event_catalog"]["dependence"]["driver_records"]["rainfall"]["path"] == (
+        "data/sources/aorc_sst/greensboro/72hr-events/storm-stats.csv"
+    )
 
     text = notebook_text("locations/greensboro/02_flood/03_build_event_catalog.ipynb")
     assert "event_policy = " in text

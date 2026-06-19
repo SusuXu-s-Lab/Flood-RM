@@ -1,6 +1,6 @@
 import pandas as pd
 
-from design_events.collect_sources.aorc_homogeneity import summarize_homogeneity
+from design_events.collect_sources.aorc_sst import summarize_homogeneity
 
 
 def test_summarize_homogeneity_flags_depth_and_season_spread(tmp_path):

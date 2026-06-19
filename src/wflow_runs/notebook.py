@@ -364,5 +364,5 @@ def _hydromt_subprocess_env() -> dict[str, str]:
     debug_value = env.get("DEBUG")
     if debug_value is not None and not str(debug_value).lstrip("-").isdigit():
         env["DEBUG"] = "0"
-    env.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+    env["MPLCONFIGDIR"] = "/tmp/matplotlib"
     return env
