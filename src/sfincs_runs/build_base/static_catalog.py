@@ -11,27 +11,31 @@ def build_static_data_catalog(config, paths):
     location_root = Path(paths["location_root"])
     catalog_path = Path(paths["data_catalog"])
     catalog_path.parent.mkdir(parents=True, exist_ok=True)
-    crs = str(config.get("project", {}).get("model_crs", "EPSG:4326"))
+    fallback_crs = str(config.get("project", {}).get("model_crs", "EPSG:4326"))
     sources = config.get("static_sources", {})
+    dem_path = location_root / sources["terrain"]["output"]
+    landcover_path = location_root / sources["landcover"]["output"]
+    hsg_path = location_root / sources["ssurgo"]["hsg_output"]
+    ksat_path = location_root / sources["ssurgo"]["ksat_output"]
     catalog = {
         "dem_region": _raster_entry(
-            _relative_to_catalog(catalog_path, location_root / sources["terrain"]["output"]),
-            crs=crs,
+            _relative_to_catalog(catalog_path, dem_path),
+            crs=_raster_crs(dem_path, fallback_crs),
             category="topography",
         ),
         "landcover_region": _raster_entry(
-            _relative_to_catalog(catalog_path, location_root / sources["landcover"]["output"]),
-            crs=crs,
+            _relative_to_catalog(catalog_path, landcover_path),
+            crs=_raster_crs(landcover_path, fallback_crs),
             category="landuse",
         ),
         "hydrologic_soil_group": _raster_entry(
-            _relative_to_catalog(catalog_path, location_root / sources["ssurgo"]["hsg_output"]),
-            crs=crs,
+            _relative_to_catalog(catalog_path, hsg_path),
+            crs=_raster_crs(hsg_path, fallback_crs),
             category="soils",
         ),
         "saturated_conductivity": _raster_entry(
-            _relative_to_catalog(catalog_path, location_root / sources["ssurgo"]["ksat_output"]),
-            crs=crs,
+            _relative_to_catalog(catalog_path, ksat_path),
+            crs=_raster_crs(ksat_path, fallback_crs),
             category="soils",
         ),
     }
@@ -78,6 +82,16 @@ def _raster_entry(uri, *, crs, category):
             "category": category,
         },
     }
+
+
+def _raster_crs(path, fallback):
+    try:
+        import rasterio
+
+        with rasterio.open(path) as src:
+            return str(src.crs or fallback)
+    except Exception:
+        return fallback
 
 
 def _dataframe_entry(uri, *, category, source=None):

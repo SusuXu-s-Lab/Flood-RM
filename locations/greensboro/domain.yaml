@@ -3,15 +3,52 @@
 paths:
   data_root: locations/greensboro/data
 
+sfincs:
+  grid_resolution_m: 60
+
 sfincs_domain_set:
   include_domain_ids:              # SMART-DS subregion(s) to model, by SMART-DS id
     - greensboro_rural             # the rural subregion (was the positional "east" blob)
 
 wflow:
+  dynamic_handoff:
+    state_policy: shared_baseline
+    baseline_id: baseline_90d
+    baseline_reference_time: "2020-11-14T00:00:00"
+    baseline_root: data/wflow/warmup/baseline_90d
+    warmup_days: 90
+    qa:
+      max_zero_rain_peak_fraction: 0.2
   domain_set:
+    outlet_source: boundary_handoff_watershed
+    allow_multiple_submodels: true
+    event_catalog_scope: shared_across_domain_set
+    subbasin_fabric: data/wflow/domain_set_subbasins.gpkg
+    subbasin_fabric_diagnostics: data/wflow/readiness/nhdplus_subbasin_fabric.csv
+    crossings:
+      min_uparea_km2: 10.0
     review_required: false
 
 inland_coupling:
+  discharge_forcing:
+    source: wflow_dynamic
+    handoff_location: sfincs_native_river_inflow
+    river_upa_km2: 10.0
+    river_len_m: 500.0
+    river_inflow_buffer_m: 200.0
+  initial_conditions:
+    enabled: true
+    method: hydrograph_mean_channel_inifile
+    source: wflow_dynamic_hydrographs
+    statistic: initial_window_source_mean
+    mean_window_hours: 1.0
+    reference_discharge_m3s: 5000.0
+    reference_depth_m: 1.5
+    min_depth_m: 0.1
+    max_depth_m: 2.5
+    river_buffer_cells: 2.0
+    fill_value: -9999.0
+    note: "HydroMT-SFINCS writes sfincs.ini via initial_conditions.create; outside the river corridor SFINCS initializes at bed level."
   infiltration:
     enabled: true
     method: cn_with_recovery

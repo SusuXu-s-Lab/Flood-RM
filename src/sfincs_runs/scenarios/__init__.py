@@ -12,6 +12,10 @@ from sfincs_runs.scenarios.inland_coupled import (
     plan_inland_coupled_example,
     stage_inland_coupled_scenarios,
 )
+from sfincs_runs.scenarios.inland_initial_conditions import (
+    configure_hydrograph_initial_conditions,
+    derive_hydrograph_initial_depth,
+)
 from sfincs_runs.scenarios.joint_handoff import write_joint_catalog_sfincs_handoff
 
 __all__ = [
@@ -21,6 +25,8 @@ __all__ = [
     "audit_forcing_manifest",
     "build_coastal_event_timeseries",
     "build_coastal_hydrograph_from_analog",
+    "configure_hydrograph_initial_conditions",
+    "derive_hydrograph_initial_depth",
     "plan_inland_coupled_example",
     "stage_inland_coupled_scenarios",
     "write_joint_catalog_sfincs_handoff",

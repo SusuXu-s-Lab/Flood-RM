@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import xarray as xr
 
+from design_events.collect_sources.aorc_event_meteo import aorc_wflow_temp_pet_variables, prepare_aorc_temp_pet_for_wflow
 from design_events.utils import iter_progress
 from design_events.utils import source_artifact_covers, write_source_artifact
 
@@ -188,12 +190,13 @@ def _moving_footprint_plan(precip, paths, config, spec):
 
 def _subset_precip(ds, spec, bbox_wgs84, start, end):
     variable = spec.get("variable", "APCP_surface")
+    variables = _event_window_variables(ds, spec, variable)
     time_name = _coord_name(ds, ["time", "valid_time"])
     lat_name = _coord_name(ds, ["latitude", "lat", "y"])
     lon_name = _coord_name(ds, ["longitude", "lon", "x"])
     west, south, east, north = bbox_wgs84
     west, east = _longitude_bounds(ds[lon_name].values, west, east)
-    subset = ds[[variable]].sel(
+    subset = ds[variables].sel(
         {
             time_name: slice(start, end),
             lat_name: _slice_axis(ds[lat_name].values, south, north),
@@ -203,6 +206,21 @@ def _subset_precip(ds, spec, bbox_wgs84, start, end):
     if time_name != "time":
         subset = subset.rename({time_name: "time"})
     return subset
+
+
+def _event_window_variables(ds, spec, precip_variable):
+    variables = [precip_variable]
+    meteo_cfg = spec.get("event_meteo") or {}
+    if bool(meteo_cfg.get("enabled", False)):
+        for candidates in aorc_wflow_temp_pet_variables({"collection": {"aorc_sst": spec}}).values():
+            for candidate in candidates:
+                if candidate in ds and candidate not in variables:
+                    variables.append(candidate)
+                    break
+    missing = [name for name in variables if name not in ds]
+    if missing:
+        raise KeyError(f"AORC dataset missing configured event-window variables: {missing}")
+    return variables
 
 
 def _spatial_stats(precip, duration_hours, check_every_n_hours=1, *, paths=None, config=None, spec=None):
@@ -401,6 +419,112 @@ def _event_window_subset(year_datasets, opener, spec, bbox_wgs84, start, end):
     return xr.concat(subsets, dim="time")
 
 
+def collect_aorc_wflow_baseline_warmup(config: dict, paths: dict, *, force: bool = False, opener=None) -> dict:
+    """Collect a shared AORC warmup forcing baseline for native HydroMT-Wflow.
+
+    The output is event-agnostic: ``data/wflow/warmup/<baseline_id>/precip.nc``
+    and ``temp_pet.nc`` can seed multiple event replays through the same reviewed
+    antecedent state.
+    """
+    spec = ((config.get("collection", {}) or {}).get("aorc_sst", {}) or {}).copy()
+    if not spec:
+        raise KeyError("collection.aorc_sst is required for AORC Wflow warmup collection")
+    spec["event_meteo"] = {**(spec.get("event_meteo") or {}), "enabled": True}
+    settings = ((config.get("wflow", {}) or {}).get("dynamic_handoff", {}) or {})
+    warmup_days = float(settings.get("warmup_days", 90))
+    baseline_id = str(settings.get("baseline_id", f"baseline_{int(warmup_days)}d"))
+    reference_time = settings.get("baseline_reference_time")
+    if reference_time in (None, ""):
+        raise ValueError("wflow.dynamic_handoff.baseline_reference_time is required for shared warmup collection")
+    start = pd.Timestamp(reference_time) - pd.Timedelta(days=warmup_days)
+    end = pd.Timestamp(reference_time) - pd.Timedelta(hours=1)
+    root = Path(settings.get("baseline_root", f"data/wflow/warmup/{baseline_id}"))
+    if not root.is_absolute():
+        root = Path(paths["location_root"]) / root
+    precip_nc = root / "precip.nc"
+    source_nc = root / "aorc_warmup_source.nc"
+    temp_pet_nc = root / "temp_pet.nc"
+    provenance_json = root / "aorc_warmup_provenance.json"
+    if (
+        not force
+        and precip_nc.exists()
+        and temp_pet_nc.exists()
+        and _warmup_file_covers(precip_nc, "precip", start, end)
+        and _warmup_file_covers(temp_pet_nc, "temp", start, end)
+    ):
+        return {
+            "status": "reused",
+            "baseline_id": baseline_id,
+            "warmup_start": start.isoformat(),
+            "warmup_end": end.isoformat(),
+            "precip_nc": str(precip_nc),
+            "temp_pet_nc": str(temp_pet_nc),
+        }
+
+    opener = opener or _open_aorc_year
+    bbox_wgs84 = _bbox_from_spec(paths, spec)
+    source = _event_window_subset({}, opener, spec, bbox_wgs84, start, end).sortby("time")
+    variable = spec.get("variable", "APCP_surface")
+    if variable not in source:
+        raise KeyError(f"AORC warmup source lacks precipitation variable {variable!r}")
+    precip = _aorc_precip_to_wflow(source[variable])
+    root.mkdir(parents=True, exist_ok=True)
+    source.to_netcdf(source_nc)
+    precip.to_dataset(name="precip").to_netcdf(precip_nc)
+    temp_pet_provenance = prepare_aorc_temp_pet_for_wflow(
+        source_nc,
+        temp_pet_nc,
+        t_start=start,
+        t_stop=end,
+        precip_template=precip_nc,
+        variable_candidates=aorc_wflow_temp_pet_variables(config),
+        provenance_path=root / "temp_pet_provenance.json",
+    )
+    provenance = {
+        "status": "collected",
+        "baseline_id": baseline_id,
+        "reference_time": pd.Timestamp(reference_time).isoformat(),
+        "warmup_days": warmup_days,
+        "warmup_start": start.isoformat(),
+        "warmup_end": end.isoformat(),
+        "source": "AORC",
+        "source_nc": str(source_nc),
+        "precip_nc": str(precip_nc),
+        "temp_pet_nc": str(temp_pet_nc),
+        "temp_pet_provenance": temp_pet_provenance,
+        "hydromt_wflow_contract": "setup_precip_forcing + setup_temp_pet_forcing",
+    }
+    provenance_json.write_text(json.dumps(provenance, indent=2), encoding="utf-8")
+    return provenance
+
+
+def _aorc_precip_to_wflow(da: xr.DataArray) -> xr.DataArray:
+    rename = {}
+    if "latitude" in da.dims:
+        rename["latitude"] = "y"
+    if "longitude" in da.dims:
+        rename["longitude"] = "x"
+    if "lat" in da.dims:
+        rename["lat"] = "y"
+    if "lon" in da.dims:
+        rename["lon"] = "x"
+    out = da.rename(rename).rename("precip").astype("float32")
+    out.attrs.update(units="mm", source_units=da.attrs.get("units", "unknown"))
+    return out.sortby("y").sortby("x")
+
+
+def _warmup_file_covers(path: Path, variable: str, start: pd.Timestamp, end: pd.Timestamp) -> bool:
+    try:
+        with xr.open_dataset(path) as ds:
+            if variable not in ds or "time" not in ds[variable].dims:
+                return False
+            tmin = pd.Timestamp(ds["time"].min().values)
+            tmax = pd.Timestamp(ds["time"].max().values)
+    except Exception:
+        return False
+    return tmin <= start and tmax >= end
+
+
 def _compute_selected_event_windows(opener, ranked, spec, bbox_wgs84, output_dir, duration_hours, location_name):
     if ranked.empty:
         ranked = ranked.copy()
@@ -430,14 +554,25 @@ def _compute_selected_event_windows(opener, ranked, spec, bbox_wgs84, output_dir
     ):
         start = pd.Timestamp(row["storm_date"])
         end = start + pd.to_timedelta(duration_hours - 1, unit="h")
+        path = None
+        if write_event_windows:
+            event_id = _event_id(location_name, duration_hours, row)
+            path = output_dir / f"{event_id}_{start:%Y%m%dT%H}.nc"
+            if _event_window_file_has_required_variables(path, spec):
+                centroid_lons.append(
+                    row.get("historical_centroid_lon", row.get("x", pd.NA))
+                )
+                centroid_lats.append(
+                    row.get("historical_centroid_lat", row.get("y", pd.NA))
+                )
+                written.append(path)
+                continue
         subset = _event_window_subset(year_datasets, opener, spec, bbox_wgs84, start, end)
         centroid_lon, centroid_lat = _centroid_from_precip_window(subset[variable])
         centroid_lons.append(centroid_lon)
         centroid_lats.append(centroid_lat)
         if write_event_windows:
-            event_id = _event_id(location_name, duration_hours, row)
-            path = output_dir / f"{event_id}_{start:%Y%m%dT%H}.nc"
-            subset[[variable]].to_netcdf(path)
+            subset.to_netcdf(path)
             written.append(path)
     for ds in year_datasets.values():
         ds.close()
@@ -449,6 +584,27 @@ def _compute_selected_event_windows(opener, ranked, spec, bbox_wgs84, output_dir
     if "y" not in ranked:
         ranked["y"] = centroid_lats
     return written, ranked
+
+
+def _event_window_file_has_required_variables(path: Path, spec: dict) -> bool:
+    path = Path(path)
+    if not path.exists():
+        return False
+    required_targets = aorc_wflow_temp_pet_variables({"collection": {"aorc_sst": spec}})
+    precip_variable = spec.get("variable", "APCP_surface")
+    try:
+        with xr.open_dataset(path) as ds:
+            if precip_variable not in ds:
+                return False
+            meteo_cfg = spec.get("event_meteo") or {}
+            if not bool(meteo_cfg.get("enabled", False)):
+                return True
+            for candidates in required_targets.values():
+                if not any(candidate in ds for candidate in candidates):
+                    return False
+    except Exception:
+        return False
+    return True
 
 
 def _ensure_transposition_targets(paths, spec, ranked):
@@ -494,6 +650,7 @@ def collect_aorc_sst(settings, skip_existing=False, opener=None):
         and ranked_csv.exists()
         and stats_csv.exists()
         and _ranked_storms_are_sst_equivalent(ranked_csv)
+        and _event_windows_include_required_meteo(event_window_dir, spec)
         and source_artifact_covers(paths, "aorc_sst", "rainfall_catalog", start, end)
     ):
         print(f"AORC SST: reusing complete rainfall catalog {ranked_csv}")
@@ -588,6 +745,20 @@ def collect_aorc_sst(settings, skip_existing=False, opener=None):
         "storm_stats_csv": stats_csv,
         "source_artifact_json": artifact_json,
     }
+
+
+def _event_windows_include_required_meteo(event_window_dir: Path, spec: dict) -> bool:
+    meteo_cfg = spec.get("event_meteo") or {}
+    if not bool(meteo_cfg.get("enabled", False)):
+        return True
+    files = sorted(Path(event_window_dir).glob("*.nc"))
+    if not files:
+        return False
+    required_targets = aorc_wflow_temp_pet_variables({"collection": {"aorc_sst": spec}})
+    for path in files:
+        if not _event_window_file_has_required_variables(path, spec):
+            return False
+    return True
 
 
 # AORC SST homogeneity diagnostics

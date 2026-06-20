@@ -21,15 +21,20 @@ def plot_wflow_basemap(
     *,
     gages=None,
     sfincs_domains=None,
+    background_elevation=None,
     ax=None,
     elevation_var: str = "land_elevation",
     subcatchment_var: str = "subcatchment",
-    river_mask_var: str = "river_mask",
+    river_mask_var: str | None = None,
     streamorder_field: str = "strord",
+    min_river_streamorder: int | None = 2,
+    sfincs_domain_min_river_streamorder: int | None = 1,
+    gage_min_river_streamorder: int | None = 1,
+    gage_river_buffer: float | None = None,
     title: str | None = None,
     figsize=(8, 6),
     diagnostic: bool = False,
-    streamorder_levels: tuple[int, ...] = (1, 2),
+    streamorder_levels: tuple[int, ...] | None = None,
 ):
     """Plot a built HydroMT-Wflow model as a reference-style base map.
 
@@ -39,18 +44,33 @@ def plot_wflow_basemap(
         A built Wflow model exposing ``staticmaps.data`` (xarray.Dataset) and
         ``rivers`` / ``basins`` GeoDataFrame properties.
     gages : geopandas.GeoDataFrame, optional
-        Fallback point geometries to overlay when the model does not expose
-        a ``gauges*`` geometry layer.
+        Reviewed USGS/observation gages to overlay as open circles. This is
+        useful when the model geoms only expose the SFINCS handoff gauges.
     sfincs_domains : geopandas.GeoDataFrame, optional
         SFINCS domain polygons to overlay as dashed red boundaries.
+    background_elevation : xarray.DataArray or iterable of DataArray, optional
+        Additional DEM/elevation rasters to draw below the Wflow DEM, useful
+        when the SFINCS coverage extends outside the Wflow staticmap footprint.
     ax : matplotlib Axes, optional
         Axis to draw into. A new figure is created when omitted.
     elevation_var, subcatchment_var, river_mask_var : str
         Staticmap variable names (HydroMT-Wflow v1 defaults).
     streamorder_field : str
         River GeoDataFrame column used to scale line width.
+    min_river_streamorder : int, optional
+        Minimum vector river stream order to draw on the full reference map.
+    sfincs_domain_min_river_streamorder : int, optional
+        Minimum vector river stream order to draw where rivers intersect SFINCS
+        domains. This keeps lower-order handoff/crossing context visible without
+        drawing every low-order stream across the full Wflow basin.
+    gage_min_river_streamorder : int, optional
+        Minimum vector river stream order to draw near reviewed USGS gages.
+        This links gage markers to nearby streams without crowding the full map.
+    gage_river_buffer : float, optional
+        Buffer around reviewed USGS gages in map CRS units. Defaults to a small
+        degree buffer for geographic maps and a 2500 m buffer for projected maps.
     streamorder_levels : tuple[int, ...]
-        Gridded ``meta_streamorder`` classes to overlay for stream-order QA.
+        Optional gridded ``meta_streamorder`` classes to overlay for stream-order QA.
     title : str, optional
         Title for the left (elevation) panel.
 
@@ -62,6 +82,7 @@ def plot_wflow_basemap(
     import numpy as np
     from matplotlib import colors
     from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
 
     if diagnostic:
         return _plot_wflow_diagnostic_basemap(
@@ -92,6 +113,15 @@ def plot_wflow_basemap(
         "wflow_dem",
         plt.cm.terrain(np.linspace(0.25, 1.0, 256)),
     )
+    map_crs = staticmaps.raster.crs
+    _plot_background_elevation(
+        background_elevation,
+        ax=ax,
+        dst_crs=map_crs,
+        cmap=cmap,
+        vmin=vmin,
+        vmax=vmax,
+    )
     elevation.plot(
         ax=ax,
         cmap=cmap,
@@ -100,9 +130,8 @@ def plot_wflow_basemap(
         cbar_kwargs=dict(aspect=30, shrink=0.8, label="elevation [m]"),
     )
 
-    map_crs = staticmaps.raster.crs
     legend_handles = []
-    if river_mask_var in staticmaps:
+    if river_mask_var and river_mask_var in staticmaps:
         staticmaps[river_mask_var].where(staticmaps[river_mask_var] > 0).plot(
             ax=ax,
             cmap=colors.ListedColormap(["blue"]),
@@ -118,21 +147,41 @@ def plot_wflow_basemap(
         streamorder_var="meta_streamorder",
     )
 
+    gage_context = _reviewed_gage_layer(model, gages)
     rivers = _safe_property(model, "rivers")
     if rivers is not None and not rivers.empty:
-        rivers = _to_map_crs(rivers, map_crs)
-        if streamorder_field in rivers:
-            order = rivers[streamorder_field].astype(float)
-            linewidth = order / max(float(order.max()), 1.0) * 1.0 + 0.5
+        rivers, order = _reference_rivers_for_basemap(
+            rivers,
+            sfincs_domains,
+            map_crs,
+            gage_context,
+            streamorder_field=streamorder_field,
+            min_river_streamorder=min_river_streamorder,
+            sfincs_domain_min_river_streamorder=sfincs_domain_min_river_streamorder,
+            gage_min_river_streamorder=gage_min_river_streamorder,
+            gage_river_buffer=gage_river_buffer,
+        )
+        if order is not None:
+            linewidth = order / max(float(order.max()), 1.0) * 1.4 + 0.4
         else:
             linewidth = 1.0
-        rivers.plot(ax=ax, color="blue", linewidth=linewidth, zorder=4, label="river")
-        legend_handles.append(Line2D([0], [0], color="blue", linewidth=2.0, label="river vector"))
+        if not rivers.empty:
+            rivers.plot(ax=ax, color="blue", linewidth=linewidth, zorder=4, label="river")
+            legend_handles.append(Line2D([0], [0], color="blue", linewidth=1.2, label="river"))
 
     basins = _safe_property(model, "basins")
     if basins is not None and not basins.empty:
-        _to_map_crs(basins, map_crs).boundary.plot(ax=ax, color="black", linewidth=0.4, zorder=5)
-        legend_handles.append(Line2D([0], [0], color="black", linewidth=0.8, label="Wflow basin"))
+        basins = _to_map_crs(basins, map_crs)
+        basins.plot(
+            ax=ax,
+            facecolor="white",
+            edgecolor="black",
+            alpha=0.12,
+            linewidth=0.4,
+            zorder=2,
+        )
+        basins.boundary.plot(ax=ax, color="black", linewidth=0.6, zorder=5)
+        legend_handles.append(Patch(facecolor="white", edgecolor="black", alpha=0.35, label="Wflow basin"))
 
     # Distinct styling per gauge layer so the coupled SFINCS-source gauges and the reviewed
     # USGS gages are visually separable. Styles mirror the SFINCS basemap (crimson diamonds
@@ -142,7 +191,7 @@ def plot_wflow_basemap(
         "gauges_usgs": dict(marker="o", markersize=35, facecolor="none", edgecolor="black", linewidth=1.0),
     }
     gauge_labels = {
-        "gauges_sfincs": "gauges sfincs",
+        "gauges_sfincs": "gauges_sfincs",
         "gauges_usgs": "reviewed USGS gage",
     }
     default_gauge_style = dict(marker="d", markersize=35, facecolor="red", edgecolor="red", linewidth=0.6)
@@ -166,16 +215,27 @@ def plot_wflow_basemap(
         )
 
     if sfincs_domains is not None and not sfincs_domains.empty:
-        _to_map_crs(sfincs_domains, map_crs).boundary.plot(
+        sfincs_domains = _to_map_crs(sfincs_domains, map_crs)
+        sfincs_domains.plot(
+            ax=ax,
+            facecolor="#d9d9d9",
+            edgecolor="none",
+            alpha=0.45,
+            zorder=3,
+        )
+        sfincs_domains.boundary.plot(
             ax=ax,
             color="red",
             linewidth=1.0,
             linestyle="--",
             zorder=7,
         )
-        legend_handles.append(Line2D([0], [0], color="red", linestyle="--", linewidth=1.2, label="SFINCS domain"))
+        legend_handles.append(Line2D([0], [0], color="red", linewidth=1.0, linestyle="--", label="SFINCS domain"))
 
-    xlim, ylim = _dataarray_bounds(elevation)
+    xlim, ylim = _combined_axis_limits(
+        elevation,
+        (frame for frame in (basins, sfincs_domains) if frame is not None and not frame.empty),
+    )
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
     ax.set_aspect("equal", adjustable="box")
@@ -192,7 +252,7 @@ def plot_wflow_basemap(
 def plot_wflow_ldd_components(
     model,
     *,
-    streamorder_levels: tuple[int, ...] = (1, 2),
+    streamorder_levels: tuple[int, ...] | None = None,
     figsize=(13, 10),
 ):
     """Plot HydroMT-Wflow LDD QA components for a built model.
@@ -213,26 +273,15 @@ def plot_wflow_ldd_components(
         raise KeyError(f"staticmaps missing LDD QA variables: {missing}")
 
     fig, axes = plt.subplots(2, 2, figsize=figsize, constrained_layout=True)
-    elevation = staticmaps["land_elevation"].raster.mask_nodata()
-    cmap = colors.LinearSegmentedColormap.from_list(
-        "wflow_dem",
-        plt.cm.terrain(np.linspace(0.25, 1.0, 256)),
-    )
-    vmin, vmax = _finite_quantiles(elevation, (0.0, 0.98))
-    elevation.plot(
-        ax=axes[0, 0],
-        cmap=cmap,
-        vmin=vmin,
-        vmax=vmax,
-        cbar_kwargs=dict(shrink=0.75, label="elevation [m]"),
-    )
-    axes[0, 0].set_title("DEM + selected stream order")
+    axes[0, 0].set_facecolor("white")
+    _plot_watershed_boundary(model, staticmaps, axes[0, 0])
     handles = _plot_streamorder_levels(
         staticmaps,
         axes[0, 0],
-        levels=streamorder_levels,
+        levels=_streamorder_overlay_levels(staticmaps["meta_streamorder"], streamorder_levels),
         streamorder_var="meta_streamorder",
     )
+    axes[0, 0].set_title("Selected stream order")
     if handles:
         axes[0, 0].legend(handles=handles, title="Stream order", loc="lower right")
 
@@ -288,6 +337,37 @@ def _mask_positive(data_array):
     return masked.where(masked > 0)
 
 
+def _plot_background_elevation(background_elevation, *, ax, dst_crs, cmap, vmin, vmax) -> None:
+    if background_elevation is None:
+        return
+    if isinstance(background_elevation, (list, tuple)):
+        rasters = background_elevation
+    else:
+        rasters = [background_elevation]
+
+    for raster in rasters:
+        if raster is None:
+            continue
+        try:
+            elevation = raster.raster.mask_nodata()
+        except Exception:
+            elevation = raster
+        try:
+            if elevation.raster.crs != dst_crs:
+                elevation = elevation.raster.reproject(dst_crs=dst_crs, method="bilinear")
+        except Exception:
+            continue
+        elevation.attrs.update(long_name="elevation", units="m")
+        elevation.plot(
+            ax=ax,
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+            add_colorbar=False,
+            zorder=0,
+        )
+
+
 def _present_integer_values(data_array) -> list[int]:
     import numpy as np
 
@@ -296,6 +376,120 @@ def _present_integer_values(data_array) -> list[int]:
     if values.size == 0:
         return []
     return sorted({int(value) for value in values if float(value).is_integer()})
+
+
+def _streamorder_overlay_levels(streamorder, requested_levels: tuple[int, ...] | None) -> tuple[int, ...]:
+    if requested_levels is not None:
+        return tuple(int(level) for level in requested_levels)
+
+    present = _present_integer_values(_mask_positive(streamorder))
+    if not present:
+        return ()
+    largest = max(present)
+    first_visible = max(2, largest - 3)
+    return tuple(level for level in present if level >= first_visible)
+
+
+def _reference_rivers_for_basemap(
+    rivers,
+    sfincs_domains,
+    map_crs,
+    gage_context=None,
+    *,
+    streamorder_field: str,
+    min_river_streamorder: int | None,
+    sfincs_domain_min_river_streamorder: int | None,
+    gage_min_river_streamorder: int | None,
+    gage_river_buffer: float | None,
+):
+    rivers = _to_map_crs(rivers, map_crs)
+    if streamorder_field not in rivers:
+        return rivers, None
+
+    order = rivers[streamorder_field].astype(float)
+    keep = _streamorder_keep_mask(order, min_river_streamorder)
+
+    if sfincs_domains is not None and not sfincs_domains.empty and sfincs_domain_min_river_streamorder is not None:
+        domain_keep = _streamorder_keep_mask(order, sfincs_domain_min_river_streamorder)
+        if domain_keep.any():
+            domains = _to_map_crs(sfincs_domains, map_crs)
+            if domains is not None and not domains.empty:
+                domain_geometry = _union_geometries(domains.geometry)
+                keep = keep | (domain_keep & rivers.geometry.intersects(domain_geometry))
+
+    if gage_context is not None and not gage_context.empty and gage_min_river_streamorder is not None:
+        gage_keep = _streamorder_keep_mask(order, gage_min_river_streamorder)
+        if gage_keep.any():
+            gages = _to_map_crs(gage_context, map_crs)
+            if gages is not None and not gages.empty:
+                distance = _gage_river_buffer_distance(map_crs, gage_river_buffer)
+                gage_geometry = _union_geometries([geometry.buffer(distance) for geometry in gages.geometry])
+                keep = keep | (gage_keep & rivers.geometry.intersects(gage_geometry))
+
+    selected = rivers.loc[keep].copy()
+    return selected, order.loc[selected.index]
+
+
+def _reviewed_gage_layer(model, fallback_gages):
+    for name, layer in _iter_geoms(model):
+        if str(name) == "gauges_usgs" and layer is not None and not layer.empty:
+            return layer
+    return fallback_gages
+
+
+def _gage_river_buffer_distance(crs, configured):
+    if configured is not None:
+        return float(configured)
+    is_geographic = getattr(crs, "is_geographic", None)
+    if is_geographic is None and crs is not None:
+        try:
+            from pyproj import CRS
+
+            is_geographic = CRS.from_user_input(crs).is_geographic
+        except Exception:
+            is_geographic = False
+    if bool(is_geographic):
+        return 0.025
+    return 2500.0
+
+
+def _streamorder_keep_mask(order, minimum):
+    if minimum is None:
+        return order.notna()
+    return order >= float(minimum)
+
+
+def _union_geometries(geometries):
+    if hasattr(geometries, "union_all"):
+        return geometries.union_all()
+    if hasattr(geometries, "unary_union"):
+        return geometries.unary_union
+    from shapely.ops import unary_union
+
+    return unary_union(list(geometries))
+
+
+def _plot_watershed_boundary(model, staticmaps, ax) -> None:
+    basins = _safe_property(model, "basins")
+    if basins is not None and not basins.empty:
+        boundary = basins.to_crs(staticmaps.raster.crs) if basins.crs else basins
+        boundary.boundary.plot(ax=ax, color="black", linewidth=0.8, zorder=20)
+        return
+
+    if "subcatchment" not in staticmaps:
+        return
+    subcatchment = _mask_positive(staticmaps["subcatchment"])
+    try:
+        subcatchment.where(subcatchment > 0).plot.contour(
+            ax=ax,
+            levels=[0.5],
+            colors="black",
+            linewidths=0.8,
+            add_colorbar=False,
+            zorder=20,
+        )
+    except Exception:
+        pass
 
 
 def _plot_wflow_diagnostic_basemap(
@@ -482,11 +676,14 @@ def _to_map_crs(frame, crs):
 
 def _gauge_layers(model, fallback_gages):
     layers = []
+    names = set()
     for name, layer in _iter_geoms(model):
         if str(name).startswith("gauges") and layer is not None and not layer.empty:
-            layers.append((str(name), layer))
-    if not layers and fallback_gages is not None and not fallback_gages.empty:
-        layers.append(("gauges_sfincs", fallback_gages))
+            layer_name = str(name)
+            layers.append((layer_name, layer))
+            names.add(layer_name)
+    if fallback_gages is not None and not fallback_gages.empty and "gauges_usgs" not in names:
+        layers.append(("gauges_usgs", fallback_gages))
     return layers
 
 
@@ -550,6 +747,26 @@ def _dataarray_bounds(data):
     xmax = float(max(xs[0], xs[-1]) + dx / 2)
     ymin = float(min(ys[0], ys[-1]) - dy / 2)
     ymax = float(max(ys[0], ys[-1]) + dy / 2)
+    xpad = (xmax - xmin) * 0.02
+    ypad = (ymax - ymin) * 0.02
+    return (xmin - xpad, xmax + xpad), (ymin - ypad, ymax + ypad)
+
+
+def _combined_axis_limits(data, frames=()):
+    xlim, ylim = _dataarray_bounds(data)
+    xmin, xmax = xlim
+    ymin, ymax = ylim
+    crs = data.raster.crs
+    for frame in frames:
+        frame = _to_map_crs(frame, crs)
+        if frame is None or frame.empty:
+            continue
+        fxmin, fymin, fxmax, fymax = frame.total_bounds
+        xmin = min(xmin, float(fxmin))
+        ymin = min(ymin, float(fymin))
+        xmax = max(xmax, float(fxmax))
+        ymax = max(ymax, float(fymax))
+
     xpad = (xmax - xmin) * 0.02
     ypad = (ymax - ymin) * 0.02
     return (xmin - xpad, xmax + xpad), (ymin - ypad, ymax + ypad)

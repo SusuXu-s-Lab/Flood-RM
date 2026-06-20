@@ -398,6 +398,119 @@ def setup_hydromt_infiltration(sf, config, paths, *, datadir=None):
     }
 
 
+def validate_built_sfincs_native_physics(
+    model_root: str | Path,
+    config: dict | None = None,
+    *,
+    require_spatial_roughness: bool = True,
+) -> dict:
+    """Validate built SFINCS static physics expected by rain-on-grid workflows."""
+    model_root = Path(model_root)
+    inp = _read_sfincs_inp(model_root / "sfincs.inp")
+    drivers = set((config or {}).get("event_drivers") or [])
+    hydrology_cfg = _sfincs_hydrology_config(config or {})
+    infiltration_cfg = hydrology_cfg.get("infiltration") or {}
+    require_infiltration = bool(infiltration_cfg.get("enabled", True)) and bool(
+        drivers & {"rainfall", "soil_moisture"}
+    )
+    infiltration = _validate_sfincs_infiltration_files(
+        model_root,
+        inp,
+        method=str(infiltration_cfg.get("method", "cn_with_recovery")).lower(),
+        required=require_infiltration,
+    )
+    roughness = (
+        _validate_sfincs_spatial_roughness(model_root, inp)
+        if require_spatial_roughness
+        else {"required": False, "spatially_varying": None}
+    )
+    return {
+        "model_root": str(model_root),
+        "infiltration": infiltration,
+        "roughness": roughness,
+    }
+
+
+def _validate_sfincs_infiltration_files(model_root: Path, inp: dict, *, method: str, required: bool) -> dict:
+    if not required:
+        return {"required": False, "status": "not_required"}
+    if method == "cn_with_recovery":
+        keys = ("smaxfile", "sefffile", "ksfile")
+    elif method == "cn":
+        keys = ("scsfile",)
+    else:
+        keys = ("qinffile", "scsfile", "smaxfile", "sefffile", "ksfile")
+    present = [key for key in keys if inp.get(key)]
+    missing = [key for key in keys if not inp.get(key)] if method in {"cn_with_recovery", "cn"} else []
+    missing_files = [
+        inp[key]
+        for key in present
+        if not (model_root / str(inp[key])).exists()
+    ]
+    qinf = str(inp.get("qinf", "")).strip()
+    qinf_inactive = method not in {"cn_with_recovery", "cn"} and qinf == "0"
+    if missing or missing_files or qinf_inactive:
+        raise RuntimeError(
+            "SFINCS rain-on-grid model lacks active native infiltration. "
+            f"method={method!r}, missing_keys={missing}, missing_files={missing_files}, qinf={qinf!r}. "
+            "Rebuild the SFINCS base with HydroMT-SFINCS infiltration.create_*."
+        )
+    return {
+        "required": True,
+        "method": method,
+        "keys": present,
+        "status": "active",
+    }
+
+
+def _validate_sfincs_spatial_roughness(model_root: Path, inp: dict) -> dict:
+    subgrid_file = inp.get("sbgfile") or inp.get("subgridfile") or "sfincs_subgrid.nc"
+    path = model_root / str(subgrid_file)
+    if not path.exists():
+        raise RuntimeError(
+            f"SFINCS spatial roughness requires a subgrid file with Manning values: {path}"
+        )
+    with xr.open_dataset(path) as ds:
+        candidates = [name for name in ("uv_navg", "uv_nrep", "uv_n") if name in ds]
+        if not candidates:
+            raise RuntimeError(f"SFINCS subgrid file has no roughness variables: {path}")
+        stats = {}
+        varying = False
+        for name in candidates:
+            values = np.asarray(ds[name].values, dtype=float)
+            finite = values[np.isfinite(values)]
+            if finite.size == 0:
+                continue
+            vmin = float(np.nanmin(finite))
+            vmax = float(np.nanmax(finite))
+            stats[name] = {"min": vmin, "max": vmax}
+            varying = varying or not np.isclose(vmin, vmax)
+    if not varying:
+        raise RuntimeError(
+            f"SFINCS roughness is not spatially varying in {path}; check subgrid roughness_list/LULC mapping."
+        )
+    return {
+        "required": True,
+        "subgrid_file": str(path),
+        "roughness_variables": sorted(stats),
+        "spatially_varying": True,
+        "stats": stats,
+    }
+
+
+def _read_sfincs_inp(path: Path) -> dict:
+    if not path.exists():
+        raise FileNotFoundError(path)
+    values = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        clean = line.split("#", 1)[0].strip()
+        if not clean or "=" not in clean:
+            continue
+        key, value = clean.split("=", 1)
+        values[key.strip().lower()] = value.strip().split()[0]
+    return values
+
+
 def _sfincs_hydrology_config(config):
     coastal = (config.get("coastal_wave_coupling") or {}).get("hydrology") or {}
     if coastal:

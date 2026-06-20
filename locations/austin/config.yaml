@@ -28,15 +28,41 @@ static_sources:
     ksat_output: data/static/soils/ksat_mmhr_austin.tif
 
 collection:
+  stream_geo_nldi:
+    stream_geo_table: data/sources/national_hydrography/stream_geo.parquet
+    raw_dir: data/sources/national_hydrography/stream_geo_raw
+    nldi_lookup_cache: data/sources/national_hydrography/nldi_stream_geo_comid_cache.csv
   national_hydrography:
     basemap_source_resolution_degrees: 0.000925925925925926
+    stream_geo_table: data/sources/national_hydrography/stream_geo.parquet
+    nldi_lookup_cache: data/sources/national_hydrography/nldi_stream_geo_comid_cache.csv
+    nhdplus_v2_flowlines: data/sources/national_hydrography/nhdplus_v2_flowlines.gpkg
+    stream_geo_join_method: attribute_transfer
+    stream_geo_join_max_distance_m: 2500
+    use_nldi_stream_geo_join: false
+    nldi_request_timeout_seconds: 10
+    nldi_max_workers: 4
+    nldi_progress_interval: 250
   aorc_sst:
     transposition_region:
       id: austin-inland-review-required
       geometry_file: data/sources/aorc_sst/transposition_regions/transposition_region.geojson
+    event_meteo:
+      enabled: true
+      source_variables:
+        temp: TMP_2maboveground
+        press_msl: PRES_surface
+        kin: DSWRF_surface
   nwm:
     streamflow:
       reason: Austin production streamflow frequency should use HUC-selected active USGS streamgage records.
+
+wflow:
+  event_forcing:
+    temp_pet:
+      event_temp_pet: data/wflow/events/<event_id>/temp_pet.nc
+      pet_method: makkink
+      pressure_source: AORC surface pressure exposed as HydroMT press_msl; pressure correction disabled.
 
 event_catalog:
   dependence:

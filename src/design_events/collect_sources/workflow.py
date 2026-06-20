@@ -71,6 +71,7 @@ class SourceCollectionPlan:
 source_order = (
     "cora",
     "usgs_streamgages",
+    "stream_geo_nldi",
     "national_hydrography",
     "nwm",
     "aorc_sst",
@@ -145,6 +146,7 @@ def _default_run_collect_funcs():
     from design_events.collect_sources.hurdat2 import collect_hurdat2
     from design_events.collect_sources.national_hydrography import collect_national_hydrography
     from design_events.collect_sources.nwm import collect_nwm
+    from design_events.collect_sources.stream_geo_nldi import collect_stream_geo_nldi
     from design_events.collect_sources.usgs_streamgages import collect_usgs_streamgages
 
     return {
@@ -154,6 +156,7 @@ def _default_run_collect_funcs():
         "collect_hurdat2": collect_hurdat2,
         "collect_national_hydrography": collect_national_hydrography,
         "collect_nwm": collect_nwm,
+        "collect_stream_geo_nldi": collect_stream_geo_nldi,
         "collect_usgs_streamgages": collect_usgs_streamgages,
     }
 
@@ -237,6 +240,17 @@ def run_collect(
                     started,
                     rows=result.get("soil_moisture_rows", 0),
                     artifact=str(result.get("soil_moisture_csv")),
+                )
+            elif step.name == "stream_geo_nldi":
+                result = funcs["collect_stream_geo_nldi"](settings, skip_existing=skip_existing, smoke=False)
+                status = "reused" if result.get("reused") else result.get("status", "collected")
+                _record(
+                    rows,
+                    step.name,
+                    status,
+                    started,
+                    rows=result.get("rows", 0),
+                    artifact=str(result.get("stream_geo_table")),
                 )
             elif step.name == "national_hydrography":
                 result = funcs["collect_national_hydrography"](settings, skip_existing=skip_existing, smoke=False)
@@ -331,6 +345,7 @@ def _default_collect_all_funcs():
     from design_events.collect_sources.usgs_streamgages import collect_usgs_streamgages
     from design_events.collect_sources.nwm import collect_nwm
     from design_events.collect_sources.national_hydrography import collect_national_hydrography
+    from design_events.collect_sources.stream_geo_nldi import collect_stream_geo_nldi
     from design_events.collect_sources.era5_waves import collect_era5_waves
     from design_events.collect_sources.aorc_sst import collect_aorc_sst
     from design_events.collect_sources.hurdat2 import collect_hurdat2
@@ -340,6 +355,7 @@ def _default_collect_all_funcs():
         "collect_usgs_streamgages": collect_usgs_streamgages,
         "collect_nwm": collect_nwm,
         "collect_national_hydrography": collect_national_hydrography,
+        "collect_stream_geo_nldi": collect_stream_geo_nldi,
         "collect_aorc_sst": collect_aorc_sst,
         "collect_era5_waves": collect_era5_waves,
         "collect_hurdat2": collect_hurdat2,
@@ -373,6 +389,13 @@ def collect_all_sources(
             smoke=smoke,
         )
     nwm_result = None
+    stream_geo_nldi_result = None
+    if plan.has("stream_geo_nldi"):
+        stream_geo_nldi_result = funcs["collect_stream_geo_nldi"](
+            plan.settings_for("stream_geo_nldi"),
+            skip_existing=skip_existing,
+            smoke=smoke,
+        )
     national_hydrography_result = None
     if plan.has("national_hydrography"):
         national_hydrography_result = funcs["collect_national_hydrography"](
@@ -411,6 +434,7 @@ def collect_all_sources(
         "waterlevel_csv": paths.get("waterlevel_csv"),
         "usgs_streamgages": usgs_streamgages_result,
         "nwm": nwm_result,
+        "stream_geo_nldi": stream_geo_nldi_result,
         "national_hydrography": national_hydrography_result,
         "aorc_sst": aorc_sst_result,
         "era5_waves": era5_result,
@@ -600,6 +624,7 @@ from wflow_runs.notebook import exists_table
 source_artifacts = {
     "cora": ("cora", "boundary_water_level"),
     "usgs_streamgages": ("usgs_streamgages", "active_candidates"),
+    "stream_geo_nldi": ("stream_geo_nldi", "river_geometry_lookup"),
     "nwm": ("nwm", "retrospective_hydrologic_state"),
     "aorc_sst": ("aorc_sst", "rainfall_catalog"),
     "era5_waves": ("era5", "snapwave_boundary_forcing"),
@@ -701,6 +726,24 @@ def source_record_location_table(runtime: CollectSourcesNotebookRuntime) -> pd.D
         "reviewed discharge records": runtime.usgs_streamgages["streamflow_records"]["output"],
         "AORC rainfall members": sources["rainfall"],
         "NWM soil-moisture members": sources["soil_moisture"],
+        "STREAM-geo river geometry cache": collection.get("stream_geo_nldi", {}).get(
+            "stream_geo_table",
+            collection["national_hydrography"].get("stream_geo_table", "data/sources/national_hydrography/stream_geo.parquet"),
+        ),
+        "NLDI STREAM-geo COMID join cache": collection.get("stream_geo_nldi", {}).get(
+            "nldi_lookup_cache",
+            collection["national_hydrography"].get(
+                "nldi_lookup_cache",
+                "data/sources/national_hydrography/nldi_stream_geo_comid_cache.csv",
+            ),
+        ),
+        "NHDPlusV2 flowlines for STREAM-geo join": collection.get("stream_geo_nldi", {}).get(
+            "nhdplus_v2_flowlines",
+            collection["national_hydrography"].get(
+                "nhdplus_v2_flowlines",
+                "data/sources/national_hydrography/nhdplus_v2_flowlines.gpkg",
+            ),
+        ),
         "NHDPlus river geometry": collection["national_hydrography"]["river_geometry"],
         "NHDPlus catchments": collection["national_hydrography"]["catchments"],
         "Wflow soil parameters": collection["national_hydrography"]["wflow_soil_parameters"],
@@ -711,6 +754,7 @@ def source_record_location_table(runtime: CollectSourcesNotebookRuntime) -> pd.D
 def source_role_labels() -> dict[str, str]:
     return {
         "usgs_streamgages": "active records for POT, validation, and handoff",
+        "stream_geo_nldi": "STREAM-geo width/depth cache with NLDI COMID lookup provenance",
         "national_hydrography": "USA hydrography and SSURGO pedology for HydroMT-Wflow build sources",
         "aorc_sst": "direct rainfall members shared by Wflow and SFINCS",
         "nwm": "antecedent soil-moisture context",
@@ -822,12 +866,86 @@ def collect_configured_source_artifacts(
     )
 
 
+def refresh_wflow_hydrography_basemap(
+    runtime: CollectSourcesNotebookRuntime,
+    *,
+    force: bool = True,
+) -> dict:
+    """Refresh only the Wflow HydroMT hydrography basemap for notebook use."""
+    from design_events.collect_sources.national_hydrography import (
+        refresh_wflow_hydrography_basemap as _refresh_wflow_hydrography_basemap,
+    )
+
+    plan = build_source_collection_plan(runtime.runtime_config, runtime.runtime_paths)
+    if not plan.has("national_hydrography"):
+        raise KeyError("collection.national_hydrography is not configured for this location")
+    return _refresh_wflow_hydrography_basemap(
+        plan.settings_for("national_hydrography"),
+        skip_existing=not force,
+    )
+
+
+def refresh_wflow_hydrography_sources(
+    runtime: CollectSourcesNotebookRuntime,
+    *,
+    force: bool = True,
+) -> dict:
+    """Refresh the Wflow HydroMT basemap and river-geometry source bundle."""
+    from design_events.collect_sources.national_hydrography import refresh_wflow_river_geometry_sources
+    from design_events.collect_sources.stream_geo_nldi import collect_stream_geo_nldi
+
+    plan = build_source_collection_plan(runtime.runtime_config, runtime.runtime_paths)
+    if not plan.has("national_hydrography"):
+        raise KeyError("collection.national_hydrography is not configured for this location")
+
+    stream_geo_result = None
+    if plan.has("stream_geo_nldi"):
+        stream_geo_result = collect_stream_geo_nldi(
+            plan.settings_for("stream_geo_nldi"),
+            skip_existing=True,
+            smoke=False,
+        )
+    hydrography_result = refresh_wflow_river_geometry_sources(
+        plan.settings_for("national_hydrography"),
+        skip_existing=not force,
+    )
+    return {
+        "status": hydrography_result.get("status", "collected"),
+        "stream_geo_status": (stream_geo_result or {}).get("status", "not_configured"),
+        "stream_geo_table": (stream_geo_result or {}).get("stream_geo_table", ""),
+        "hydromt_basemap": hydrography_result.get("hydromt_basemap"),
+        "river_geometry": hydrography_result.get("river_geometry"),
+        "catchments": hydrography_result.get("catchments"),
+        "wflow_soil_parameters": hydrography_result.get("wflow_soil_parameters"),
+        "source_artifact_json": hydrography_result.get("source_artifact_json"),
+    }
+
+
 def source_collection_readiness(runtime: CollectSourcesNotebookRuntime) -> pd.DataFrame:
     collection = runtime.collection
     usgs_streamgages = runtime.usgs_streamgages
     national_hydrography = collection["national_hydrography"]
+    stream_geo_nldi = collection.get("stream_geo_nldi", {})
     outputs = {
         "streamgage candidates": usgs_streamgages["candidate_output"],
+        "STREAM-geo river geometry cache": stream_geo_nldi.get(
+            "stream_geo_table",
+            national_hydrography.get("stream_geo_table", "data/sources/national_hydrography/stream_geo.parquet"),
+        ),
+        "NLDI STREAM-geo COMID join cache": stream_geo_nldi.get(
+            "nldi_lookup_cache",
+            national_hydrography.get(
+                "nldi_lookup_cache",
+                "data/sources/national_hydrography/nldi_stream_geo_comid_cache.csv",
+            ),
+        ),
+        "NHDPlusV2 flowlines for STREAM-geo join": stream_geo_nldi.get(
+            "nhdplus_v2_flowlines",
+            national_hydrography.get(
+                "nhdplus_v2_flowlines",
+                "data/sources/national_hydrography/nhdplus_v2_flowlines.gpkg",
+            ),
+        ),
         "wflow HydroMT hydrography basemap": national_hydrography["hydromt_basemap"],
         "wflow US hydrography river geometry": national_hydrography["river_geometry"],
         "wflow US hydrography catchments": national_hydrography["catchments"],
@@ -1121,6 +1239,44 @@ def aorc_sst_source_summary(config: dict, paths: dict) -> pd.Series:
             "rainfall_members_exists": paths["aorc_sst_rainfall_members_csv"].exists(),
         },
         name="aorc_sst",
+    )
+
+
+def stream_geo_nldi_source_summary(config: dict, paths: dict) -> pd.Series:
+    collection = config["collection"]
+    stream_geo_nldi = collection.get("stream_geo_nldi", {})
+    national_hydrography = collection.get("national_hydrography", {})
+    stream_geo_table = stream_geo_nldi.get(
+        "stream_geo_table",
+        national_hydrography.get("stream_geo_table", "data/sources/national_hydrography/stream_geo.parquet"),
+    )
+    nldi_lookup_cache = stream_geo_nldi.get(
+        "nldi_lookup_cache",
+        national_hydrography.get("nldi_lookup_cache", "data/sources/national_hydrography/nldi_stream_geo_comid_cache.csv"),
+    )
+    nhdplus_v2_flowlines = stream_geo_nldi.get(
+        "nhdplus_v2_flowlines",
+        national_hydrography.get("nhdplus_v2_flowlines", "data/sources/national_hydrography/nhdplus_v2_flowlines.gpkg"),
+    )
+    table_path = _source_location_path(paths, stream_geo_table)
+    cache_path = _source_location_path(paths, nldi_lookup_cache)
+    nhdplus_v2_path = _source_location_path(paths, nhdplus_v2_flowlines)
+    manifest_path = paths["source_artifacts_root"] / "stream_geo_nldi_sources.json"
+    return pd.Series(
+        {
+            "source": "STREAM-geo/NLDI",
+            "stream_geo_table": stream_geo_table,
+            "stream_geo_table_exists": table_path.exists(),
+            "nldi_lookup_cache": nldi_lookup_cache,
+            "nldi_lookup_cache_exists": cache_path.exists(),
+            "nhdplus_v2_flowlines": nhdplus_v2_flowlines,
+            "nhdplus_v2_flowlines_exists": nhdplus_v2_path.exists(),
+            "stream_geo_join_method": national_hydrography.get("stream_geo_join_method", "attribute_transfer"),
+            "nldi_role": "COMID lookup provenance",
+            "manifest": str(manifest_path),
+            "manifest_exists": manifest_path.exists(),
+        },
+        name="stream_geo_nldi",
     )
 
 

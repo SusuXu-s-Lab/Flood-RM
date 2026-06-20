@@ -195,6 +195,84 @@ def _plot_missing_panel(ax, title: str, message: str) -> None:
     _axis_message(ax, message)
 
 
+def _plot_discharge_snapshot(ax, snapshot, *, variable: str) -> None:
+    """Plot either gridded or point-source peak discharge snapshots."""
+    if {"x", "y"}.issubset(snapshot.dims):
+        snapshot.plot(ax=ax, cmap="Blues", cbar_kwargs=dict(shrink=0.8, label=variable))
+        ax.set_aspect("equal", adjustable="datalim")
+        ax.set_title("Peak Wflow discharge forcing")
+        return
+
+    if {"x", "y"}.issubset(snapshot.coords):
+        x = np.asarray(snapshot.coords["x"].values, dtype=float).ravel()
+        y = np.asarray(snapshot.coords["y"].values, dtype=float).ravel()
+        values = np.asarray(snapshot.values, dtype=float).ravel()
+        valid = np.isfinite(x) & np.isfinite(y) & np.isfinite(values)
+        if not valid.any():
+            _plot_missing_panel(ax, "Peak Wflow discharge forcing", "No finite discharge source values")
+            return
+        points = ax.scatter(
+            x[valid],
+            y[valid],
+            c=values[valid],
+            cmap="Blues",
+            s=70,
+            edgecolors="black",
+            linewidths=0.6,
+            zorder=3,
+        )
+        plt.colorbar(points, ax=ax, shrink=0.8, label=variable)
+        if "name" in snapshot.coords:
+            names = np.asarray(snapshot.coords["name"].values, dtype=str).ravel()
+            for xi, yi, name in zip(x[valid], y[valid], names[valid], strict=False):
+                ax.annotate(str(name), (xi, yi), xytext=(4, 4), textcoords="offset points", fontsize=7)
+        ax.set_aspect("equal", adjustable="datalim")
+        ax.set_xlabel("x")
+        ax.set_ylabel("y")
+        ax.set_title("Peak Wflow discharge forcing")
+        return
+
+    _plot_missing_panel(ax, "Forcing manifest summary", "Discharge forcing has no x/y coordinates")
+
+
+def _plot_discharge_timeseries(ax, data, *, variable: str) -> None:
+    """Plot native SFINCS source hydrographs when available, else summary stats."""
+    if "time" not in data.dims:
+        values = np.asarray(data.values, dtype=float).ravel()
+        ax.hist(values[np.isfinite(values)], bins=40, color="#3182bd", alpha=0.75)
+        ax.set_title("Wflow discharge handoff distribution")
+        ax.set_xlabel(variable)
+        return
+
+    non_time_dims = tuple(dim for dim in data.dims if dim != "time")
+    times = pd.DatetimeIndex(pd.to_datetime(data["time"].values))
+    if len(non_time_dims) == 1:
+        source_dim = non_time_dims[0]
+        source_data = data.transpose("time", source_dim)
+        frame = source_data.to_pandas()
+        if "name" in source_data.coords:
+            names = np.asarray(source_data.coords["name"].values, dtype=str)
+            if len(names) == len(frame.columns):
+                frame.columns = names
+        for column in frame.columns:
+            ax.plot(times, frame[column].to_numpy(dtype=float), linewidth=1.6, label=str(column))
+        ax.legend(fontsize=8)
+    else:
+        frame = pd.DataFrame(
+            {
+                "mean": data.mean(non_time_dims, skipna=True).to_pandas(),
+                "max": data.max(non_time_dims, skipna=True).to_pandas(),
+            }
+        )
+        ax.plot(times, frame["mean"], color="#3182bd", linewidth=1.8, label="mean")
+        ax.plot(times, frame["max"], color="#08519c", linewidth=1.8, label="max")
+        ax.legend()
+    _format_datetime_axis(ax, times)
+    ax.set_ylabel(variable)
+    ax.set_title("Wflow discharge handoff to SFINCS")
+    ax.grid(True, alpha=0.25)
+
+
 def plot_inland_coupled_forcing_qa(
     *,
     forcing_manifest,
@@ -239,24 +317,7 @@ def plot_inland_coupled_forcing_qa(
             names = list(ds.data_vars)
             variable = "discharge" if "discharge" in ds else names[0]
             data = ds[variable].load()
-        if "time" in data.dims:
-            dims = tuple(dim for dim in data.dims if dim != "time")
-            frame = pd.DataFrame(
-                {
-                    "mean": data.mean(dims, skipna=True).to_pandas() if dims else data.to_pandas(),
-                    "max": data.max(dims, skipna=True).to_pandas() if dims else data.to_pandas(),
-                }
-            )
-            frame.plot(ax=axes[0], color=["#3182bd", "#08519c"], linewidth=1.8)
-            _format_datetime_axis(axes[0], pd.DatetimeIndex(frame.index))
-            axes[0].set_ylabel(f"{variable}")
-            axes[0].set_title("Wflow discharge handoff to SFINCS")
-            axes[0].grid(True, alpha=0.25)
-        else:
-            values = np.asarray(data.values, dtype=float).ravel()
-            axes[0].hist(values[np.isfinite(values)], bins=40, color="#3182bd", alpha=0.75)
-            axes[0].set_title("Wflow discharge handoff distribution")
-            axes[0].set_xlabel(variable)
+        _plot_discharge_timeseries(axes[0], data, variable=variable)
     else:
         _plot_missing_panel(
             axes[0],
@@ -270,9 +331,7 @@ def plot_inland_coupled_forcing_qa(
             data = ds[variable]
             snapshot = data.max("time", skipna=True) if "time" in data.dims else data
             if {"x", "y"} & set(snapshot.coords):
-                snapshot.plot(ax=axes[1], cmap="Blues", cbar_kwargs=dict(shrink=0.8, label=variable))
-                axes[1].set_aspect("equal", adjustable="datalim")
-                axes[1].set_title("Peak Wflow discharge forcing")
+                _plot_discharge_snapshot(axes[1], snapshot, variable=variable)
             else:
                 axes[1].axis("off")
                 axes[1].table(
@@ -370,7 +429,8 @@ def plot_inland_coupled_postrun_diagnostics(
             else:
                 _plot_missing_panel(axes[1], "SFINCS hydrograph", "sfincs_his.nc has no variables")
     else:
-        _plot_missing_panel(axes[1], "SFINCS hydrograph", "sfincs_his.nc not found")
+        if not _plot_sfincs_discharge_input_hydrographs(axes[1], run_root):
+            _plot_missing_panel(axes[1], "SFINCS hydrograph", "sfincs_his.nc not found")
 
     manifest = _read_json_if_exists(run_root / "forcing_manifest.json")
     axes[2].axis("off")
@@ -392,6 +452,45 @@ def plot_inland_coupled_postrun_diagnostics(
     plt.show()
     print("Saved inland post-run diagnostics:", out_path)
     return out_path
+
+
+def _plot_sfincs_discharge_input_hydrographs(ax, run_root: Path) -> bool:
+    dis_path = Path(run_root) / "sfincs.dis"
+    if not dis_path.exists():
+        return False
+    try:
+        values = np.loadtxt(dis_path)
+    except Exception:
+        return False
+    if values.ndim == 1:
+        values = values.reshape(1, -1)
+    if values.shape[1] < 2:
+        return False
+    run_start = _resolve_run_start(run_root)
+    times = pd.DatetimeIndex(run_start + pd.to_timedelta(values[:, 0].astype(float), unit="s"))
+    labels = _sfincs_source_labels(Path(run_root) / "sfincs.src", values.shape[1] - 1)
+    for column in range(1, values.shape[1]):
+        label = labels[column - 1] if column - 1 < len(labels) else f"source_{column}"
+        ax.plot(times, values[:, column].astype(float), linewidth=1.5, label=label)
+    ax.set_title("SFINCS input discharge hydrographs")
+    ax.set_ylabel("discharge [m3 s-1]")
+    ax.grid(True, alpha=0.25)
+    ax.legend(fontsize=8)
+    _format_datetime_axis(ax, times)
+    return True
+
+
+def _sfincs_source_labels(src_path: Path, count: int) -> list[str]:
+    labels = []
+    if src_path.exists():
+        for line in src_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            if '"' in line:
+                labels.append(line.split('"')[1])
+            elif "'" in line:
+                labels.append(line.split("'")[1])
+    if len(labels) < count:
+        labels.extend(f"source_{i}" for i in range(len(labels) + 1, count + 1))
+    return labels[:count]
 
 
 # ─── plot_forcing_qa_standard ─────────────────────────────────────────────────

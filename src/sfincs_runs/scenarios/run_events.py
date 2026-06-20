@@ -1,4 +1,5 @@
 import argparse
+import csv
 import json
 import os
 import shlex
@@ -60,6 +61,50 @@ def event_dirs(root, ids=None, limit=None):
     return selected[:limit] if limit is not None else selected
 
 
+def units_from_catalog(catalog_path, scenarios_dir, ids=None, limit=None):
+    """Resolve (key, src_dir) run units from a scenario_catalog.csv.
+
+    Inland Wflow->SFINCS scenarios are nested per SFINCS domain
+    (``scenarios/<event_id>/<domain_id>``), so the flat ``event_dirs`` walk does not
+    reach the leaf run folders. The catalog's ``run_root`` column already points at each
+    leaf; ``key`` is that run folder's path relative to ``scenarios_dir`` so storage and
+    stage trees preserve the ``<event_id>/<domain_id>`` nesting. Coastal (flat) catalogs
+    resolve to ``key == <event_id>``, matching the ``event_dirs`` behaviour.
+    """
+    catalog_path = Path(catalog_path)
+    if not catalog_path.exists():
+        raise FileNotFoundError(catalog_path)
+    scenarios_dir = Path(scenarios_dir)
+    rows = []
+    with catalog_path.open(newline="") as handle:
+        for row in csv.DictReader(handle):
+            run_root = (row.get("run_root") or "").strip()
+            if not run_root:
+                continue
+            src = Path(run_root)
+            if not src.is_absolute():
+                src = scenarios_dir / src
+            rows.append((str(row.get("event_id", "")).strip(), src))
+    if not rows:
+        raise RuntimeError(f"No run_root entries in {catalog_path}")
+    if ids:
+        wanted = {event_id(x) for x in ids}
+        rows = [(rid, src) for rid, src in rows if event_id(rid) in wanted]
+        missing = wanted - {event_id(rid) for rid, _ in rows}
+        if missing:
+            raise FileNotFoundError(f"Missing events: {', '.join(sorted(missing))}")
+    if limit is not None:
+        rows = rows[: int(limit)]
+    units = []
+    for _rid, src in rows:
+        try:
+            key = src.relative_to(scenarios_dir).as_posix()
+        except ValueError:
+            key = Path(os.path.relpath(src, scenarios_dir)).as_posix()
+        units.append((key, src))
+    return units
+
+
 def link_or_copy(src, dst):
     src = Path(src)
     dst = Path(dst)
@@ -92,6 +137,13 @@ def parse_args(argv=None):
     p = argparse.ArgumentParser(description="Run prepared SFINCS event folders.")
     p.add_argument("--config", default=None, help="optional config overlay yaml")
     p.add_argument("--scenarios-dir", type=Path, default=None)
+    p.add_argument(
+        "--scenario-catalog",
+        type=Path,
+        default=None,
+        help="run the run_root folders listed in this scenario_catalog.csv instead of walking "
+        "flat top-level event folders (required for nested inland <event_id>/<domain_id> scenarios)",
+    )
     p.add_argument("--storage-dir", type=Path, default=None)
     p.add_argument("--run-root", type=Path, default=None)
     p.add_argument("--sfincs-bin", default=None)
@@ -116,25 +168,25 @@ def parse_args(argv=None):
     return args
 
 
-def run_one(event_dir, args, command_template):
-    storage_dir = args.storage_dir / event_dir.name
-    stage_dir = args.run_root / event_dir.name
+def run_one(key, src_dir, args, command_template):
+    storage_dir = args.storage_dir / key
+    stage_dir = args.run_root / key
     if (storage_dir / "sfincs_map.nc").exists() and not args.force_rerun:
-        return {"event_id": event_dir.name, "status": "skipped", "reason": "sfincs_map.nc exists"}
+        return {"event_id": key, "status": "skipped", "reason": "sfincs_map.nc exists"}
 
-    stage_event(event_dir, stage_dir)
+    stage_event(src_dir, stage_dir)
     if args.dry_run:
         if not args.keep_stage:
             shutil.rmtree(stage_dir, ignore_errors=True)
-        return {"event_id": event_dir.name, "status": "dry-run"}
+        return {"event_id": key, "status": "dry-run"}
 
     command = [part.format(stage_dir=str(stage_dir)) for part in command_template]
     t0 = time.time()
     with (stage_dir / "sfincs_log.txt").open("w", encoding="utf-8") as log:
         process = subprocess.run(command, cwd=stage_dir, stdout=log, stderr=subprocess.STDOUT, text=True, check=False)
     metadata = {
-        "event_id": event_dir.name,
-        "source_scenario_dir": str(event_dir),
+        "event_id": key,
+        "source_scenario_dir": str(src_dir),
         "stage_dir": str(stage_dir),
         "storage_dir": str(storage_dir),
         "runner_command": command,
@@ -146,10 +198,10 @@ def run_one(event_dir, args, command_template):
         shutil.rmtree(stage_dir, ignore_errors=True)
 
     if process.returncode:
-        raise RuntimeError(f"{event_dir.name} failed. See {storage_dir / 'sfincs_log.txt'}.")
+        raise RuntimeError(f"{key} failed. See {storage_dir / 'sfincs_log.txt'}.")
     if not (storage_dir / "sfincs_map.nc").exists():
-        raise RuntimeError(f"{event_dir.name} produced no sfincs_map.nc.")
-    return {"event_id": event_dir.name, "status": "completed", "duration_sec": metadata["duration_sec"]}
+        raise RuntimeError(f"{key} produced no sfincs_map.nc.")
+    return {"event_id": key, "status": "completed", "duration_sec": metadata["duration_sec"]}
 
 
 def main():
@@ -159,8 +211,11 @@ def main():
     if not args.scenarios_dir.exists():
         raise FileNotFoundError(args.scenarios_dir)
 
-    selected = event_dirs(args.scenarios_dir, args.event_ids, args.limit)
-    if not selected:
+    if args.scenario_catalog is not None:
+        units = units_from_catalog(args.scenario_catalog, args.scenarios_dir, args.event_ids, args.limit)
+    else:
+        units = [(event_dir.name, event_dir) for event_dir in event_dirs(args.scenarios_dir, args.event_ids, args.limit)]
+    if not units:
         raise RuntimeError("No selected event folders.")
     command_template = [] if args.dry_run else shlex.split(args.sfincs_bin)
     if not args.dry_run and not command_template:
@@ -171,12 +226,12 @@ def main():
     print(f"Scenarios: {args.scenarios_dir}")
     print(f"Storage: {args.storage_dir}")
     print(f"Run root: {args.run_root}")
-    print(f"Events: {len(selected)}")
+    print(f"Events: {len(units)}")
     print("Mode: dry-run" if args.dry_run else f"Runner: {' '.join(command_template)}")
 
     results, failures = [], []
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futures = {pool.submit(run_one, event_dir, args, command_template): event_dir.name for event_dir in selected}
+        futures = {pool.submit(run_one, key, src_dir, args, command_template): key for key, src_dir in units}
         for future in as_completed(futures):
             name = futures[future]
             try:
@@ -188,7 +243,7 @@ def main():
                 print(f"[failed] {name}: {exc}", file=sys.stderr)
 
     print(json.dumps({
-        "event_count": len(selected),
+        "event_count": len(units),
         "completed": sum(r["status"] == "completed" for r in results),
         "skipped": sum(r["status"] == "skipped" for r in results),
         "dry_run": sum(r["status"] == "dry-run" for r in results),

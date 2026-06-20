@@ -10,6 +10,7 @@ STREAM_BOUNDARY_HANDOFF_MODES = {
     "stream_boundary_intersection",
     "sfincs_stream_boundary",
     "boundary_stream_intersection",
+    "sfincs_native_river_inflow",
 }
 LEGACY_BOUNDARY_HANDOFF_MODES = {"sfincs_domain_boundary", "domain_boundary", "boundary"}
 
@@ -99,12 +100,42 @@ def read_stream_boundary_handoff_locations(
     if not uses_stream_boundary_handoff(config):
         return None
 
+    locations = read_stream_boundary_handoff_location_artifacts(
+        config,
+        location_root,
+        location_path=location_path,
+    )
+    if locations is None:
+        return None
+
+    locations = locations[locations["sfincs_handoff_id"].astype(str).isin(handoff_ids)].copy()
+    if locations.empty:
+        return None
+    missing = sorted(handoff_ids - set(locations["sfincs_handoff_id"].astype(str)))
+    if missing:
+        raise ValueError(
+            "SFINCS boundary handoff source artifacts are missing IDs needed by Wflow: "
+            + ", ".join(missing)
+        )
+    return locations
+
+
+def read_stream_boundary_handoff_location_artifacts(
+    config: dict,
+    location_root: Path,
+    *,
+    location_path,
+) -> gpd.GeoDataFrame | None:
+    """Read all generated SFINCS stream-boundary handoff source artifacts."""
+    if not uses_stream_boundary_handoff(config):
+        return None
     frames = []
     seen = set()
     for path in candidate_handoff_source_paths(config, location_root, location_path):
-        if path in seen or not path.exists():
+        path_key = path.resolve()
+        if path_key in seen or not path.exists():
             continue
-        seen.add(path)
+        seen.add(path_key)
         frame = gpd.read_file(path)
         if frame.empty or "sfincs_handoff_id" not in frame:
             continue
@@ -120,13 +151,7 @@ def read_stream_boundary_handoff_locations(
         return None
 
     locations = gpd.GeoDataFrame(pd.concat(frames, ignore_index=True), geometry="geometry", crs=frames[0].crs)
-    locations = locations[locations["sfincs_handoff_id"].astype(str).isin(handoff_ids)].copy()
     if locations.empty:
         return None
-    missing = sorted(handoff_ids - set(locations["sfincs_handoff_id"].astype(str)))
-    if missing:
-        raise ValueError(
-            "SFINCS boundary handoff source artifacts are missing IDs needed by Wflow: "
-            + ", ".join(missing)
-        )
+    locations = locations.drop_duplicates(subset=["sfincs_domain_id", "sfincs_handoff_id"]).copy()
     return locations

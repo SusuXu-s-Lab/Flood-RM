@@ -8,7 +8,12 @@ import shutil
 import pandas as pd
 import yaml
 
-from sfincs_runs.build_base import is_built_sfincs_base, is_built_wflow_base
+from sfincs_runs.build_base import (
+    is_built_sfincs_base,
+    is_built_wflow_base,
+    validate_built_sfincs_native_physics,
+)
+from wflow_runs.dynamic_handoff import dynamic_handoff_paths, require_accepted_dynamic_handoff
 
 
 stale_sfincs_outputs = {
@@ -68,6 +73,12 @@ def stage_inland_coupled_scenarios(
             "Wflow discharge forcing is missing; run Wflow replay before staging SFINCS: "
             + ", ".join(missing_discharge)
         )
+    missing_acceptance = _missing_dynamic_wflow_acceptance(config, location_root, catalog["event_id"])
+    if missing_acceptance:
+        raise RuntimeError(
+            "Dynamic Wflow handoff is not accepted; run 04/b_prepare_wflow_dynamic_handoff.ipynb first: "
+            + ", ".join(missing_acceptance)
+        )
 
     sfincs_domains = _sfincs_domain_models(config, location_root)
     missing_bases = [domain["base_model_root"] for domain in sfincs_domains if not is_built_sfincs_base(domain["base_model_root"])]
@@ -75,6 +86,13 @@ def stage_inland_coupled_scenarios(
         raise FileNotFoundError(
             "SFINCS base model is not built: "
             + ", ".join(path.as_posix() for path in missing_bases)
+        )
+    require_native_physics = bool(set(config.get("event_drivers") or []) & {"rainfall", "streamflow", "soil_moisture"})
+    for domain in sfincs_domains:
+        validate_built_sfincs_native_physics(
+            domain["base_model_root"],
+            config,
+            require_spatial_roughness=require_native_physics,
         )
     scenarios_root = _location_path(location_root, config.get("paths", {}).get("scenarios_root", "data/sfincs/scenarios"))
     scenarios_root.mkdir(parents=True, exist_ok=True)
@@ -119,7 +137,12 @@ def stage_inland_coupled_scenarios(
 
     report = pd.DataFrame(rows)
     report.to_csv(scenarios_root / "scenario_build_report.csv", index=False)
-    report[["event_id", "run_root"]].to_csv(scenarios_root / "scenario_catalog.csv", index=False)
+    # The cluster array job consumes scenario_catalog.csv under a different PROJECT_ROOT,
+    # so store run_root relative to scenarios_root (<event_id>/<sfincs_domain_id>); the
+    # run_events --scenario-catalog reader rejoins it onto the cluster's scenarios dir.
+    catalog = report[["event_id", "run_root"]].copy()
+    catalog["run_root"] = [Path(value).relative_to(scenarios_root).as_posix() for value in catalog["run_root"]]
+    catalog.to_csv(scenarios_root / "scenario_catalog.csv", index=False)
     return report
 
 
@@ -236,6 +259,8 @@ def _forcing_manifest(event: dict, handoff: dict, handoff_event: dict, config: d
         "probability_weight": _clean(event.get("probability_weight")),
         "wflow_event_dir": _clean(handoff_event.get("wflow_event_dir")),
         "wflow_discharge_forcing": _clean(handoff_event.get("discharge_forcing")),
+        "wflow_precip_provenance": _event_artifact(handoff_event, "precip_provenance.json"),
+        "wflow_temp_pet_provenance": _event_artifact(handoff_event, "temp_pet_provenance.json"),
         "wflow_source_variable": handoff.get("source_variable", "river_q"),
         "wflow_source_standard_name": handoff.get(
             "source_standard_name",
@@ -260,6 +285,13 @@ def _forcing_manifest(event: dict, handoff: dict, handoff_event: dict, config: d
             }
         )
     return manifest
+
+
+def _event_artifact(handoff_event: dict, filename: str):
+    event_dir = handoff_event.get("wflow_event_dir")
+    if event_dir in (None, ""):
+        return None
+    return str(Path(str(event_dir)) / filename)
 
 
 def _read_handoff(config, location_root: Path) -> dict:
@@ -332,6 +364,20 @@ def _missing_wflow_discharge_forcing(location_root: Path, handoff_by_event: dict
         if not path.exists():
             missing.append(text)
     return sorted(missing)
+
+
+def _missing_dynamic_wflow_acceptance(config: dict, location_root: Path, event_ids) -> list[str]:
+    source = str(((config.get("inland_coupling", {}) or {}).get("discharge_forcing", {}) or {}).get("source", "")).lower()
+    if source != "wflow_dynamic":
+        return []
+    missing = []
+    for event_id in event_ids:
+        try:
+            require_accepted_dynamic_handoff(config, location_root, str(event_id))
+        except Exception as exc:
+            paths = dynamic_handoff_paths(config, location_root, str(event_id))
+            missing.append(f"{event_id}: {paths['acceptance']} ({exc})")
+    return missing
 
 
 def _location_root(paths) -> Path:

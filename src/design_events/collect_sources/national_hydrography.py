@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import suppress
 import json
 from pathlib import Path
@@ -24,6 +25,8 @@ NHDPLUS_HR_CATCHMENT_LAYER = 10
 # USGS Watershed Boundary Dataset (WBD) ArcGIS service: HUC polygons by level.
 WBD_MAPSERVER = "https://hydro.nationalmap.gov/arcgis/rest/services/wbd/MapServer"
 WBD_HUC_LAYER_BY_LEVEL = {2: 1, 4: 2, 6: 3, 8: 4, 10: 5, 12: 6}
+STREAM_GEO_FIGSHARE_ARTICLE_ID = 24463240
+NLDI_BASE_URL = "https://api.water.usgs.gov/nldi/linked-data"
 
 
 def collect_national_hydrography(settings, *, skip_existing=True, smoke=False):
@@ -41,6 +44,25 @@ def collect_national_hydrography(settings, *, skip_existing=True, smoke=False):
     manifest = Path(paths.get("source_artifacts_root", location_root / "data/sources/source_artifacts")) / "national_hydrography_wflow_sources.json"
     target_resolution_degrees = float(collection.get("basemap_source_resolution_degrees", 1 / 1080))
     collect_review_vectors = bool(collection.get("collect_review_vectors", False))
+    stream_geo_spec = config.get("collection", {}).get("stream_geo_nldi", {})
+    stream_geo_table = _optional_location_path(
+        location_root,
+        collection.get("stream_geo_table", stream_geo_spec.get("stream_geo_table")),
+    )
+    nldi_lookup_cache = _optional_location_path(
+        location_root,
+        collection.get(
+            "nldi_lookup_cache",
+            stream_geo_spec.get("nldi_lookup_cache", "data/sources/national_hydrography/nldi_stream_geo_comid_cache.csv"),
+        ),
+    )
+    nhdplus_v2_flowlines = _optional_location_path(
+        location_root,
+        collection.get(
+            "nhdplus_v2_flowlines",
+            stream_geo_spec.get("nhdplus_v2_flowlines", "data/sources/national_hydrography/nhdplus_v2_flowlines.gpkg"),
+        ),
+    )
 
     required_outputs = [hydrography_nc, soil_nc]
     if collect_review_vectors:
@@ -48,7 +70,7 @@ def collect_national_hydrography(settings, *, skip_existing=True, smoke=False):
     if (
         skip_existing
         and all(path.exists() for path in required_outputs)
-        and _hydromt_basemap_resolution_matches(hydrography_nc, target_resolution_degrees)
+        and _hydromt_basemap_ready(hydrography_nc, target_resolution_degrees)
     ):
         return _result(
             "reused",
@@ -93,6 +115,15 @@ def collect_national_hydrography(settings, *, skip_existing=True, smoke=False):
             catchments_gpkg,
             service_url=str(collection.get("nhdplus_hr_service_url", NHDPLUS_HR_MAPSERVER)),
             timeout_seconds=float(collection.get("request_timeout_seconds", 120)),
+            stream_geo_table=stream_geo_table,
+            nldi_lookup_cache=nldi_lookup_cache,
+            use_nldi_lookup=bool(collection.get("use_nldi_stream_geo_join", True)),
+            nldi_timeout_seconds=float(collection.get("nldi_request_timeout_seconds", 30)),
+            nldi_max_workers=int(collection.get("nldi_max_workers", 4)),
+            nldi_progress_interval=int(collection.get("nldi_progress_interval", 500)),
+            stream_geo_join_method=str(collection.get("stream_geo_join_method", "attribute_transfer")),
+            nhdplus_v2_flowlines=nhdplus_v2_flowlines,
+            stream_geo_join_max_distance_m=float(collection.get("stream_geo_join_max_distance_m", 2500)),
         )
     else:
         river_summary = {
@@ -134,6 +165,8 @@ def collect_national_hydrography(settings, *, skip_existing=True, smoke=False):
                     "service": collection.get("service", "usgs_3dhp_or_nhdplus_hr"),
                     "hydrography_method": "usgs_3dep_dem_derived_hydromt_basemap",
                     "review_vectors_collected": collect_review_vectors,
+                    "stream_geo_table": str(stream_geo_table) if stream_geo_table else "",
+                    "stream_geo_article_id": STREAM_GEO_FIGSHARE_ARTICLE_ID,
                     "soil_method": "ssurgo_horizon_pedology",
                     "smoke": bool(smoke),
                     **hydrography_summary,
@@ -162,6 +195,287 @@ def collect_national_hydrography(settings, *, skip_existing=True, smoke=False):
     )
 
 
+def refresh_wflow_hydrography_basemap(settings, *, skip_existing=False):
+    """Refresh only the HydroMT-Wflow hydrography basemap from the local DEM."""
+    config = settings["config"]
+    paths = settings["paths"]
+    location_root = Path(paths["location_root"])
+    collection = config.get("collection", {}).get("national_hydrography", {})
+    static_sources = config.get("static_sources", {})
+
+    hydrography_nc = _location_path(location_root, collection.get("hydromt_basemap", "data/wflow/hydrography/us_hydrography_basemap.nc"))
+    manifest = Path(paths.get("source_artifacts_root", location_root / "data/sources/source_artifacts")) / "national_hydrography_wflow_sources.json"
+    target_resolution_degrees = float(collection.get("basemap_source_resolution_degrees", 1 / 1080))
+
+    if skip_existing and hydrography_nc.exists() and _hydromt_basemap_ready(hydrography_nc, target_resolution_degrees):
+        return {
+            "status": "reused",
+            "reused": True,
+            "hydrography_only": True,
+            "hydromt_basemap": hydrography_nc,
+            "source_artifact_json": manifest,
+            "artifact_count": 1,
+        }
+
+    wflow_extent = static_sources.get("wflow_collection_extent", {})
+    dem_path = _location_path(
+        location_root,
+        collection.get(
+            "dem_source",
+            wflow_extent.get("terrain_output", static_sources.get("terrain", {}).get("output", "data/static/processed/dem_region_setup.tif")),
+        ),
+    )
+    if not dem_path.exists():
+        raise FileNotFoundError(f"USGS 3DEP DEM is required before Wflow hydrography preparation: {dem_path}")
+
+    hydrography_summary = write_dem_derived_hydromt_basemap(
+        dem_path,
+        hydrography_nc,
+        target_resolution_degrees=target_resolution_degrees,
+        min_stream_uparea_km2=float(collection.get("min_stream_uparea_km2", 5.0)),
+    )
+    _update_hydrography_manifest(
+        manifest,
+        collection,
+        hydrography_nc,
+        hydrography_summary,
+    )
+    return {
+        "status": "collected",
+        "reused": False,
+        "hydrography_only": True,
+        "hydromt_basemap": hydrography_nc,
+        "source_artifact_json": manifest,
+        "artifact_count": 1,
+        **hydrography_summary,
+    }
+
+
+def refresh_wflow_river_geometry_sources(settings, *, skip_existing=False):
+    """Refresh NHDPlus/STREAM-geo river geometry without rebuilding DEM or soil sources."""
+    config = settings["config"]
+    paths = settings["paths"]
+    location_root = Path(paths["location_root"])
+    collection = config.get("collection", {}).get("national_hydrography", {})
+    stream_geo_spec = config.get("collection", {}).get("stream_geo_nldi", {})
+
+    hydrography_nc = _location_path(location_root, collection.get("hydromt_basemap", "data/wflow/hydrography/us_hydrography_basemap.nc"))
+    river_gpkg = _location_path(location_root, collection.get("river_geometry", "data/sources/national_hydrography/nhdplus_hr_river_geometry.gpkg"))
+    catchments_gpkg = _location_path(location_root, collection.get("catchments", "data/sources/national_hydrography/nhdplus_hr_catchments.gpkg"))
+    manifest = Path(paths.get("source_artifacts_root", location_root / "data/sources/source_artifacts")) / "national_hydrography_wflow_sources.json"
+    stream_geo_table = _optional_location_path(
+        location_root,
+        collection.get("stream_geo_table", stream_geo_spec.get("stream_geo_table")),
+    )
+    nldi_lookup_cache = _optional_location_path(
+        location_root,
+        collection.get(
+            "nldi_lookup_cache",
+            stream_geo_spec.get("nldi_lookup_cache", "data/sources/national_hydrography/nldi_stream_geo_comid_cache.csv"),
+        ),
+    )
+    nhdplus_v2_flowlines = _optional_location_path(
+        location_root,
+        collection.get(
+            "nhdplus_v2_flowlines",
+            stream_geo_spec.get("nhdplus_v2_flowlines", "data/sources/national_hydrography/nhdplus_v2_flowlines.gpkg"),
+        ),
+    )
+
+    if skip_existing and river_gpkg.exists() and catchments_gpkg.exists() and nldi_lookup_cache and nldi_lookup_cache.exists():
+        return {
+            "status": "reused",
+            "reused": True,
+            "hydrography_only": False,
+            "river_geometry_only": True,
+            "river_geometry": river_gpkg,
+            "catchments": catchments_gpkg,
+            "nldi_lookup_cache": nldi_lookup_cache,
+            "source_artifact_json": manifest,
+            "artifact_count": 2,
+        }
+    method = str(collection.get("stream_geo_join_method", "attribute_transfer")).lower()
+    if (
+        method in {"attribute_transfer", "stream_geo_attribute_transfer", "hydrologic_attribute_transfer"}
+        and river_gpkg.exists()
+        and stream_geo_table
+        and stream_geo_table.exists()
+    ):
+        river_summary = enrich_existing_wflow_river_geometry_with_stream_geo(
+            river_gpkg,
+            stream_geo_table,
+            catchments_gpkg=catchments_gpkg,
+        )
+        _update_river_geometry_manifest(
+            manifest,
+            hydrography_nc,
+            river_gpkg,
+            catchments_gpkg,
+            nldi_lookup_cache,
+            river_summary,
+        )
+        return {
+            "status": "collected",
+            "reused": False,
+            "hydrography_only": False,
+            "river_geometry_only": True,
+            "used_existing_river_geometry": True,
+            "hydromt_basemap": hydrography_nc,
+            "river_geometry": river_gpkg,
+            "catchments": catchments_gpkg,
+            "nldi_lookup_cache": nldi_lookup_cache,
+            "source_artifact_json": manifest,
+            "artifact_count": 1,
+            **river_summary,
+        }
+    if not hydrography_nc.exists():
+        raise FileNotFoundError(f"HydroMT-Wflow hydrography basemap is required before river-geometry refresh: {hydrography_nc}")
+
+    river_summary = write_review_hydrography_vectors(
+        hydrography_nc,
+        river_gpkg,
+        catchments_gpkg,
+        service_url=str(collection.get("nhdplus_hr_service_url", NHDPLUS_HR_MAPSERVER)),
+        timeout_seconds=float(collection.get("request_timeout_seconds", 120)),
+        stream_geo_table=stream_geo_table,
+        nldi_lookup_cache=nldi_lookup_cache,
+        use_nldi_lookup=bool(collection.get("use_nldi_stream_geo_join", True)),
+        nldi_timeout_seconds=float(collection.get("nldi_request_timeout_seconds", 30)),
+        nldi_max_workers=int(collection.get("nldi_max_workers", 4)),
+        nldi_progress_interval=int(collection.get("nldi_progress_interval", 500)),
+        stream_geo_join_method=str(collection.get("stream_geo_join_method", "attribute_transfer")),
+        nhdplus_v2_flowlines=nhdplus_v2_flowlines,
+        stream_geo_join_max_distance_m=float(collection.get("stream_geo_join_max_distance_m", 2500)),
+    )
+    _update_river_geometry_manifest(
+        manifest,
+        hydrography_nc,
+        river_gpkg,
+        catchments_gpkg,
+        nldi_lookup_cache,
+        river_summary,
+    )
+    return {
+        "status": "collected",
+        "reused": False,
+        "hydrography_only": False,
+        "river_geometry_only": True,
+        "hydromt_basemap": hydrography_nc,
+        "river_geometry": river_gpkg,
+        "catchments": catchments_gpkg,
+        "nldi_lookup_cache": nldi_lookup_cache,
+        "source_artifact_json": manifest,
+        "artifact_count": 2,
+        **river_summary,
+    }
+
+
+def _update_hydrography_manifest(manifest, collection, hydrography_nc, hydrography_summary):
+    manifest = Path(manifest)
+    if manifest.exists():
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+    else:
+        payload = {
+            "source": "national_hydrography",
+            "kind": "wflow_build_sources",
+            "status": "review_required",
+            "metadata": {},
+            "artifacts": {},
+        }
+    metadata = payload.setdefault("metadata", {})
+    metadata.update(
+        {
+            "hydrography_method": "usgs_3dep_dem_derived_hydromt_basemap",
+            "hydrography_only_refresh": True,
+            **hydrography_summary,
+        }
+    )
+    artifacts = payload.setdefault("artifacts", {})
+    artifacts.update(
+        {
+            "hydromt_basemap": str(hydrography_nc),
+            "river_geometry": artifacts.get(
+                "river_geometry",
+                str(collection.get("river_geometry", "data/sources/national_hydrography/nhdplus_hr_river_geometry.gpkg")),
+            ),
+            "catchments": artifacts.get(
+                "catchments",
+                str(collection.get("catchments", "data/sources/national_hydrography/nhdplus_hr_catchments.gpkg")),
+            ),
+            "wflow_soil_parameters": artifacts.get(
+                "wflow_soil_parameters",
+                str(collection.get("wflow_soil_parameters", "data/wflow/static/ssurgo_wflow_soil_parameters.nc")),
+            ),
+        }
+    )
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def enrich_existing_wflow_river_geometry_with_stream_geo(river_gpkg, stream_geo_table, *, catchments_gpkg=None):
+    """Enrich an existing NHDPlus HR river-geometry artifact without refetching NHDPlus."""
+    river_gpkg = Path(river_gpkg)
+    stream_geo_table = Path(stream_geo_table)
+    rivers = gpd.read_file(river_gpkg)
+    stream_geo = load_stream_geo_table(stream_geo_table)
+    enriched = _prepare_nhdplus_river_geometry(
+        rivers,
+        stream_geo=stream_geo,
+        stream_geo_join_method="attribute_transfer",
+        use_nldi_lookup=False,
+    )
+    tmp_path = river_gpkg.with_name(f"{river_gpkg.stem}_tmp{river_gpkg.suffix}")
+    with suppress(FileNotFoundError):
+        tmp_path.unlink()
+    enriched.to_file(tmp_path, driver="GPKG", layer=river_gpkg.stem)
+    tmp_path.replace(river_gpkg)
+    catchment_features = 0
+    if catchments_gpkg and Path(catchments_gpkg).exists():
+        with suppress(Exception):
+            catchment_features = int(len(gpd.read_file(catchments_gpkg, rows=1)))
+    return {
+        "river_features": int(len(enriched)),
+        "catchment_features": catchment_features,
+        "river_source": "USGS NHDPlus HR NetworkNHDFlowline",
+        "catchment_source": "USGS NHDPlus HR NHDPlusCatchment",
+        "stream_geo_join_method": "attribute_transfer_existing_river_geometry",
+        "rivwth_unique": int(pd.to_numeric(enriched["rivwth"], errors="coerce").nunique(dropna=True)) if "rivwth" in enriched else 0,
+        "rivdph_unique": int(pd.to_numeric(enriched["rivdph"], errors="coerce").nunique(dropna=True)) if "rivdph" in enriched else 0,
+    }
+
+
+def _update_river_geometry_manifest(manifest, hydrography_nc, river_gpkg, catchments_gpkg, nldi_lookup_cache, river_summary):
+    manifest = Path(manifest)
+    if manifest.exists():
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+    else:
+        payload = {
+            "source": "national_hydrography",
+            "kind": "wflow_build_sources",
+            "status": "review_required",
+            "metadata": {},
+            "artifacts": {},
+        }
+    metadata = payload.setdefault("metadata", {})
+    metadata.update(
+        {
+            "river_geometry_only_refresh": True,
+            "nldi_lookup_cache": str(nldi_lookup_cache) if nldi_lookup_cache else "",
+            **river_summary,
+        }
+    )
+    artifacts = payload.setdefault("artifacts", {})
+    artifacts.update(
+        {
+            "hydromt_basemap": str(hydrography_nc),
+            "river_geometry": str(river_gpkg),
+            "catchments": str(catchments_gpkg),
+        }
+    )
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
 def write_dem_derived_hydromt_basemap(
     dem_path,
     output_path,
@@ -179,10 +493,14 @@ def write_dem_derived_hydromt_basemap(
     dem = None
     try:
         dem = rxr.open_rasterio(dem_path, masked=True).squeeze(drop=True)
+        # HydroMT-Wflow only treats EPSG:4326 as a geographic grid when deriving
+        # slopes from the basemap. 3DEP is commonly NAD83 / EPSG:4269; reproject
+        # explicitly so setup_basemaps computes land_slope in m/m rather than
+        # treating degree spacing as metres.
         if dem.rio.crs is None:
-            dem = dem.rio.write_crs("EPSG:4269")
-        if not dem.rio.crs.is_geographic:
-            dem = dem.rio.reproject("EPSG:4269", resolution=target_resolution_degrees)
+            dem = dem.rio.write_crs("EPSG:4326")
+        if dem.rio.crs.to_epsg() != 4326:
+            dem = dem.rio.reproject("EPSG:4326", resolution=target_resolution_degrees)
         factor = max(1, int(round(float(target_resolution_degrees) / abs(float(dem.rio.resolution()[0])))))
         if factor > 1:
             dem = dem.coarsen(y=factor, x=factor, boundary="trim").mean()
@@ -246,7 +564,79 @@ def write_dem_derived_hydromt_basemap(
                 dem.close()
 
 
+def hydromt_basemap_readiness(hydrography_nc: Path, target_resolution_degrees: float) -> dict:
+    """Return fast QA for the collected HydroMT-Wflow hydrography basemap.
+
+    Wflow land-slope derivation is sensitive to stale geographic CRS metadata. We
+    require the collected DEM-derived basemap to be explicitly EPSG:4326 so HydroMT
+    treats the degree grid as geographic and converts distances to metres.
+    """
+    import hydromt  # noqa: F401
+
+    hydrography_nc = Path(hydrography_nc)
+    if not hydrography_nc.exists():
+        return {
+            "status": "missing",
+            "path": str(hydrography_nc),
+            "crs_epsg": None,
+            "resolution_degrees": None,
+            "message": "missing basemap",
+        }
+    ds = None
+    try:
+        ds = xr.open_dataset(hydrography_nc)
+        crs = ds.raster.crs
+        epsg = crs.to_epsg() if crs is not None else None
+        resolution = None
+        for coord in ("x", "longitude", "lon"):
+            if coord in ds.coords and ds[coord].size > 1:
+                values = ds[coord].values
+                resolution = float(abs(values[1] - values[0]))
+                break
+        resolution_ok = (
+            resolution is not None
+            and abs(resolution - float(target_resolution_degrees)) <= max(
+                1.0e-9,
+                float(target_resolution_degrees) * 0.01,
+            )
+        )
+        crs_ok = epsg == 4326
+        status = "ready" if resolution_ok and crs_ok else "stale"
+        messages = []
+        if not crs_ok:
+            messages.append(f"crs_epsg={epsg}; expected EPSG:4326")
+        if not resolution_ok:
+            messages.append(f"resolution={resolution}; expected {target_resolution_degrees}")
+        return {
+            "status": status,
+            "path": str(hydrography_nc),
+            "crs_epsg": epsg,
+            "resolution_degrees": resolution,
+            "message": "; ".join(messages) if messages else "ready",
+        }
+    except Exception as exc:
+        return {
+            "status": "stale",
+            "path": str(hydrography_nc),
+            "crs_epsg": None,
+            "resolution_degrees": None,
+            "message": f"unreadable basemap: {exc}",
+        }
+    finally:
+        if ds is not None:
+            ds.close()
+
+
+def _hydromt_basemap_ready(hydrography_nc: Path, target_resolution_degrees: float) -> bool:
+    return hydromt_basemap_readiness(hydrography_nc, target_resolution_degrees)["status"] == "ready"
+
+
 def _hydromt_basemap_resolution_matches(hydrography_nc: Path, target_resolution_degrees: float) -> bool:
+    """Backward-compatible alias for older tests/callers."""
+    return _hydromt_basemap_ready(hydrography_nc, target_resolution_degrees)
+
+
+def _legacy_hydromt_basemap_resolution_matches(hydrography_nc: Path, target_resolution_degrees: float) -> bool:
     ds = None
     try:
         ds = xr.open_dataset(hydrography_nc)
@@ -280,6 +670,15 @@ def write_review_hydrography_vectors(
     *,
     service_url=NHDPLUS_HR_MAPSERVER,
     timeout_seconds=120,
+    stream_geo_table=None,
+    nldi_lookup_cache=None,
+    use_nldi_lookup=False,
+    nldi_timeout_seconds=30,
+    nldi_max_workers=4,
+    nldi_progress_interval=500,
+    stream_geo_join_method="attribute_transfer",
+    nhdplus_v2_flowlines=None,
+    stream_geo_join_max_distance_m=2500,
     session_get=None,
 ):
     import hydromt  # noqa: F401
@@ -311,7 +710,33 @@ def write_review_hydrography_vectors(
             raise ValueError(f"NHDPlus HR NetworkNHDFlowline returned no features for bbox {bbox_wgs84}")
         if catchments.empty:
             raise ValueError(f"NHDPlus HR NHDPlusCatchment returned no features for bbox {bbox_wgs84}")
-        rivers = _prepare_nhdplus_river_geometry(rivers)
+        stream_geo = load_stream_geo_table(stream_geo_table) if stream_geo_table and Path(stream_geo_table).exists() else None
+        stream_geo_comid_keys = None
+        method = str(stream_geo_join_method or "").lower()
+        if stream_geo is not None and not stream_geo.empty and method in {"pynhd_waterdata", "waterdata", "nhdplus_v2_nearest"}:
+            nhdplus_v2 = load_or_fetch_nhdplus_v2_flowlines(
+                bbox_wgs84,
+                nhdplus_v2_flowlines,
+                skip_existing=True,
+            )
+            stream_geo_comid_keys = _stream_geo_comid_keys_from_flowlines(
+                rivers,
+                nhdplus_v2,
+                river_id_column=_first_column(rivers, ("comid", "COMID", "ComID", "nhdplusid", "NHDPlusID", "featureid", "FeatureID")),
+                max_distance_m=stream_geo_join_max_distance_m,
+            )
+        rivers = _prepare_nhdplus_river_geometry(
+            rivers,
+            stream_geo=stream_geo,
+            stream_geo_comid_keys=stream_geo_comid_keys,
+            stream_geo_join_method=method,
+            nldi_lookup_cache=nldi_lookup_cache,
+            use_nldi_lookup=use_nldi_lookup and stream_geo_comid_keys is None,
+            nldi_timeout_seconds=nldi_timeout_seconds,
+            nldi_max_workers=nldi_max_workers,
+            nldi_progress_interval=nldi_progress_interval,
+            session_get=session_get,
+        )
         rivers.to_file(river_output, driver="GPKG")
         catchments = _prepare_nhdplus_catchments(catchments)
         catchments.to_file(catchment_output, driver="GPKG")
@@ -320,6 +745,7 @@ def write_review_hydrography_vectors(
             "catchment_features": int(len(catchments)),
             "river_source": "USGS NHDPlus HR NetworkNHDFlowline",
             "catchment_source": "USGS NHDPlus HR NHDPlusCatchment",
+            "stream_geo_join_method": method or "direct_comid",
         }
     finally:
         ds.close()
@@ -424,15 +850,450 @@ def fetch_nhdplus_hr_catchments(
     return _prepare_nhdplus_catchments(catchments)
 
 
-def _prepare_nhdplus_river_geometry(rivers):
+def load_or_fetch_nhdplus_v2_flowlines(
+    bbox_wgs84,
+    output_path,
+    *,
+    skip_existing=True,
+) -> gpd.GeoDataFrame:
+    """Load/cache NHDPlusV2/MR flowlines for bulk STREAM-geo COMID joins."""
+    if output_path in (None, ""):
+        raise RuntimeError(
+            "STREAM-geo bulk join requires a configured NHDPlusV2 flowline cache path "
+            "(collection.national_hydrography.nhdplus_v2_flowlines)."
+        )
+    output_path = Path(output_path)
+    if skip_existing and output_path.exists():
+        return gpd.read_file(output_path).to_crs("EPSG:4326")
+    try:
+        from pynhd import WaterData
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "STREAM-geo bulk join should use PyNHD WaterData instead of thousands of NLDI point calls. "
+            "Install/sync the optional source dependency `pynhd`, then rerun 02_collect_sources. "
+            "The researched path is WaterData('nhdflowline_network').bybox(...) followed by a local nearest join."
+        ) from exc
+
+    flowlines = WaterData("nhdflowline_network").bybox(tuple(float(value) for value in bbox_wgs84))
+    if flowlines.empty:
+        raise ValueError(f"PyNHD WaterData nhdflowline_network returned no features for bbox {bbox_wgs84}")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    flowlines.to_crs("EPSG:4326").to_file(output_path, driver="GPKG")
+    return flowlines.to_crs("EPSG:4326")
+
+
+def _stream_geo_comid_keys_from_flowlines(
+    rivers: gpd.GeoDataFrame,
+    flowlines: gpd.GeoDataFrame,
+    *,
+    river_id_column: str | None,
+    max_distance_m=2500,
+) -> pd.DataFrame:
+    if river_id_column is None:
+        return pd.DataFrame(columns=["_river_id_key", "_stream_geo_comid_key", "stream_geo_join_distance_m"])
+    flowline_comid = _first_column(flowlines, ("comid", "COMID", "ComID", "nhdplus_comid", "NHDPlus_COMID", "featureid", "FeatureID"))
+    if flowline_comid is None:
+        return pd.DataFrame(columns=["_river_id_key", "_stream_geo_comid_key", "stream_geo_join_distance_m"])
+
+    river_points = rivers[[river_id_column, "geometry"]].copy()
+    river_points["_river_id_key"] = river_points[river_id_column].astype(str)
+    river_points["geometry"] = river_points.geometry.map(_river_lookup_point)
+    river_points = gpd.GeoDataFrame(river_points.dropna(subset=["geometry"]), geometry="geometry", crs=rivers.crs or "EPSG:4326").to_crs("EPSG:4326")
+    flowlines = flowlines[[flowline_comid, "geometry"]].copy()
+    flowlines["_stream_geo_comid_key"] = flowlines[flowline_comid].astype(str)
+    flowlines = gpd.GeoDataFrame(flowlines.dropna(subset=["geometry"]), geometry="geometry", crs=flowlines.crs or "EPSG:4326").to_crs("EPSG:4326")
+    if river_points.empty or flowlines.empty:
+        return pd.DataFrame(columns=["_river_id_key", "_stream_geo_comid_key", "stream_geo_join_distance_m"])
+
+    projected_crs = _local_projected_crs(river_points)
+    left = river_points[["_river_id_key", "geometry"]].to_crs(projected_crs)
+    right = flowlines[["_stream_geo_comid_key", "geometry"]].to_crs(projected_crs)
+    joined = gpd.sjoin_nearest(
+        left,
+        right,
+        how="left",
+        max_distance=float(max_distance_m) if max_distance_m else None,
+        distance_col="stream_geo_join_distance_m",
+    )
+    return pd.DataFrame(joined[["_river_id_key", "_stream_geo_comid_key", "stream_geo_join_distance_m"]])
+
+
+def _local_projected_crs(frame: gpd.GeoDataFrame):
+    with suppress(Exception):
+        crs = frame.estimate_utm_crs()
+        if crs is not None:
+            return crs
+    return "EPSG:5070"
+
+
+def _prepare_nhdplus_river_geometry(
+    rivers,
+    *,
+    stream_geo=None,
+    stream_geo_comid_keys=None,
+    stream_geo_join_method="direct_comid",
+    nldi_lookup_cache=None,
+    use_nldi_lookup=False,
+    nldi_timeout_seconds=30,
+    nldi_max_workers=4,
+    nldi_progress_interval=500,
+    session_get=None,
+):
     rivers = rivers.to_crs("EPSG:4326").copy()
-    if "rivwth" not in rivers:
+    if stream_geo is not None and not stream_geo.empty:
+        if str(stream_geo_join_method or "").lower() in {"attribute_transfer", "stream_geo_attribute_transfer", "hydrologic_attribute_transfer"}:
+            rivers = enrich_river_geometry_with_stream_geo_attribute_transfer(rivers, stream_geo)
+        else:
+            rivers = enrich_river_geometry_with_stream_geo(
+                rivers,
+                stream_geo,
+                stream_geo_comid_keys=stream_geo_comid_keys,
+                nldi_lookup_cache=nldi_lookup_cache,
+                use_nldi_lookup=use_nldi_lookup,
+                nldi_timeout_seconds=nldi_timeout_seconds,
+                nldi_max_workers=nldi_max_workers,
+                nldi_progress_interval=nldi_progress_interval,
+                session_get=session_get,
+            )
+    if "rivwth" not in rivers or rivers["rivwth"].isna().all():
         rivers["rivwth"] = _estimate_river_width(rivers)
-    if "qbankfull" not in rivers:
+        rivers["rivwth_source"] = "drainage_area_formula_fallback"
+    else:
+        rivers["rivwth"] = pd.to_numeric(rivers["rivwth"], errors="coerce").fillna(_estimate_river_width(rivers)).astype("float32")
+        rivers["rivwth_source"] = rivers.get("rivwth_source", "source_geometry")
+    if "rivdph" not in rivers or rivers["rivdph"].isna().all():
+        rivers["rivdph"] = np.nan
+        rivers["rivdph_source"] = "missing_native_powlaw_fallback"
+    if "qbankfull" not in rivers or rivers["qbankfull"].isna().all():
         rivers["qbankfull"] = _estimate_bankfull_discharge(rivers)
-    rivers["review_status"] = "review_required_usgs_nhdplus_hr"
+        rivers["qbankfull_source"] = "drainage_area_formula_fallback"
+    rivwth_source = rivers["rivwth_source"] if "rivwth_source" in rivers else pd.Series("", index=rivers.index)
+    rivers["review_status"] = np.where(
+        rivwth_source.astype(str).str.contains("STREAM-geo", na=False),
+        "review_required_stream_geo",
+        "review_required_formula_fallback",
+    )
     rivers["source"] = "USGS NHDPlus HR NetworkNHDFlowline"
     return rivers
+
+
+def load_stream_geo_table(path) -> pd.DataFrame:
+    path = Path(path)
+    if path.suffix.lower() == ".parquet":
+        return pd.read_parquet(path)
+    if path.suffix.lower() in {".gpkg", ".geojson", ".shp"}:
+        return gpd.read_file(path)
+    return pd.read_csv(path)
+
+
+def enrich_river_geometry_with_stream_geo(
+    rivers,
+    stream_geo,
+    *,
+    stream_geo_comid_keys=None,
+    nldi_lookup_cache=None,
+    use_nldi_lookup=False,
+    nldi_timeout_seconds=30,
+    nldi_max_workers=4,
+    nldi_progress_interval=500,
+    session_get=None,
+) -> gpd.GeoDataFrame:
+    """Join STREAM-geo width/depth estimates onto NHDPlus river geometry."""
+    rivers = rivers.copy()
+    stream_geo = pd.DataFrame(stream_geo).copy()
+    river_comid = _first_column(rivers, ("comid", "COMID", "ComID", "nhdplusid", "NHDPlusID", "featureid", "FeatureID"))
+    stream_comid = _first_column(stream_geo, ("comid", "COMID", "ComID", "nhdplusid", "NHDPlusID", "featureid", "FeatureID"))
+    if river_comid is None or stream_comid is None:
+        rivers["rivwth_source"] = "missing_comid_formula_fallback"
+        return rivers
+    width_col = _first_column(
+        stream_geo,
+        ("rivwth", "XGB_Width_m", "RF_Width_m", "MLP_Width_m", "width_m", "width", "pred_width", "river_width"),
+    )
+    depth_col = _first_column(
+        stream_geo,
+        ("rivdph", "XGB_Depth_m", "RF_Depth_m", "MLP_Depth_m", "depth_m", "depth", "pred_depth", "river_depth"),
+    )
+    q_col = _first_column(stream_geo, ("qbankfull", "bankfull_discharge", "qbf", "Qbf"))
+    keep = [stream_comid, *[col for col in (width_col, depth_col, q_col) if col is not None]]
+    lookup = stream_geo[keep].copy()
+    lookup["_comid_key"] = lookup[stream_comid].astype(str)
+    lookup = lookup.drop_duplicates("_comid_key")
+    rename = {}
+    if width_col:
+        rename[width_col] = "_stream_geo_rivwth"
+    if depth_col:
+        rename[depth_col] = "_stream_geo_rivdph"
+    if q_col:
+        rename[q_col] = "_stream_geo_qbankfull"
+    lookup = lookup.rename(columns=rename)
+    rivers["_comid_key"] = rivers[river_comid].astype(str)
+    rivers["_river_id_key"] = rivers[river_comid].astype(str)
+    source_label = "STREAM-geo"
+    if stream_geo_comid_keys is not None and not stream_geo_comid_keys.empty:
+        rivers = rivers.merge(stream_geo_comid_keys, on="_river_id_key", how="left")
+        rivers["_comid_key"] = rivers["_stream_geo_comid_key"].where(rivers["_stream_geo_comid_key"].notna(), rivers["_comid_key"])
+        if "stream_geo_join_distance_m" in rivers:
+            rivers["stream_geo_join_distance_m"] = pd.to_numeric(rivers["stream_geo_join_distance_m"], errors="coerce")
+        source_label = "STREAM-geo/NHDPlusV2-nearest"
+    elif use_nldi_lookup:
+        nldi_keys = _nldi_stream_geo_comid_keys(
+            rivers,
+            river_id_column=river_comid,
+            cache_path=nldi_lookup_cache,
+            timeout_seconds=nldi_timeout_seconds,
+            max_workers=nldi_max_workers,
+            progress_interval=nldi_progress_interval,
+            session_get=session_get,
+        )
+        if not nldi_keys.empty:
+            rivers = rivers.merge(nldi_keys, on="_river_id_key", how="left")
+            rivers["_comid_key"] = rivers["_nldi_comid_key"].where(rivers["_nldi_comid_key"].notna(), rivers["_comid_key"])
+            source_label = "STREAM-geo/NLDI"
+    rivers = rivers.merge(lookup.drop(columns=[stream_comid]), on="_comid_key", how="left")
+    if "_stream_geo_rivwth" in rivers:
+        rivers["rivwth"] = pd.to_numeric(rivers["_stream_geo_rivwth"], errors="coerce")
+        rivers["rivwth_source"] = np.where(rivers["rivwth"].notna(), source_label, "drainage_area_formula_fallback")
+    if "_stream_geo_rivdph" in rivers:
+        rivers["rivdph"] = pd.to_numeric(rivers["_stream_geo_rivdph"], errors="coerce")
+        rivers["rivdph_source"] = np.where(rivers["rivdph"].notna(), source_label, "missing_native_powlaw_fallback")
+    if "_stream_geo_qbankfull" in rivers:
+        rivers["qbankfull"] = pd.to_numeric(rivers["_stream_geo_qbankfull"], errors="coerce")
+        rivers["qbankfull_source"] = np.where(rivers["qbankfull"].notna(), source_label, "drainage_area_formula_fallback")
+    drop_columns = [
+        col
+        for col in rivers.columns
+        if col.startswith("_stream_geo_") or col in {"_comid_key", "_river_id_key", "_nldi_comid_key"}
+    ]
+    return rivers.drop(columns=drop_columns)
+
+
+def enrich_river_geometry_with_stream_geo_attribute_transfer(
+    rivers,
+    stream_geo,
+    *,
+    neighbors=5,
+) -> gpd.GeoDataFrame:
+    """Transfer STREAM-geo width/depth to NHDPlus HR reaches by hydrologic attributes."""
+    from sklearn.neighbors import NearestNeighbors
+
+    rivers = rivers.copy()
+    stream_geo = pd.DataFrame(stream_geo).copy()
+    river_order = _first_column(rivers, ("streamorde", "StreamOrde", "stream_order", "strord"))
+    river_area = _first_column(rivers, ("totdasqkm", "TotDASqKM", "areasqkm", "uparea", "uparea_km2"))
+    river_length = _first_column(rivers, ("lengthkm", "LENGTHKM", "slopelenkm", "Shape_Length"))
+    stream_order = _first_column(stream_geo, ("StreamOrde", "streamorde", "stream_order", "strord"))
+    stream_area = _first_column(stream_geo, ("TotDASqKM", "totdasqkm", "areasqkm", "uparea", "uparea_km2"))
+    stream_length = _first_column(stream_geo, ("LENGTHKM", "lengthkm", "slopelenkm"))
+    width_col = _first_column(stream_geo, ("XGB_Width_m", "RF_Width_m", "MLP_Width_m", "rivwth", "width_m", "width"))
+    depth_col = _first_column(stream_geo, ("XGB_Depth_m", "RF_Depth_m", "MLP_Depth_m", "rivdph", "depth_m", "depth"))
+    if None in (river_order, river_area, river_length, stream_order, stream_area, stream_length, width_col, depth_col):
+        rivers["rivwth_source"] = "missing_stream_geo_attribute_transfer_inputs"
+        rivers["rivdph_source"] = "missing_stream_geo_attribute_transfer_inputs"
+        return rivers
+
+    stream_features = pd.DataFrame(
+        {
+            "order": pd.to_numeric(stream_geo[stream_order], errors="coerce"),
+            "area": pd.to_numeric(stream_geo[stream_area], errors="coerce"),
+            "length": pd.to_numeric(stream_geo[stream_length], errors="coerce"),
+            "width": pd.to_numeric(stream_geo[width_col], errors="coerce"),
+            "depth": pd.to_numeric(stream_geo[depth_col], errors="coerce"),
+        }
+    )
+    valid_stream = (
+        np.isfinite(stream_features[["order", "area", "length", "width", "depth"]]).all(axis=1)
+        & (stream_features["area"] > 0)
+        & (stream_features["length"] > 0)
+        & (stream_features["width"] > 0)
+        & (stream_features["depth"] > 0)
+    )
+    stream_features = stream_features.loc[valid_stream].reset_index(drop=True)
+    if stream_features.empty:
+        rivers["rivwth_source"] = "empty_stream_geo_attribute_transfer_inputs"
+        rivers["rivdph_source"] = "empty_stream_geo_attribute_transfer_inputs"
+        return rivers
+
+    river_features = pd.DataFrame(
+        {
+            "order": pd.to_numeric(rivers[river_order], errors="coerce"),
+            "area": pd.to_numeric(rivers[river_area], errors="coerce"),
+            "length": pd.to_numeric(rivers[river_length], errors="coerce"),
+        },
+        index=rivers.index,
+    )
+    query_features = _stream_geo_attribute_matrix(river_features)
+    source_features = _stream_geo_attribute_matrix(stream_features)
+    model = NearestNeighbors(n_neighbors=max(1, min(int(neighbors), len(stream_features))), algorithm="auto", metric="euclidean", n_jobs=-1)
+    model.fit(source_features)
+    distances, indices = model.kneighbors(query_features)
+    widths = np.nanmedian(stream_features["width"].to_numpy()[indices], axis=1)
+    depths = np.nanmedian(stream_features["depth"].to_numpy()[indices], axis=1)
+    rivers["rivwth"] = widths.astype("float32")
+    rivers["rivdph"] = depths.astype("float32")
+    rivers["stream_geo_attribute_distance"] = np.nanmedian(distances, axis=1).astype("float32")
+    rivers["rivwth_source"] = "STREAM-geo_attribute_transfer"
+    rivers["rivdph_source"] = "STREAM-geo_attribute_transfer"
+    return rivers
+
+
+def _stream_geo_attribute_matrix(frame: pd.DataFrame) -> np.ndarray:
+    order = pd.to_numeric(frame["order"], errors="coerce").fillna(0).clip(lower=0)
+    area = pd.to_numeric(frame["area"], errors="coerce").fillna(0).clip(lower=1e-6)
+    length = pd.to_numeric(frame["length"], errors="coerce").fillna(0).clip(lower=1e-6)
+    return np.column_stack(
+        [
+            order.to_numpy(dtype="float64") * 2.0,
+            np.log10(area.to_numpy(dtype="float64")),
+            np.log10(length.to_numpy(dtype="float64")),
+        ]
+    )
+
+
+def _nldi_stream_geo_comid_keys(
+    rivers: gpd.GeoDataFrame,
+    *,
+    river_id_column: str,
+    cache_path,
+    timeout_seconds=30,
+    max_workers=4,
+    progress_interval=500,
+    session_get=None,
+) -> pd.DataFrame:
+    """Return cached NHDPlus HR id -> NHDPlusV2 COMID keys from NLDI point lookup."""
+    if cache_path in (None, ""):
+        return pd.DataFrame(columns=["_river_id_key", "_nldi_comid_key"])
+    cache_path = Path(cache_path)
+    if cache_path.exists():
+        cache = pd.read_csv(cache_path, dtype=str)
+    else:
+        cache = pd.DataFrame(columns=["river_id", "lon", "lat", "nldi_comid", "status"])
+    if "river_id" not in cache:
+        cache["river_id"] = pd.Series(dtype=str)
+    known = set(cache["river_id"].dropna().astype(str))
+
+    pending = []
+    for _, row in rivers.iterrows():
+        river_id = str(row[river_id_column])
+        if river_id in known:
+            continue
+        point = _river_lookup_point(row.geometry)
+        if point is None:
+            pending.append({"river_id": river_id, "lon": "", "lat": "", "status": "missing_geometry"})
+            continue
+        pending.append({"river_id": river_id, "lon": float(point.x), "lat": float(point.y), "status": "pending"})
+
+    rows = []
+    completed = 0
+
+    def lookup(item):
+        if item["status"] == "missing_geometry":
+            return {**item, "nldi_comid": ""}
+        try:
+            comid = fetch_nldi_comid(
+                float(item["lon"]),
+                float(item["lat"]),
+                timeout_seconds=timeout_seconds,
+                session_get=session_get,
+            )
+            return {**item, "nldi_comid": comid or "", "status": "matched" if comid else "no_match"}
+        except Exception as exc:
+            return {**item, "nldi_comid": "", "status": f"error:{type(exc).__name__}"}
+
+    def flush_rows():
+        nonlocal cache, rows
+        if not rows:
+            return
+        cache = pd.concat([cache, pd.DataFrame(rows)], ignore_index=True)
+        cache = cache.drop_duplicates("river_id", keep="last")
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache.to_csv(cache_path, index=False)
+        rows = []
+
+    if pending:
+        max_workers = max(1, int(max_workers or 1))
+        progress_interval = max(0, int(progress_interval or 0))
+        if max_workers == 1 or len(pending) == 1:
+            get = session_get
+            close_session = None
+            if get is None:
+                session = requests.Session()
+                get = session.get
+                close_session = session.close
+            try:
+                for item in pending:
+                    rows.append(lookup(item) if session_get is not None else _nldi_lookup_item(item, timeout_seconds, get))
+                    completed += 1
+                    if progress_interval and completed % progress_interval == 0:
+                        flush_rows()
+                        print(f"NLDI COMID lookup cached {completed}/{len(pending)} new river reaches")
+            finally:
+                if close_session is not None:
+                    close_session()
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [executor.submit(lookup, item) for item in pending]
+                for future in as_completed(futures):
+                    rows.append(future.result())
+                    completed += 1
+                    if progress_interval and completed % progress_interval == 0:
+                        flush_rows()
+                        print(f"NLDI COMID lookup cached {completed}/{len(pending)} new river reaches")
+        flush_rows()
+
+    out = cache[["river_id", "nldi_comid"]].copy()
+    out["_river_id_key"] = out["river_id"].astype(str)
+    out["_nldi_comid_key"] = out["nldi_comid"].replace("", np.nan).astype("string")
+    return out[["_river_id_key", "_nldi_comid_key"]]
+
+
+def _nldi_lookup_item(item, timeout_seconds, session_get):
+    if item["status"] == "missing_geometry":
+        return {**item, "nldi_comid": ""}
+    try:
+        comid = fetch_nldi_comid(
+            float(item["lon"]),
+            float(item["lat"]),
+            timeout_seconds=timeout_seconds,
+            session_get=session_get,
+        )
+        return {**item, "nldi_comid": comid or "", "status": "matched" if comid else "no_match"}
+    except Exception as exc:
+        return {**item, "nldi_comid": "", "status": f"error:{type(exc).__name__}"}
+
+
+def _river_lookup_point(geometry):
+    if geometry is None or geometry.is_empty:
+        return None
+    try:
+        return geometry.interpolate(0.5, normalized=True)
+    except Exception:
+        return geometry.representative_point()
+
+
+def fetch_nldi_comid(lon: float, lat: float, *, base_url=NLDI_BASE_URL, timeout_seconds=30, session_get=None) -> str | None:
+    get = session_get or requests.get
+    response = get(
+        f"{base_url.rstrip('/')}/comid/position",
+        params={"coords": f"POINT({float(lon)} {float(lat)})"},
+        timeout=timeout_seconds,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    features = payload.get("features") or []
+    if not features:
+        return None
+    props = features[0].get("properties") or {}
+    value = props.get("identifier") or props.get("comid") or props.get("COMID")
+    return None if value in (None, "") else str(value)
+
+
+def _first_column(frame, candidates) -> str | None:
+    lower = {str(column).lower(): column for column in frame.columns}
+    for candidate in candidates:
+        if str(candidate).lower() in lower:
+            return lower[str(candidate).lower()]
+    return None
 
 
 def _prepare_nhdplus_catchments(catchments):
@@ -644,6 +1505,12 @@ def _ensure_ssurgo_wflow_attributes(soil_polygons, soil_attributes):
 def _location_path(location_root, value):
     path = Path(value)
     return path if path.is_absolute() else Path(location_root) / path
+
+
+def _optional_location_path(location_root, value):
+    if value in (None, ""):
+        return None
+    return _location_path(location_root, value)
 
 
 def _result(status, hydrography_nc, river_gpkg, catchments_gpkg, soil_nc, manifest, *, collect_review_vectors=False):

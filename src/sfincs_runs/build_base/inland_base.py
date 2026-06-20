@@ -13,11 +13,12 @@ from scipy import ndimage
 from shapely.geometry import GeometryCollection, LineString, MultiPoint, Point
 from shapely.ops import nearest_points, unary_union
 
-from sfincs_runs.hydrology import setup_hydromt_infiltration
+from sfincs_runs.hydrology import setup_hydromt_infiltration, validate_built_sfincs_native_physics
 from wflow_runs.coupled_handoff import (
     LEGACY_BOUNDARY_HANDOFF_MODES,
     STREAM_BOUNDARY_HANDOFF_MODES,
     crossing_handoff_sources,
+    handoff_location_mode,
     uses_stream_boundary_handoff,
 )
 
@@ -93,6 +94,30 @@ def is_built_sfincs_base(path):
     if "sfincs.inp" not in files:
         return False
     return bool(files & {"sfincs.dep", "sfincs.msk", "sfincs.subgrid", "subgrid.nc", "sfincs.ind"})
+
+
+def sfincs_grid_resolution_matches(path, expected_resolution_m: float, *, tolerance: float = 1.0e-6) -> bool:
+    """Return whether an existing SFINCS input file uses the expected regular-grid spacing."""
+    path = Path(path)
+    inp_path = path if path.name == "sfincs.inp" else path / "sfincs.inp"
+    if not inp_path.exists():
+        return False
+
+    values = {}
+    for line in inp_path.read_text(encoding="utf-8").splitlines():
+        key, separator, value = line.partition("=")
+        if not separator:
+            continue
+        key = key.strip().lower()
+        if key not in {"dx", "dy"}:
+            continue
+        try:
+            values[key] = float(value.strip().split()[0])
+        except (IndexError, ValueError):
+            return False
+
+    expected = float(expected_resolution_m)
+    return all(abs(values.get(axis, np.nan) - expected) <= tolerance for axis in ("dx", "dy"))
 
 
 def is_built_wflow_base(path):
@@ -359,6 +384,7 @@ def write_inland_sfincs_handoff_locations(
     if sfincs_domain_id is not None:
         handoff["sfincs_domain_id"] = str(sfincs_domain_id)
     handoff = handoff.sort_values(["sfincs_domain_id", "sfincs_handoff_id", "site_no"]).reset_index(drop=True)
+    handoff = _deduplicate_handoff_source_locations(handoff)
     handoff.insert(0, "index", range(1, len(handoff) + 1))
     handoff["name"] = handoff["sfincs_handoff_id"].astype(str)
     keep = [
@@ -386,12 +412,184 @@ def write_inland_sfincs_handoff_locations(
     keep = [column for column in keep if column in handoff.columns]
     out_path.parent.mkdir(parents=True, exist_ok=True)
     handoff[keep].to_file(out_path, driver="GeoJSON")
+    rivers = wflow_handoff_rivers_inflow_geoms(
+        config,
+        paths,
+        handoff,
+        domain_region=domain_region,
+        model_crs=handoff.crs,
+    )
+    _write_sfincs_rivers_inflow_geoms(rivers, out_path.parent / "rivers_inflow.geojson")
     return {
         "handoff_locations": out_path,
+        "rivers_inflow": out_path.parent / "rivers_inflow.geojson",
         "source_point_count": int(len(handoff)),
+        "rivers_inflow_count": int(len(rivers)),
         "sfincs_domain_count": int(handoff["sfincs_domain_id"].nunique()),
         "wflow_submodel_count": int(handoff["wflow_submodel_id"].nunique()),
     }
+
+
+def _deduplicate_handoff_source_locations(handoff: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Collapse multiple handoff IDs that resolve to the same SFINCS source point."""
+    if handoff.empty:
+        return handoff
+    source_keys = []
+    for geometry in handoff.geometry:
+        if geometry is None or geometry.is_empty:
+            source_keys.append(None)
+        elif geometry.geom_type == "Point":
+            source_keys.append((round(float(geometry.x), 3), round(float(geometry.y), 3)))
+        else:
+            source_keys.append(geometry.wkb_hex)
+    deduped = handoff.copy()
+    deduped["_source_location_key"] = source_keys
+    deduped = deduped.drop_duplicates("_source_location_key", keep="first")
+    return deduped.drop(columns=["_source_location_key"]).reset_index(drop=True)
+
+
+def create_native_sfincs_river_handoff_locations(
+    model,
+    config,
+    paths,
+    *,
+    output=None,
+    sfincs_domain_id,
+    wflow_submodel_id=None,
+    hydrography=None,
+    river_upa=None,
+    river_len=None,
+    buffer=None,
+    river_width=0,
+    first_index=1,
+    handoff_source_ids=None,
+) -> gpd.GeoDataFrame:
+    """Create SFINCS source points with HydroMT-SFINCS native river inflow tooling.
+
+    The documented HydroMT coupling order is: SFINCS places discharge ``src`` points where
+    river centerlines enter the SFINCS domain, then HydroMT-Wflow uses those ``src`` points
+    as Wflow gauges. This helper wraps ``SfincsRivers.create_river_inflow`` and writes the
+    generated locations to the project handoff artifact consumed by the Wflow build.
+    """
+    location_root = _location_root(paths)
+    forcing = config.get("inland_coupling", {}).get("discharge_forcing", {})
+    crossings = config.get("wflow", {}).get("domain_set", {}).get("crossings", {})
+    hydrography = hydrography or forcing.get("hydrography", "us_hydrography_basemap")
+    river_upa = float(river_upa if river_upa is not None else forcing.get("river_upa_km2", crossings.get("min_uparea_km2", 5.0)))
+    river_len = float(river_len if river_len is not None else forcing.get("river_len_m", 500.0))
+    buffer = float(buffer if buffer is not None else forcing.get("river_inflow_buffer_m", 200.0))
+    out_path = _location_path(location_root, output or "data/sfincs/base/gis/wflow_handoff_sources.geojson")
+
+    if not hasattr(model, "rivers"):
+        raise ValueError("HydroMT-SFINCS model has no rivers component for native river inflow setup")
+    _register_sfincs_hydrography_source(model, config, paths, hydrography)
+    model.rivers.create_river_inflow(
+        hydrography=hydrography,
+        buffer=buffer,
+        river_upa=river_upa,
+        river_len=river_len,
+        river_width=river_width,
+        keep_rivers_geom=True,
+        merge=False,
+        first_index=int(first_index),
+        src_type="inflow",
+    )
+
+    src = model.discharge_points.gdf
+    if src is None or src.empty:
+        raise ValueError(
+            "HydroMT-SFINCS native river inflow created no discharge source points; "
+            "review the SFINCS domain, hydrography source, river_upa, and buffer settings."
+        )
+    src = src.copy()
+    model_crs = getattr(model, "crs", None) or config.get("sfincs", {}).get(
+        "model_crs",
+        config.get("project", {}).get("model_crs", "EPSG:4326"),
+    )
+    if src.crs is None:
+        src = src.set_crs(model_crs)
+    else:
+        src = src.to_crs(model_crs)
+    src = src.reset_index(drop=True)
+    if "index" in src.columns:
+        src = src.drop(columns=["index"])
+    src.insert(0, "index", range(int(first_index), int(first_index) + len(src)))
+
+    sfincs_domain_id = str(sfincs_domain_id)
+    if wflow_submodel_id is None:
+        wflow_submodel_id = _single_domain_wflow_submodel_id(config, location_root, sfincs_domain_id)
+    wflow_submodel_id = "" if wflow_submodel_id is None else str(wflow_submodel_id)
+    ids = [f"{sfincs_domain_id}_inflow_{idx:02d}" for idx in range(1, len(src) + 1)]
+    src["name"] = ids
+    src["site_no"] = ids
+    src["sfincs_handoff_id"] = ids
+    if handoff_source_ids is not None:
+        wanted = {str(value) for value in handoff_source_ids}
+        src = src[src["sfincs_handoff_id"].astype(str).isin(wanted)].copy()
+        missing = sorted(wanted - set(src["sfincs_handoff_id"].astype(str)))
+        if missing:
+            raise ValueError("Native SFINCS river inflow did not create requested handoff IDs: " + ", ".join(missing))
+    src["wflow_submodel_id"] = wflow_submodel_id
+    src["sfincs_domain_id"] = sfincs_domain_id
+    src["gauge_location_source"] = "sfincs_native_river_inflow"
+    src["handoff_placement"] = "sfincs_native_river_inflow"
+    src["handoff_location_review_status"] = "hydromt_sfincs_native_river_inflow"
+    src["stream_boundary_river_source"] = str(hydrography)
+    src["river_upa_km2"] = river_upa
+    src["river_len_m"] = river_len
+    src["river_inflow_buffer_m"] = buffer
+
+    keep = [
+        "index",
+        "name",
+        "uparea",
+        "site_no",
+        "sfincs_handoff_id",
+        "wflow_submodel_id",
+        "sfincs_domain_id",
+        "gauge_location_source",
+        "handoff_placement",
+        "handoff_location_review_status",
+        "stream_boundary_river_source",
+        "river_upa_km2",
+        "river_len_m",
+        "river_inflow_buffer_m",
+        "geometry",
+    ]
+    keep = [column for column in keep if column in src.columns]
+    src = gpd.GeoDataFrame(src[keep], geometry="geometry", crs=model_crs)
+    model.discharge_points.set_locations(src, merge=False)
+    rivers = sfincs_rivers_inflow_geoms(model)
+    if not rivers.empty:
+        _write_sfincs_rivers_inflow_geoms(rivers, out_path.parent / "rivers_inflow.geojson")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    src.to_file(out_path, driver="GeoJSON")
+    return src
+
+
+def _register_sfincs_hydrography_source(model, config, paths, source_name) -> None:
+    """Register the collected local HydroMT hydrography basemap for native SFINCS rivers."""
+    if not isinstance(source_name, str) or Path(source_name).suffix:
+        return
+    location_root = _location_root(paths)
+    hydrography_path = _location_path(
+        location_root,
+        config.get("collection", {})
+        .get("national_hydrography", {})
+        .get("hydromt_basemap", "data/wflow/hydrography/us_hydrography_basemap.nc"),
+    )
+    if not hydrography_path.exists():
+        return
+    model.data_catalog.from_dict(
+        {
+            source_name: {
+                "uri": str(hydrography_path),
+                "data_type": "RasterDataset",
+                "driver": {"name": "raster_xarray"},
+                "metadata": {"category": "hydrography"},
+            }
+        }
+    )
 
 
 def build_inland_sfincs_base(config, paths, *, model_cls=None, force=False):
@@ -416,14 +614,43 @@ def build_inland_sfincs_domain_set(config, paths, *, model_cls=None, force=False
     for domain in manifest.get("domains", []):
         domain_plan = _domain_base_plan(config, paths, domain)
         summary = _build_inland_sfincs_base_plan(config, paths, domain_plan, model_cls=model_cls, force=force)
-        handoff_summary = write_inland_sfincs_handoff_locations(
-            config,
-            paths,
-            output=domain_plan.base_model_root / "gis/wflow_handoff_sources.geojson",
-            handoff_source_ids=domain.get("handoff_source_ids", ()),
-            domain_region=domain_plan.region,
-            sfincs_domain_id=domain["sfincs_domain_id"],
-        )
+        handoff_path = domain_plan.base_model_root / "gis/wflow_handoff_sources.geojson"
+        if handoff_location_mode(config) == "sfincs_native_river_inflow":
+            if model_cls is None:
+                os.environ.pop("DEBUG", None)
+                from hydromt_sfincs import SfincsModel
+
+                domain_model_cls = SfincsModel
+            else:
+                domain_model_cls = model_cls
+            model = domain_model_cls(root=str(domain_plan.base_model_root), mode="r+", write_gis=True)
+            model.read()
+            src = create_native_sfincs_river_handoff_locations(
+                model,
+                config,
+                paths,
+                output=handoff_path,
+                sfincs_domain_id=domain["sfincs_domain_id"],
+                wflow_submodel_id=next(iter(domain.get("wflow_submodel_ids", [])), None),
+                handoff_source_ids=domain.get("handoff_source_ids", ()),
+            )
+            model.write()
+            rivers = sfincs_rivers_inflow_geoms(model)
+            handoff_summary = {
+                "handoff_locations": handoff_path,
+                "rivers_inflow": handoff_path.parent / "rivers_inflow.geojson",
+                "source_point_count": int(len(src)),
+                "rivers_inflow_count": int(len(rivers)),
+            }
+        else:
+            handoff_summary = write_inland_sfincs_handoff_locations(
+                config,
+                paths,
+                output=handoff_path,
+                handoff_source_ids=domain.get("handoff_source_ids", ()),
+                domain_region=domain_plan.region,
+                sfincs_domain_id=domain["sfincs_domain_id"],
+            )
         rows.append(
             {
                 "sfincs_domain_id": domain["sfincs_domain_id"],
@@ -479,11 +706,25 @@ def plot_inland_sfincs_domain_set_basemaps(
             continue
 
         model = model_cls(root=str(model_root), mode="r")
+        handoff_locations = model_root / "gis/wflow_handoff_sources.geojson"
+        if handoff_locations.exists():
+            add_wflow_native_rivers_to_sfincs_plot_geoms(
+                model,
+                config,
+                paths,
+                handoff_locations=handoff_locations,
+            )
         for variable in variables:
             model.plot_basemap(
                 variable=variable,
                 plot_geoms=True,
                 plot_bounds=True,
+                geom_names=["src", "obs", "rivers"],
+                geom_kwargs={
+                    "src": dict(marker=">", markersize=55, facecolor="white", edgecolor="crimson", linewidth=1.2),
+                    "obs": dict(marker="o", facecolor="none", edgecolor="black", markersize=25),
+                    "rivers": dict(color="royalblue", linewidth=1.1, linestyle=":", alpha=0.9),
+                },
                 bmap=bmap,
                 zoomlevel=zoomlevel,
             )
@@ -491,6 +732,316 @@ def plot_inland_sfincs_domain_set_basemaps(
             fig.suptitle(f"{domain_id} - {variable}", fontsize=12)
             figures.append({"sfincs_domain_id": domain_id, "variable": variable, "figure": fig})
     return figures
+
+
+def add_wflow_native_rivers_to_sfincs_plot_geoms(
+    model,
+    config,
+    paths,
+    *,
+    handoff_locations=None,
+    handoff: gpd.GeoDataFrame | None = None,
+) -> gpd.GeoDataFrame:
+    """Attach HydroMT-Wflow-native river lines to the HydroMT-SFINCS rivers plot component."""
+    location_root = _location_root(paths)
+    if handoff is None:
+        if handoff_locations in (None, ""):
+            raise ValueError("handoff_locations or handoff is required to select Wflow-native river lines")
+        handoff = gpd.read_file(_location_path(location_root, handoff_locations))
+    else:
+        handoff = handoff.copy()
+
+    model_crs = getattr(model, "crs", None) or config.get("sfincs", {}).get(
+        "model_crs",
+        config.get("project", {}).get("model_crs", "EPSG:4326"),
+    )
+    if handoff.crs is None:
+        handoff = handoff.set_crs(model_crs)
+
+    rivers = _wflow_native_river_lines(config, location_root, handoff)
+    if rivers.empty:
+        return rivers
+    rivers = rivers.to_crs(model_crs)
+
+    component = getattr(model, "components", {}).get("rivers")
+    if component is None:
+        raise ValueError("HydroMT-SFINCS model has no rivers component for visualization")
+    # HydroMT-SFINCS v2.0.0rc1 exposes this visualization layer as a component
+    # but does not yet provide a public setter. Keep the compatibility shim here.
+    component._data = rivers
+    return rivers
+
+
+def sfincs_rivers_inflow_geoms(
+    model,
+    *,
+    root=None,
+    config=None,
+    paths=None,
+    handoff_sources=None,
+    domain_region=None,
+) -> gpd.GeoDataFrame:
+    """Return HydroMT-SFINCS native ``rivers_inflow`` linework for plotting."""
+    model_crs = getattr(model, "crs", None)
+    component = getattr(model, "components", {}).get("rivers")
+    if component is not None:
+        data = getattr(component, "data", None)
+        if data is not None and not data.empty:
+            rivers = data.copy()
+            if rivers.crs is None and model_crs is not None:
+                rivers = rivers.set_crs(model_crs)
+            elif model_crs is not None:
+                rivers = rivers.to_crs(model_crs)
+            return rivers
+
+    model_root = _sfincs_model_root_path(model, root=root)
+    path = model_root / "gis/rivers_inflow.geojson"
+    if path.exists():
+        rivers = gpd.read_file(path)
+    elif config is not None and paths is not None and handoff_sources is not None:
+        handoff = (
+            gpd.read_file(handoff_sources)
+            if not isinstance(handoff_sources, gpd.GeoDataFrame)
+            else handoff_sources.copy()
+        )
+        rivers = wflow_handoff_rivers_inflow_geoms(
+            config,
+            paths,
+            handoff,
+            domain_region=domain_region,
+            model_crs=model_crs,
+        )
+    else:
+        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs=model_crs)
+    if rivers.crs is None and model_crs is not None:
+        rivers = rivers.set_crs(model_crs)
+    elif model_crs is not None:
+        rivers = rivers.to_crs(model_crs)
+    valid = [geometry is not None and not geometry.is_empty for geometry in rivers.geometry]
+    return rivers.loc[valid].reset_index(drop=True)
+
+
+def _sfincs_model_root_path(model, *, root=None) -> Path:
+    raw_root = root if root is not None else getattr(model, "root", None)
+    if hasattr(raw_root, "path"):
+        raw_root = raw_root.path
+    if raw_root in (None, ""):
+        return Path(".")
+    return Path(raw_root)
+
+
+def wflow_handoff_rivers_inflow_geoms(
+    config,
+    paths,
+    handoff: gpd.GeoDataFrame,
+    *,
+    domain_region=None,
+    model_crs=None,
+) -> gpd.GeoDataFrame:
+    """Return Wflow-native river linework clipped to the SFINCS handoff domain."""
+    if handoff.empty:
+        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs=model_crs or handoff.crs)
+
+    location_root = _location_root(paths)
+    rivers = _wflow_native_river_lines(config, location_root, handoff)
+    if rivers.empty:
+        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs=model_crs or handoff.crs)
+
+    if model_crs is not None:
+        rivers = rivers.to_crs(model_crs)
+    if domain_region not in (None, ""):
+        region_path = _location_path(location_root, domain_region)
+        if region_path.exists():
+            region = gpd.read_file(region_path)
+            if region.crs is None:
+                region = region.set_crs(rivers.crs)
+            else:
+                region = region.to_crs(rivers.crs)
+            try:
+                rivers = gpd.clip(rivers, region)
+            except Exception:
+                region_geometry = region.union_all() if hasattr(region, "union_all") else region.unary_union
+                rivers = rivers.loc[rivers.intersects(region_geometry)].copy()
+    valid = [geometry is not None and not geometry.is_empty for geometry in rivers.geometry]
+    return rivers.loc[valid].reset_index(drop=True)
+
+
+def _write_sfincs_rivers_inflow_geoms(rivers: gpd.GeoDataFrame, output: Path) -> None:
+    if rivers.empty:
+        if output.exists():
+            output.unlink()
+        return
+    output.parent.mkdir(parents=True, exist_ok=True)
+    rivers.to_file(output, driver="GeoJSON")
+
+
+def set_sfincs_observation_points_from_gages(model, gages) -> gpd.GeoDataFrame:
+    """Set reviewed gages as HydroMT-SFINCS observation points for plotting."""
+    gdf = gpd.read_file(gages) if not isinstance(gages, gpd.GeoDataFrame) else gages.copy()
+    if gdf.empty:
+        return gdf
+    model_crs = getattr(model, "crs", None)
+    if model_crs is None:
+        raise ValueError("HydroMT-SFINCS model CRS is required before setting observation points")
+    if gdf.crs is None:
+        gdf = gdf.set_crs(model_crs)
+    else:
+        gdf = gdf.to_crs(model_crs)
+
+    valid = [geometry is not None and not geometry.is_empty and geometry.geom_type == "Point" for geometry in gdf.geometry]
+    gdf = gdf.loc[valid].copy()
+    if gdf.empty:
+        return gdf
+
+    if "name" not in gdf:
+        for column in ("site_no", "sfincs_handoff_id", "site_name", "station_nm"):
+            if column in gdf and gdf[column].notna().any():
+                gdf["name"] = gdf[column].fillna("").astype(str)
+                break
+        else:
+            gdf["name"] = [str(index + 1) for index in range(len(gdf))]
+    gdf["name"] = gdf["name"].fillna("").astype(str)
+    empty_names = gdf["name"].str.strip().eq("")
+    if empty_names.any():
+        gdf.loc[empty_names, "name"] = [str(index + 1) for index in range(int(empty_names.sum()))]
+
+    region = getattr(model, "region", None)
+    if region is not None and not region.empty:
+        if region.crs is not None and region.crs != gdf.crs:
+            region = region.to_crs(gdf.crs)
+        region_geometry = region.union_all() if hasattr(region, "union_all") else region.unary_union
+        gdf = gdf.loc[gdf.within(region_geometry)].copy()
+    if gdf.empty:
+        return gdf
+
+    model.observation_points.set(gdf, merge=False)
+    return gdf
+
+
+def plot_sfincs_handoff_basemap(
+    model,
+    *,
+    handoff_sources,
+    rivers: gpd.GeoDataFrame | None = None,
+    observations: gpd.GeoDataFrame | None = None,
+    config=None,
+    paths=None,
+    domain_region=None,
+    figsize=(8, 6),
+):
+    """Plot a HydroMT-SFINCS basemap with visible Wflow handoff QA overlays."""
+    from matplotlib.lines import Line2D
+
+    src = gpd.read_file(handoff_sources) if not isinstance(handoff_sources, gpd.GeoDataFrame) else handoff_sources.copy()
+    if src.crs is None:
+        src = src.set_crs(model.crs)
+    src = src.to_crs(model.crs)
+    if rivers is None or rivers.empty:
+        rivers = sfincs_rivers_inflow_geoms(
+            model,
+            config=config,
+            paths=paths,
+            handoff_sources=src,
+            domain_region=domain_region,
+        )
+
+    fig, ax = model.plot_basemap(
+        figsize=figsize,
+        plot_bounds=True,
+        plot_geoms=True,
+        geom_names=["src", "obs", "rivers"],
+        geom_kwargs={
+            "src": dict(marker=">", markersize=55, facecolor="white", edgecolor="crimson", linewidth=1.2),
+            "obs": dict(marker="o", facecolor="none", edgecolor="black", markersize=25),
+            "rivers": dict(color="royalblue", linewidth=0.0, alpha=0.0),
+        },
+    )
+
+    visible_rivers = _visible_sfincs_rivers(model, rivers)
+    if not visible_rivers.empty:
+        visible_rivers.plot(
+            ax=ax,
+            color="royalblue",
+            linewidth=1.2,
+            linestyle=":",
+            alpha=0.95,
+            zorder=8,
+            label="rivers_inflow",
+        )
+    if observations is not None and not observations.empty:
+        observations.to_crs(model.crs).plot(
+            ax=ax,
+            marker="o",
+            facecolor="none",
+            edgecolor="black",
+            markersize=25,
+            zorder=9,
+            label="reviewed USGS gage",
+        )
+    if not src.empty:
+        src.plot(
+            ax=ax,
+            marker=">",
+            facecolor="white",
+            edgecolor="crimson",
+            linewidth=1.2,
+            markersize=55,
+            zorder=10,
+            label="src",
+        )
+        for collection in ax.collections[-1:]:
+            collection.set_clip_on(False)
+
+    base_handles, base_labels = ax.get_legend_handles_labels()
+    handles: list = []
+    labels: list[str] = []
+    skip = {"src", "obs", "rivers", "rivers_inflow", "reviewed USGS gage"}
+    for handle, label in zip(base_handles, base_labels):
+        if not label or label == "_nolegend_" or label in skip or label in labels:
+            continue
+        handles.append(handle)
+        labels.append(label)
+    if not visible_rivers.empty:
+        handles.append(Line2D([0], [0], color="royalblue", linewidth=1.2, linestyle=":"))
+        labels.append("rivers_inflow")
+    if observations is not None and not observations.empty:
+        handles.append(
+            Line2D([0], [0], marker="o", linestyle="None", markerfacecolor="none", markeredgecolor="black", markersize=5)
+        )
+        labels.append("reviewed USGS gage")
+    if not src.empty:
+        handles.append(
+            Line2D([0], [0], marker=">", linestyle="None", markerfacecolor="white", markeredgecolor="crimson", markersize=8)
+        )
+        labels.append("src")
+    if handles:
+        ax.legend(handles, labels, loc="best")
+    qa = {
+        "discharge_sources_src": int(len(src)),
+        "unique_discharge_source_locations": int(len(src.geometry.apply(lambda geom: (round(geom.x, 2), round(geom.y, 2))).drop_duplicates()))
+        if not src.empty
+        else 0,
+        "visible_wflow_native_river_features": int(len(visible_rivers)),
+        "reviewed_usgs_gages_visible": int(0 if observations is None else len(observations)),
+    }
+    return fig, ax, qa
+
+
+def _visible_sfincs_rivers(model, rivers: gpd.GeoDataFrame | None) -> gpd.GeoDataFrame:
+    if rivers is None or rivers.empty:
+        return gpd.GeoDataFrame(columns=["geometry"], geometry="geometry", crs=getattr(model, "crs", None))
+    rivers = rivers.to_crs(model.crs)
+    region = getattr(model, "region", None)
+    if region is None or region.empty:
+        return rivers
+    region = region.to_crs(rivers.crs) if region.crs is not None else region.set_crs(rivers.crs)
+    try:
+        clipped = gpd.clip(rivers, region)
+    except Exception:
+        region_geometry = region.union_all() if hasattr(region, "union_all") else region.unary_union
+        clipped = rivers.loc[rivers.intersects(region_geometry)].copy()
+    valid = [geometry is not None and not geometry.is_empty for geometry in clipped.geometry]
+    return clipped.loc[valid].reset_index(drop=True)
 
 
 def outflow_zmax_from_active_mask(mask, dep, *, quantile=DEFAULT_OUTFLOW_ELEVATION_QUANTILE) -> float:
@@ -538,6 +1089,23 @@ def _outflow_elevation_quantile(config) -> float:
 
 def _build_inland_sfincs_base_plan(config, paths, plan: InlandSfincsBasePlan, *, model_cls=None, force=False):
     if plan.built and not force:
+        try:
+            validate_built_sfincs_native_physics(plan.base_model_root, config)
+        except RuntimeError as exc:
+            if not _should_rebuild_stale_native_physics(config, exc):
+                raise
+            summary = _build_inland_sfincs_base_plan(
+                config,
+                paths,
+                plan,
+                model_cls=model_cls,
+                force=True,
+            )
+            return {
+                **summary,
+                "status": "rebuilt_stale_native_physics",
+                "rebuild_reason": str(exc),
+            }
         return {"status": "reused", "base_model_root": plan.base_model_root, "built": True}
     if plan.missing_inputs:
         raise FileNotFoundError("Missing SFINCS base inputs: " + ", ".join(path.as_posix() for path in plan.missing_inputs))
@@ -590,11 +1158,34 @@ def _build_inland_sfincs_base_plan(config, paths, plan: InlandSfincsBasePlan, *,
         model.config.update({"epsg": epsg})
     model.config.update({"storevel": 1})
     model.write()
+    validate_built_sfincs_native_physics(plan.base_model_root, config)
     return {
         "status": "built",
         "base_model_root": plan.base_model_root,
         "built": is_built_sfincs_base(plan.base_model_root),
     }
+
+
+def _should_rebuild_stale_native_physics(config: dict, exc: RuntimeError) -> bool:
+    """Return true when an existing base predates required native SFINCS physics."""
+    drivers = set(config.get("event_drivers") or [])
+    infiltration_cfg = (
+        config.get("inland_coupling", {})
+        .get("infiltration", {})
+        or {}
+    )
+    rain_on_grid = bool(drivers & {"rainfall", "soil_moisture"})
+    infiltration_required = bool(infiltration_cfg.get("enabled", True))
+    text = str(exc)
+    return bool(
+        rain_on_grid
+        and infiltration_required
+        and (
+            "lacks active native infiltration" in text
+            or "spatial roughness" in text
+            or "subgrid file has no roughness" in text
+        )
+    )
 
 
 def _snap_handoff_locations_to_domain_boundary(handoff, config, paths, *, domain_region=None):
@@ -806,18 +1397,28 @@ def _select_upstream_stream_boundary_intersection(point, rivers, candidates, han
     river_uid = int(river_pool.loc[river_index].get("_boundary_river_uid", river_index))
     same_river = candidates[candidates["_boundary_river_uid"] == river_uid].copy()
     if same_river.empty:
-        raise ValueError(
-            f"Reviewed handoff {handoff_row.get('sfincs_handoff_id')} nearest stream reach "
-            "does not intersect the SFINCS boundary; review the coverage box or route to a larger Wflow domain."
+        return _select_nearest_stream_boundary_intersection(
+            point,
+            rivers,
+            candidates,
+            submodel_id,
+            review_status="review_required_stream_boundary_nearest_reach_fallback",
         )
 
     gage_measure = float(river.project(point))
     same_river["stream_measure_m"] = [float(river.project(candidate)) for candidate in same_river.geometry]
     upstream = same_river[same_river["stream_measure_m"] <= gage_measure + 1.0e-6].copy()
     if upstream.empty:
-        raise ValueError(
-            f"Reviewed handoff {handoff_row.get('sfincs_handoff_id')} has no upstream "
-            "stream/SFINCS-boundary crossing on the matched stream reach; review flow direction and domain extent."
+        same_river["stream_seed_distance_m"] = same_river.geometry.distance(point)
+        selected = same_river.sort_values("stream_seed_distance_m").iloc[0]
+        return _stream_boundary_selection(
+            selected,
+            distances,
+            river_index,
+            gage_measure,
+            same_river_count=len(same_river),
+            selected_count=0,
+            review_status="review_required_stream_boundary_direction_fallback",
         )
 
     upstream = upstream.sort_values("stream_measure_m")
@@ -832,7 +1433,14 @@ def _select_upstream_stream_boundary_intersection(point, rivers, candidates, han
     )
 
 
-def _select_nearest_stream_boundary_intersection(point, rivers, candidates, submodel_id: str) -> dict:
+def _select_nearest_stream_boundary_intersection(
+    point,
+    rivers,
+    candidates,
+    submodel_id: str,
+    *,
+    review_status="review_required_stream_boundary_intersection",
+) -> dict:
     candidate_pool = candidates
     if submodel_id and "wflow_submodel_id" in candidates.columns:
         submodel_candidates = candidates[candidates["wflow_submodel_id"].astype(str) == submodel_id]
@@ -856,20 +1464,29 @@ def _select_nearest_stream_boundary_intersection(point, rivers, candidates, subm
         gage_measure,
         same_river_count=len(candidate_pool),
         selected_count=len(candidate_pool),
+        review_status=review_status,
     )
 
 
 def _is_crossing_derived_handoff(handoff_row) -> bool:
-    handoff_id = str(handoff_row.get("sfincs_handoff_id", "") or "")
-    site_no = str(handoff_row.get("site_no", "") or "")
-    return bool(handoff_id) and handoff_id == site_no
+    placement = str(handoff_row.get("handoff_placement", "") or "").lower()
+    return placement in STREAM_BOUNDARY_HANDOFF_MODES
 
 
-def _stream_boundary_selection(selected, distances, river_index, gage_measure, *, same_river_count, selected_count) -> dict:
+def _stream_boundary_selection(
+    selected,
+    distances,
+    river_index,
+    gage_measure,
+    *,
+    same_river_count,
+    selected_count,
+    review_status="review_required_stream_boundary_intersection",
+) -> dict:
     return {
         "geometry": selected.geometry,
         "handoff_placement": "stream_boundary_intersection",
-        "handoff_location_review_status": "review_required_stream_boundary_intersection",
+        "handoff_location_review_status": review_status,
         "stream_boundary_river_index": int(selected["river_index"]),
         "stream_boundary_river_id": str(selected["river_id"]),
         "stream_boundary_river_source": str(selected.get("river_geometry_source", "")),
@@ -901,6 +1518,22 @@ def _sfincs_domain_wflow_submodel_ids(config, location_root: Path, assigned: gpd
             )
         ]
     return sorted(assigned["wflow_submodel_id"].dropna().astype(str).unique().tolist())
+
+
+def _single_domain_wflow_submodel_id(config, location_root: Path, sfincs_domain_id: str) -> str | None:
+    manifest = _location_path(
+        location_root,
+        config.get("sfincs_domain_set", {}).get("domain_manifest", "data/sfincs/domains/domain_set.yaml"),
+    )
+    if not manifest.exists():
+        return None
+    payload = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
+    for domain in payload.get("domains", []):
+        if str(domain.get("sfincs_domain_id")) != str(sfincs_domain_id):
+            continue
+        submodel_ids = [str(value) for value in domain.get("wflow_submodel_ids", ()) if str(value).strip()]
+        return submodel_ids[0] if submodel_ids else None
+    return None
 
 
 def _domain_base_plan(config, paths, domain: dict) -> InlandSfincsBasePlan:
@@ -987,7 +1620,13 @@ def _crossing_handoff_sources(config, location_root: Path) -> gpd.GeoDataFrame:
 
 def _accepted_handoff_gages(config, location_root: Path) -> gpd.GeoDataFrame:
     outlet_source = str(config.get("wflow", {}).get("domain_set", {}).get("outlet_source", "reviewed_streamgages"))
-    if outlet_source in {"stream_boundary_crossings", "encompassing_huc"}:
+    if outlet_source in {
+        "stream_boundary_crossings",
+        "encompassing_huc",
+        "boundary_handoff_watershed",
+        "stream_boundary_watershed",
+        "sfincs_boundary_watershed",
+    }:
         return _crossing_handoff_sources(config, location_root)
     network_value = (
         config.get("wflow", {})

@@ -1,5 +1,5 @@
 setup_grid_from_region:
-  res: 100
+  res: 60
   crs: EPSG:32617
   rotated: true
 

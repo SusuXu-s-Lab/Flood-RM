@@ -7,6 +7,7 @@ from design_events.collect_sources.workflow import (
 )
 from design_events.collect_sources.workflow import prepare_collection_prerequisites
 from design_events.collect_sources.workflow import run_collect
+from design_events.collect_sources.aorc_sst import collect_aorc_wflow_baseline_warmup
 from design_events.collect_sources.usgs_streamgages import build_reviewed_streamgage_decisions
 
 __all__ = [
@@ -14,6 +15,7 @@ __all__ = [
     "SourceCollectionStep",
     "build_reviewed_streamgage_decisions",
     "build_source_collection_plan",
+    "collect_aorc_wflow_baseline_warmup",
     "prepare_collection_prerequisites",
     "run_collect",
 ]

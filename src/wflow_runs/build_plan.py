@@ -17,6 +17,7 @@ from shapely.ops import unary_union
 
 from wflow_runs.coupled_handoff import (
     STREAM_BOUNDARY_HANDOFF_MODES,
+    read_stream_boundary_handoff_location_artifacts,
     read_stream_boundary_handoff_locations,
 )
 
@@ -69,6 +70,7 @@ DEFAULT_US_WFLOW_SOURCE_STRATEGY = {
     "hydrography": {
         "preferred": "us_hydrography",
         "hydromt_basemap": "us_hydrography_basemap",
+        "river_geometry": "nhdplus_hr_river_geometry",
         "api": "hydromt_gis_flw_d8_from_dem",
         "fallback": "merit_hydro",
     },
@@ -164,14 +166,26 @@ def build_wflow_data_catalog(config, paths) -> Path:
         .get("event_precip", "data/wflow/events/<event_id>/precip.nc")
     )
     event_temp_pet = (
-        config.get("collection", {})
-        .get("nwm", {})
-        .get("event_temp_pet", "data/wflow/events/<event_id>/temp_pet.nc")
+        (wflow.get("event_forcing", {}) or {})
+        .get("temp_pet", {})
+        .get(
+            "event_temp_pet",
+            config.get("collection", {})
+            .get("aorc_sst", {})
+            .get("event_temp_pet", "data/wflow/events/<event_id>/temp_pet.nc"),
+        )
     )
     national_hydrography = config.get("collection", {}).get("national_hydrography", {})
     hydromt_basemap = national_hydrography.get(
         "hydromt_basemap",
         "data/wflow/hydrography/us_hydrography_basemap.nc",
+    )
+    river_geometry = national_hydrography.get(
+        "river_geometry",
+        "data/sources/national_hydrography/nhdplus_hr_river_geometry.gpkg",
+    )
+    river_geometry_required = _wflow_build_uses_river_geometry(
+        _location_path(location_root, wflow.get("build_config", "wflow_build.yml"))
     )
     sources = config.get("static_sources", {})
     wflow_extent = sources.get("wflow_collection_extent", {})
@@ -191,6 +205,7 @@ def build_wflow_data_catalog(config, paths) -> Path:
         "data/wflow/static/ssurgo_wflow_soil_parameters.nc",
     )
     strategy = plan_wflow_us_source_strategy(config)
+    river_geometry_source = strategy.river_geometry_source or "nhdplus_hr_river_geometry"
     catalog = {
         "meta": {
             "roots": [".."],
@@ -212,6 +227,17 @@ def build_wflow_data_catalog(config, paths) -> Path:
             "driver": {"name": "pyogrio"},
             "uri": _absolute_location_path(location_root, streamgage_network),
             "metadata": {"crs": reference_crs, "category": "hydrography"},
+        },
+        river_geometry_source: {
+            "data_type": "GeoDataFrame",
+            "driver": {"name": "pyogrio"},
+            "uri": _absolute_location_path(location_root, river_geometry),
+            "metadata": {
+                "crs": reference_crs,
+                "category": "hydrography",
+                "required_for_build": river_geometry_required,
+                "required_columns": ["rivwth", "rivdph", "qbankfull"],
+            },
         },
         # ESA WorldCover landcover collected in 01_region_setup. Named
         # `esa_worldcover` so HydroMT-Wflow setup_lulcmaps auto-resolves its
@@ -258,6 +284,19 @@ def build_wflow_data_catalog(config, paths) -> Path:
     catalog = _normalize_catalog_metadata(catalog)
     catalog_path.write_text(yaml.safe_dump(catalog, sort_keys=False), encoding="utf-8")
     return catalog_path
+
+
+def _wflow_build_uses_river_geometry(build_config: Path) -> bool:
+    if not Path(build_config).exists():
+        return True
+    workflow = yaml.safe_load(Path(build_config).read_text(encoding="utf-8")) or {}
+    steps = workflow.get("steps") if isinstance(workflow.get("steps"), list) else [workflow]
+    for step in steps:
+        if not isinstance(step, dict) or "setup_rivers" not in step:
+            continue
+        river_geom = (step.get("setup_rivers") or {}).get("river_geom_fn")
+        return river_geom not in (None, "")
+    return False
 
 
 def wflow_catalog_source_readiness(catalog_path: str | Path) -> list[dict]:
@@ -475,6 +514,8 @@ def plan_wflow_domain_set(config, paths) -> WflowDomainSetPlan:
     ``stream_boundary_crossings`` derives them from where streams cross each SFINCS box.
     """
     outlet_source = str(config.get("wflow", {}).get("domain_set", {}).get("outlet_source", "reviewed_streamgages"))
+    if outlet_source in {"boundary_handoff_watershed", "stream_boundary_watershed", "sfincs_boundary_watershed"}:
+        return plan_wflow_domain_set_from_boundary_handoff_watersheds(config, paths)
     if outlet_source == "encompassing_huc":
         return plan_wflow_domain_set_from_encompassing_huc(config, paths)
     if outlet_source == "stream_boundary_crossings":
@@ -539,6 +580,280 @@ def plan_wflow_domain_set_from_stream_boundary_crossings(config, paths) -> Wflow
         submodels=tuple(submodels),
         issues=tuple(issues),
     )
+
+
+def plan_wflow_domain_set_from_boundary_handoff_watersheds(config, paths) -> WflowDomainSetPlan:
+    """Plan one Wflow watershed per SFINCS domain from its boundary inflow points.
+
+    Unlike ``stream_boundary_crossings`` this does not create a Wflow model per crossing.
+    Unlike ``encompassing_huc`` it does not keep the whole HUC that contains the SFINCS
+    coverage box. The HydroMT build region is a documented ``subbasin`` region whose
+    outlets are the stream/coverage-boundary inflow points that feed the SFINCS domain.
+    """
+    from sfincs_runs.build_base.crossings import coverage_box_crossings
+
+    location_root = _location_root(paths)
+    domain_set = config.get("wflow", {}).get("domain_set", {})
+    crossings_cfg = domain_set.get("crossings", {})
+    project_name = str(config.get("project", {}).get("name", location_root.name))
+    min_uparea_km2 = float(crossings_cfg.get("min_uparea_km2", 5.0))
+
+    coverage_path, boxes = _sfincs_coverage_boxes(config, location_root)
+    if not coverage_path.exists():
+        return WflowDomainSetPlan(
+            coverage_path,
+            "missing_coverage_bbox",
+            0,
+            0,
+            0,
+            (),
+            (f"SFINCS coverage source is missing: {coverage_path}",),
+        )
+    if boxes.empty:
+        return WflowDomainSetPlan(
+            coverage_path,
+            "missing_coverage_bbox",
+            0,
+            0,
+            0,
+            (),
+            (f"SFINCS coverage source has no polygons: {coverage_path}",),
+        )
+
+    network_path = _location_path(
+        location_root,
+        config.get("wflow", {})
+        .get("streamgage_network", {})
+        .get("reviewed_network", "data/sources/usgs_streamgages/streamgage_network.geojson"),
+    )
+    accepted_gages = _accepted_streamgages_frame(network_path)
+    artifact_submodels = _boundary_handoff_submodels_from_source_artifacts(
+        config,
+        location_root,
+        boxes,
+        accepted_gages=accepted_gages,
+        project_name=project_name,
+        min_uparea_km2=min_uparea_km2,
+    )
+    if artifact_submodels:
+        return WflowDomainSetPlan(
+            reviewed_network=coverage_path,
+            status="ready",
+            gage_count=len(accepted_gages),
+            submodel_count=len(artifact_submodels),
+            handoff_count=sum(len(submodel["handoff_points"]) for submodel in artifact_submodels),
+            submodels=tuple(artifact_submodels),
+            issues=(),
+        )
+
+    try:
+        rivers = _load_crossing_rivers(config, location_root)
+    except FileNotFoundError as exc:
+        return WflowDomainSetPlan(coverage_path, "missing_river_geometry", 0, 0, 0, (), (str(exc),))
+
+    crossings = coverage_box_crossings(
+        boxes,
+        rivers,
+        project_name=project_name,
+        min_uparea_km2=min_uparea_km2,
+    )
+    if crossings.empty:
+        return WflowDomainSetPlan(
+            coverage_path,
+            "review_required",
+            0,
+            0,
+            0,
+            (),
+            (f"no stream/coverage-box inflow crossings above {min_uparea_km2} km2",),
+        )
+
+    submodels = []
+    for domain_id, group in crossings.groupby("sfincs_domain_id", sort=True):
+        group = group.sort_values("uparea_km2", ascending=False).reset_index(drop=True)
+        handoff_points = [
+            {
+                "sfincs_handoff_id": str(row["sfincs_handoff_id"]),
+                "sfincs_domain_id": str(domain_id),
+                "lon": float(row.geometry.x),
+                "lat": float(row.geometry.y),
+                "uparea_km2": float(row["uparea_km2"]),
+            }
+            for _, row in group.iterrows()
+        ]
+        region = _hydromt_boundary_handoff_subbasin_region(handoff_points, min_uparea_km2=min_uparea_km2)
+        submodels.append(
+            {
+                "wflow_submodel_id": str(domain_id),
+                "region_kind": "subbasin",
+                "region": region,
+                "outlet_region": deepcopy(region),
+                "subbasin_geometry": None,
+                "sfincs_domain_ids": [str(domain_id)],
+                "sfincs_handoff_ids": [point["sfincs_handoff_id"] for point in handoff_points],
+                "handoff_points": handoff_points,
+                "gauge_site_nos": (),
+                "frequency_basis": (),
+                "role_counts": {},
+                "watershed_source": "hydromt_subbasin_boundary_handoff_points",
+            }
+        )
+
+    return WflowDomainSetPlan(
+        reviewed_network=coverage_path,
+        status="ready",
+        gage_count=len(accepted_gages),
+        submodel_count=len(submodels),
+        handoff_count=sum(len(submodel["handoff_points"]) for submodel in submodels),
+        submodels=tuple(submodels),
+        issues=(),
+    )
+
+
+def _boundary_handoff_submodels_from_source_artifacts(
+    config: dict,
+    location_root: Path,
+    boxes: gpd.GeoDataFrame,
+    *,
+    accepted_gages: list[dict],
+    project_name: str,
+    min_uparea_km2: float | None,
+) -> list[dict]:
+    count = len(boxes)
+    domain_ids = {
+        _coverage_domain_id(box_row, project_name, int(index), count)
+        for index, box_row in boxes.reset_index(drop=True).iterrows()
+    }
+    points_by_domain = _source_artifact_handoff_points_by_domain(
+        config,
+        location_root,
+        boxes,
+        project_name=project_name,
+    )
+    if not points_by_domain or set(points_by_domain) != domain_ids:
+        return []
+
+    submodels = []
+    gages_by_domain = _accepted_streamgages_by_sfincs_domain(accepted_gages, boxes, project_name)
+    for domain_id in sorted(points_by_domain):
+        handoff_points = points_by_domain[domain_id]
+        domain_gages = gages_by_domain.get(str(domain_id), [])
+        region = _hydromt_boundary_handoff_subbasin_region(handoff_points, min_uparea_km2=min_uparea_km2)
+        submodels.append(
+            {
+                "wflow_submodel_id": str(domain_id),
+                "region_kind": "subbasin",
+                "region": region,
+                "outlet_region": deepcopy(region),
+                "subbasin_geometry": None,
+                "sfincs_domain_ids": [str(domain_id)],
+                "sfincs_handoff_ids": [point["sfincs_handoff_id"] for point in handoff_points],
+                "handoff_points": handoff_points,
+                "gauge_site_nos": _sorted_values(gage.get("site_no") for gage in domain_gages),
+                "frequency_basis": _sorted_values(gage.get("frequency_basis") for gage in domain_gages),
+                "role_counts": _role_counts(domain_gages),
+                "watershed_source": "hydromt_sfincs_handoff_source_artifacts",
+            }
+        )
+    return submodels
+
+
+def _accepted_streamgages_by_sfincs_domain(
+    accepted_gages,
+    boxes: gpd.GeoDataFrame,
+    project_name: str,
+) -> dict[str, list[dict]]:
+    by_domain: dict[str, list[dict]] = {}
+    if hasattr(accepted_gages, "to_dict"):
+        gage_records = accepted_gages.to_dict("records")
+    else:
+        gage_records = list(accepted_gages)
+    domain_ids = {
+        _coverage_domain_id(box_row, project_name, int(index), len(boxes))
+        for index, box_row in boxes.reset_index(drop=True).iterrows()
+    }
+    for gage in gage_records:
+        domain_id = str(gage.get("sfincs_domain_id") or "")
+        if domain_id in domain_ids:
+            by_domain.setdefault(domain_id, []).append(gage)
+    if by_domain:
+        return by_domain
+
+    boxes_wgs = boxes.to_crs("EPSG:4326") if boxes.crs is not None else boxes
+    for gage in gage_records:
+        try:
+            point = Point(float(gage["longitude"]), float(gage["latitude"]))
+        except Exception:
+            continue
+        for index, box_row in boxes_wgs.reset_index(drop=True).iterrows():
+            if box_row.geometry is not None and box_row.geometry.intersects(point):
+                domain_id = _coverage_domain_id(box_row, project_name, int(index), len(boxes_wgs))
+                by_domain.setdefault(domain_id, []).append(gage)
+    return by_domain
+
+
+def _source_artifact_handoff_points_by_domain(
+    config: dict,
+    location_root: Path,
+    boxes: gpd.GeoDataFrame,
+    *,
+    project_name: str,
+) -> dict[str, list[dict]]:
+    locations = read_stream_boundary_handoff_location_artifacts(
+        config,
+        location_root,
+        location_path=_location_path,
+    )
+    if locations is None or locations.empty:
+        return {}
+
+    count = len(boxes)
+    domain_ids = {
+        _coverage_domain_id(box_row, project_name, int(index), count)
+        for index, box_row in boxes.reset_index(drop=True).iterrows()
+    }
+    locations = locations[locations["sfincs_domain_id"].astype(str).isin(domain_ids)].copy()
+    if locations.empty:
+        return {}
+
+    locations = locations.to_crs("EPSG:4326")
+    uparea_col = "uparea" if "uparea" in locations else "uparea_km2" if "uparea_km2" in locations else None
+    if uparea_col is None:
+        locations["_uparea_km2"] = float("nan")
+        uparea_col = "_uparea_km2"
+    points_by_domain: dict[str, list[dict]] = {}
+    for domain_id, group in locations.groupby("sfincs_domain_id", sort=True):
+        group = group.copy()
+        group["_uparea_sort"] = pd.to_numeric(group[uparea_col], errors="coerce").fillna(-1.0)
+        group = group.sort_values(["_uparea_sort", "sfincs_handoff_id"], ascending=[False, True]).reset_index(drop=True)
+        points_by_domain[str(domain_id)] = [
+            {
+                "sfincs_handoff_id": str(row["sfincs_handoff_id"]),
+                "sfincs_domain_id": str(domain_id),
+                "lon": float(row.geometry.x),
+                "lat": float(row.geometry.y),
+                "uparea_km2": float(row["_uparea_sort"]) if float(row["_uparea_sort"]) >= 0 else float("nan"),
+            }
+            for _, row in group.iterrows()
+        ]
+    return points_by_domain
+
+
+def _hydromt_boundary_handoff_subbasin_region(handoff_points: list[dict], *, min_uparea_km2: float | None) -> dict:
+    """Return a HydroMT hydrographic subbasin region for one SFINCS domain.
+
+    HydroMT accepts a single outlet as ``{"subbasin": [x, y]}`` and multiple
+    outlets as ``{"subbasin": [[x1, x2], [y1, y2]]}``. The ``uparea`` value is a
+    stream threshold used for snapping, not an externally-derived watershed area.
+    """
+    if not handoff_points:
+        raise ValueError("Boundary-handoff Wflow region requires at least one handoff point")
+    lons = [float(point["lon"]) for point in handoff_points]
+    lats = [float(point["lat"]) for point in handoff_points]
+    region = {"subbasin": [lons[0], lats[0]] if len(handoff_points) == 1 else [lons, lats]}
+    if min_uparea_km2 is not None and float(min_uparea_km2) > 0:
+        region["uparea"] = float(min_uparea_km2)
+    return region
 
 
 def _coverage_domain_id(row, project_name: str, index: int, count: int) -> str:
@@ -685,7 +1000,13 @@ def plan_wflow_domain_set_from_encompassing_huc(config, paths) -> WflowDomainSet
     )
     accepted_gages = _accepted_streamgages_frame(network_path)
     crossings = coverage_box_crossings(boxes, rivers, project_name=project_name, min_uparea_km2=min_uparea_km2)
-    if crossings.empty:
+    artifact_handoff_points = _source_artifact_handoff_points_by_domain(
+        config,
+        location_root,
+        boxes,
+        project_name=project_name,
+    )
+    if crossings.empty and not artifact_handoff_points:
         return WflowDomainSetPlan(coverage_path, "review_required", 0, 0, 0, (), (f"no stream/coverage-box inflow crossings above {min_uparea_km2} km2",))
 
     huc_root = _location_path(location_root, huc_cfg.get("root", "data/wflow/domain_huc"))
@@ -697,7 +1018,7 @@ def plan_wflow_domain_set_from_encompassing_huc(config, paths) -> WflowDomainSet
     for index, box_row in boxes.iterrows():
         domain_id = coverage_domain_id(box_row, project_name, int(index), count)
         box_crossings = crossings[crossings["sfincs_domain_id"] == domain_id]
-        if box_crossings.empty:
+        if box_crossings.empty and domain_id not in artifact_handoff_points:
             issues.append(f"{domain_id}: no inflow crossings above {min_uparea_km2} km2")
             continue
         try:
@@ -721,7 +1042,7 @@ def plan_wflow_domain_set_from_encompassing_huc(config, paths) -> WflowDomainSet
         ).to_file(huc_path, driver="GeoJSON")
         huc_gages = _streamgages_in_geometry(accepted_gages, selected["geometry"])
 
-        handoff_points = [
+        handoff_points = artifact_handoff_points.get(domain_id) or [
             {
                 "sfincs_handoff_id": str(row["sfincs_handoff_id"]),
                 "sfincs_domain_id": domain_id,
@@ -1008,26 +1329,28 @@ def write_wflow_subbasin_fabric_from_nhdplus(config, paths) -> dict:
     rows = []
     diagnostics = []
     for submodel in plan.submodels:
-        outlet_lon, outlet_lat = submodel.get("outlet_region", submodel["region"])["subbasin"]
-        outlet = gpd.GeoDataFrame(
-            {"_outlet": [submodel["wflow_submodel_id"]]},
-            geometry=[Point(float(outlet_lon), float(outlet_lat))],
-            crs="EPSG:4326",
+        selected_catchments, outlet_matches, method = _select_submodel_upstream_nhdplus_catchments(
+            submodel,
+            rivers,
+            catchments,
         )
-        match = _match_nhdplus_outlet(outlet, rivers, catchments)
-        selected_catchments, method = _select_upstream_nhdplus_catchments(rivers, catchments, match["river_index"], match["catchment_index"])
         geometry = selected_catchments.geometry.union_all()
         nhdplus_area_km2 = _equal_area_km2(geometry)
-        reviewed_area_km2 = submodel.get("region", {}).get("uparea") if isinstance(submodel.get("region"), dict) else None
+        reviewed_area_km2 = _reviewed_submodel_handoff_area_km2(submodel)
         area_difference_pct = _area_difference_pct(nhdplus_area_km2, reviewed_area_km2)
         area_match_status = _area_match_status(area_difference_pct)
-        review_status = "review_required_nhdplus_upstream" if method == "routed_upstream_catchments" else "review_required_nearest_catchment_only"
+        review_status = (
+            "review_required_nhdplus_upstream"
+            if "routed_upstream_catchments" in method
+            else "review_required_nearest_catchment_only"
+        )
+        representative = outlet_matches[0]
         rows.append(
             {
                 "wflow_submodel_id": submodel["wflow_submodel_id"],
                 "region_role": "handoff_drainage",
                 "sfincs_handoff_ids": ",".join(submodel["sfincs_handoff_ids"]),
-                "sfincs_boundary_id": next(iter(submodel["sfincs_handoff_ids"]), ""),
+                "sfincs_boundary_id": ",".join(submodel["sfincs_handoff_ids"]),
                 "sfincs_boundary_type": "discharge",
                 "sfincs_forcing_target": handoff.get("target", "sfincs_discharge_forcing"),
                 "wflow_source_variable": handoff.get("source_variable", "river_q"),
@@ -1036,8 +1359,8 @@ def write_wflow_subbasin_fabric_from_nhdplus(config, paths) -> dict:
                     "river_water__volume_flow_rate",
                 ),
                 "gauge_site_nos": ",".join(submodel["gauge_site_nos"]),
-                "outlet_lon": float(outlet_lon),
-                "outlet_lat": float(outlet_lat),
+                "outlet_lon": float(representative["lon"]),
+                "outlet_lat": float(representative["lat"]),
                 "catchment_count": int(len(selected_catchments)),
                 "nhdplus_area_km2": round(nhdplus_area_km2, 3),
                 "reviewed_drainage_area_km2": round(float(reviewed_area_km2), 3) if reviewed_area_km2 is not None else float("nan"),
@@ -1049,91 +1372,30 @@ def write_wflow_subbasin_fabric_from_nhdplus(config, paths) -> dict:
                 "geometry": geometry,
             }
         )
-        diagnostics.append(
-            {
-                "wflow_submodel_id": submodel["wflow_submodel_id"],
-                "outlet_lon": float(outlet_lon),
-                "outlet_lat": float(outlet_lat),
-                "matched_river_index": int(match["river_index"]),
-                "matched_catchment_index": int(match["catchment_index"]),
-                "river_snap_distance_m": float(match["river_distance_m"]),
-                "catchment_match_distance_m": float(match["catchment_distance_m"]),
-                "catchment_count": int(len(selected_catchments)),
-                "nhdplus_area_km2": round(nhdplus_area_km2, 3),
-                "reviewed_drainage_area_km2": round(float(reviewed_area_km2), 3) if reviewed_area_km2 is not None else float("nan"),
-                "area_difference_pct": round(area_difference_pct, 3) if area_difference_pct is not None else float("nan"),
-                "area_match_status": area_match_status,
-                "aggregation_method": method,
-                "review_status": review_status,
-            }
-        )
+        for match in outlet_matches:
+            diagnostics.append(
+                {
+                    "wflow_submodel_id": submodel["wflow_submodel_id"],
+                    "sfincs_handoff_id": match["sfincs_handoff_id"],
+                    "outlet_lon": float(match["lon"]),
+                    "outlet_lat": float(match["lat"]),
+                    "matched_river_index": int(match["river_index"]),
+                    "matched_catchment_index": int(match["catchment_index"]),
+                    "river_snap_distance_m": float(match["river_distance_m"]),
+                    "catchment_match_distance_m": float(match["catchment_distance_m"]),
+                    "catchment_count": int(len(selected_catchments)),
+                    "nhdplus_area_km2": round(nhdplus_area_km2, 3),
+                    "reviewed_drainage_area_km2": round(float(reviewed_area_km2), 3) if reviewed_area_km2 is not None else float("nan"),
+                    "area_difference_pct": round(area_difference_pct, 3) if area_difference_pct is not None else float("nan"),
+                    "area_match_status": area_match_status,
+                    "aggregation_method": method,
+                    "review_status": review_status,
+                }
+            )
 
     handoff_rows = list(rows)
     submodel_count = len(handoff_rows)
     handoff_catchment_count = int(sum(int(row["catchment_count"]) for row in handoff_rows))
-
-    # Enforce that the NHD/Wflow domain set covers the full SMART-DS evaluation
-    # footprint and power network: add a reviewed `evaluation_coverage` region
-    # built from every NHDPlus catchment that intersects those targets, without
-    # disturbing the routed handoff subbasins that define the SFINCS discharge.
-    coverage_targets = _resolve_coverage_targets(location_root, config)
-    coverage_geometry = None
-    coverage_catchment_count = 0
-    coverage_metrics = {}
-    if coverage_targets:
-        target_union = unary_union([geom for _, geom in coverage_targets])
-        coverage_catchments = catchments[catchments.intersects(target_union)]
-        if not coverage_catchments.empty:
-            coverage_geometry = coverage_catchments.geometry.union_all()
-            coverage_catchment_count = int(len(coverage_catchments))
-        domain_geoms = [row["geometry"] for row in handoff_rows]
-        if coverage_geometry is not None:
-            domain_geoms.append(coverage_geometry)
-        domain_union = unary_union(domain_geoms) if domain_geoms else None
-        coverage_metrics = _coverage_metrics(domain_union, coverage_targets)
-        if coverage_geometry is not None:
-            rows.append(
-                {
-                    "wflow_submodel_id": "evaluation_coverage",
-                    "region_role": "evaluation_coverage",
-                    "sfincs_handoff_ids": "",
-                    "sfincs_boundary_id": "",
-                    "sfincs_boundary_type": "",
-                    "sfincs_forcing_target": "",
-                    "wflow_source_variable": "",
-                    "wflow_source_standard_name": "",
-                    "gauge_site_nos": "",
-                    "outlet_lon": float("nan"),
-                    "outlet_lat": float("nan"),
-                    "catchment_count": coverage_catchment_count,
-                    "nhdplus_area_km2": round(_equal_area_km2(coverage_geometry), 3) if coverage_geometry is not None else float("nan"),
-                    "reviewed_drainage_area_km2": float("nan"),
-                    "area_difference_pct": float("nan"),
-                    "area_match_status": "not_applicable",
-                    "aggregation_method": "footprint_intersecting_catchments",
-                    "review_status": "review_required_evaluation_coverage",
-                    "source": "USGS NHDPlus HR NHDPlusCatchment (SMART-DS evaluation coverage)",
-                    "geometry": coverage_geometry,
-                }
-            )
-            diagnostics.append(
-                {
-                    "wflow_submodel_id": "evaluation_coverage",
-                    "outlet_lon": float("nan"),
-                    "outlet_lat": float("nan"),
-                    "matched_river_index": -1,
-                    "matched_catchment_index": -1,
-                    "river_snap_distance_m": float("nan"),
-                    "catchment_match_distance_m": float("nan"),
-                    "catchment_count": coverage_catchment_count,
-                    "nhdplus_area_km2": round(_equal_area_km2(coverage_geometry), 3) if coverage_geometry is not None else float("nan"),
-                    "reviewed_drainage_area_km2": float("nan"),
-                    "area_difference_pct": float("nan"),
-                    "area_match_status": "not_applicable",
-                    "aggregation_method": "footprint_intersecting_catchments",
-                    "review_status": "review_required_evaluation_coverage",
-                }
-            )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     diagnostics_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1141,6 +1403,10 @@ def write_wflow_subbasin_fabric_from_nhdplus(config, paths) -> dict:
     fabric.to_file(output_path, driver="GPKG")
     fabric_dir = _subbasin_fabric_directory(output_path)
     fabric_dir.mkdir(parents=True, exist_ok=True)
+    member_ids = {str(value) for value in fabric["wflow_submodel_id"]}
+    for stale_path in fabric_dir.glob("*.geojson"):
+        if stale_path.stem not in member_ids:
+            stale_path.unlink()
     subbasin_geometry_files = []
     coverage_geometry_file = None
     for _, row in fabric.iterrows():
@@ -1166,17 +1432,89 @@ def write_wflow_subbasin_fabric_from_nhdplus(config, paths) -> dict:
         ),
         "statuses": tuple(sorted(fabric["review_status"].unique())),
         "coverage_region": str(coverage_geometry_file) if coverage_geometry_file else None,
-        "coverage_catchment_count": coverage_catchment_count,
-        "coverage_status": (
-            "evaluation_coverage_written"
-            if coverage_geometry is not None
-            else ("no_intersecting_catchments" if coverage_targets else "no_coverage_targets")
-        ),
+        "coverage_catchment_count": 0,
+        "coverage_status": "handoff_watershed_only",
     }
-    for name, metric in coverage_metrics.items():
-        result[f"{name}_uncovered_km2"] = round(metric["uncovered_km2"], 3)
-        result[f"{name}_within_domain"] = bool(metric["covered"])
     return result
+
+
+def _select_submodel_upstream_nhdplus_catchments(submodel: dict, rivers, catchments):
+    selections = []
+    matches = []
+    methods = []
+    for handoff in _submodel_handoff_points(submodel):
+        outlet = gpd.GeoDataFrame(
+            {"_outlet": [handoff["sfincs_handoff_id"]]},
+            geometry=[Point(float(handoff["lon"]), float(handoff["lat"]))],
+            crs="EPSG:4326",
+        )
+        match = _match_nhdplus_outlet(outlet, rivers, catchments)
+        selected, method = _select_upstream_nhdplus_catchments(
+            rivers,
+            catchments,
+            match["river_index"],
+            match["catchment_index"],
+        )
+        selections.append(selected)
+        methods.append(method)
+        matches.append({**handoff, **match})
+    if not selections:
+        raise ValueError(f"Wflow Submodel {submodel.get('wflow_submodel_id')} has no handoff outlet points")
+    selected_catchments = gpd.GeoDataFrame(
+        pd.concat(selections, ignore_index=True),
+        geometry="geometry",
+        crs=catchments.crs,
+    )
+    id_col = _find_column(selected_catchments, ("featureid", "nhdplusid", "comid", "gridcode"))
+    if id_col:
+        selected_catchments = selected_catchments.drop_duplicates(subset=[id_col]).copy()
+    else:
+        selected_catchments = selected_catchments.drop_duplicates(subset=["geometry"]).copy()
+    method = methods[0] if len(set(methods)) == 1 else "union_" + "_and_".join(sorted(set(methods)))
+    return selected_catchments, matches, method
+
+
+def _submodel_handoff_points(submodel: dict) -> list[dict]:
+    points = submodel.get("handoff_points")
+    if points:
+        return [
+            {
+                "sfincs_handoff_id": str(point["sfincs_handoff_id"]),
+                "lon": float(point["lon"]),
+                "lat": float(point["lat"]),
+                "uparea_km2": float(point["uparea_km2"]) if point.get("uparea_km2") is not None else np.nan,
+            }
+            for point in points
+        ]
+
+    outlet_xy = (submodel.get("outlet_region") or submodel.get("region") or {}).get("subbasin")
+    if not outlet_xy:
+        return []
+    handoff_id = next(
+        (str(value) for value in submodel.get("sfincs_handoff_ids", ()) if value),
+        str(submodel.get("wflow_submodel_id", "")),
+    )
+    uparea = (submodel.get("region") or {}).get("uparea")
+    return [
+        {
+            "sfincs_handoff_id": handoff_id,
+            "lon": float(outlet_xy[0]),
+            "lat": float(outlet_xy[1]),
+            "uparea_km2": float(uparea) if uparea is not None else np.nan,
+        }
+    ]
+
+
+def _reviewed_submodel_handoff_area_km2(submodel: dict) -> float | None:
+    points = _submodel_handoff_points(submodel)
+    areas = [
+        float(point["uparea_km2"])
+        for point in points
+        if point.get("uparea_km2") is not None and not pd.isna(point.get("uparea_km2"))
+    ]
+    if not areas:
+        return None
+    return float(sum(areas)) if len(areas) > 1 else float(areas[0])
 
 
 def _area_difference_pct(nhdplus_area_km2, reviewed_area_km2) -> float | None:
@@ -1209,11 +1547,21 @@ def write_wflow_sfincs_gauge_locations(config, paths, submodel: dict, *, output=
     )
     if not network_path.exists():
         raise FileNotFoundError(network_path)
-    handoff_ids = {str(value) for value in submodel.get("sfincs_handoff_ids", ()) if value}
-    if not handoff_ids:
+    configured_handoff_ids = {str(value) for value in submodel.get("sfincs_handoff_ids", ()) if value}
+    if not configured_handoff_ids:
         raise ValueError(f"Wflow Submodel {submodel.get('wflow_submodel_id')} has no SFINCS handoff IDs")
 
-    boundary_locations = _sfincs_boundary_handoff_locations(config, location_root, handoff_ids)
+    boundary_locations = _sfincs_boundary_handoff_locations(
+        config,
+        location_root,
+        configured_handoff_ids,
+        submodel_id=str(submodel.get("wflow_submodel_id", "")),
+    )
+    handoff_ids = (
+        set(boundary_locations["sfincs_handoff_id"].astype(str))
+        if boundary_locations is not None
+        else configured_handoff_ids
+    )
     gages = boundary_locations if boundary_locations is not None else gpd.GeoDataFrame(_accepted_streamgages(network_path))
     if gages.empty:
         raise ValueError(f"Reviewed Streamgage Network has no accepted active gages: {network_path}")
@@ -1235,13 +1583,19 @@ def write_wflow_sfincs_gauge_locations(config, paths, submodel: dict, *, output=
     use_boundary_locations = boundary_locations is not None
     if "drainage_area_sqmi" in gauges:
         gauges["uparea"] = pd.to_numeric(gauges["drainage_area_sqmi"], errors="coerce").map(_drainage_area_km2)
+    elif "uparea" in gauges:
+        gauges["uparea"] = pd.to_numeric(gauges["uparea"], errors="coerce")
     else:
         gauges["uparea"] = np.nan
     if not use_boundary_locations and gauges["uparea"].isna().any():
         missing_sites = ", ".join(gauges.loc[gauges["uparea"].isna(), "site_no"].astype(str))
         raise ValueError(f"Reviewed SFINCS handoff gages are missing drainage_area_sqmi for snap_uparea: {missing_sites}")
     if use_boundary_locations:
-        gauges["gauge_location_source"] = "sfincs_stream_boundary_intersection"
+        if "gauge_location_source" not in gauges:
+            gauges["gauge_location_source"] = "sfincs_stream_boundary_intersection"
+        else:
+            missing_source = gauges["gauge_location_source"].isna() | gauges["gauge_location_source"].astype(str).str.strip().eq("")
+            gauges.loc[missing_source, "gauge_location_source"] = "sfincs_stream_boundary_intersection"
 
     out_path = _location_path(
         location_root,
@@ -1269,19 +1623,40 @@ def write_wflow_sfincs_gauge_locations(config, paths, submodel: dict, *, output=
     return {
         "gauges_fn": out_path,
         "gauge_count": int(len(gauges)),
-        "snap_uparea": not use_boundary_locations,
+        "snap_to_river": True,
+        "snap_uparea": not gauges["uparea"].isna().any(),
         "wflow_submodel_id": str(submodel["wflow_submodel_id"]),
         "sfincs_handoff_ids": tuple(gauges["sfincs_handoff_id"].astype(str)),
     }
 
 
-def _sfincs_boundary_handoff_locations(config, location_root: Path, handoff_ids: set[str]) -> gpd.GeoDataFrame | None:
-    return read_stream_boundary_handoff_locations(
+def _sfincs_boundary_handoff_locations(
+    config,
+    location_root: Path,
+    handoff_ids: set[str],
+    *,
+    submodel_id: str | None = None,
+) -> gpd.GeoDataFrame | None:
+    if submodel_id:
+        locations = read_stream_boundary_handoff_location_artifacts(
+            config,
+            location_root,
+            location_path=_location_path,
+        )
+        if locations is not None and "wflow_submodel_id" in locations:
+            locations = locations[locations["wflow_submodel_id"].astype(str) == str(submodel_id)].copy()
+            if not locations.empty:
+                return locations
+
+    locations = read_stream_boundary_handoff_locations(
         config,
         location_root,
         handoff_ids,
         location_path=_location_path,
     )
+    if locations is not None:
+        return locations
+    return None
 
 
 def write_wflow_crossing_gauge_locations(config, paths, submodel: dict, *, output=None) -> dict:
@@ -1345,10 +1720,17 @@ def write_wflow_crossing_gauge_locations(config, paths, submodel: dict, *, outpu
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     gauges.to_file(out_path, driver="GeoJSON")
+    outlet_source = str(config.get("wflow", {}).get("domain_set", {}).get("outlet_source", "reviewed_streamgages"))
+    snap_uparea = bool(gauges["uparea"].notna().all()) and outlet_source not in {
+        "boundary_handoff_watershed",
+        "stream_boundary_watershed",
+        "sfincs_boundary_watershed",
+    }
     return {
         "gauges_fn": out_path,
         "gauge_count": int(len(gauges)),
-        "snap_uparea": bool(gauges["uparea"].notna().all()),
+        "snap_to_river": True,
+        "snap_uparea": snap_uparea,
         "wflow_submodel_id": str(submodel["wflow_submodel_id"]),
         "sfincs_handoff_ids": tuple(record["sfincs_handoff_id"] for record in records),
     }
@@ -1437,12 +1819,26 @@ def write_wflow_observation_gauge_locations(config, paths, submodel: dict, *, ou
 def _write_wflow_sfincs_handoff_gauge_locations(config, paths, submodel: dict) -> dict:
     """Write Wflow gauges at the active SFINCS handoff geometry for this submodel."""
     outlet_source = str(config.get("wflow", {}).get("domain_set", {}).get("outlet_source", "reviewed_streamgages"))
-    if outlet_source == "stream_boundary_crossings":
+    if outlet_source in {"stream_boundary_crossings", "boundary_handoff_watershed", "stream_boundary_watershed", "sfincs_boundary_watershed"}:
+        location_root = _location_root(paths)
+        handoff_ids = {str(value) for value in submodel.get("sfincs_handoff_ids", ()) if value}
+        if _sfincs_boundary_handoff_locations(
+            config,
+            location_root,
+            handoff_ids,
+            submodel_id=str(submodel.get("wflow_submodel_id", "")),
+        ) is not None:
+            return write_wflow_sfincs_gauge_locations(config, paths, submodel)
         return write_wflow_crossing_gauge_locations(config, paths, submodel)
     if outlet_source == "encompassing_huc":
         location_root = _location_root(paths)
         handoff_ids = {str(value) for value in submodel.get("sfincs_handoff_ids", ()) if value}
-        if handoff_ids and _sfincs_boundary_handoff_locations(config, location_root, handoff_ids) is not None:
+        if handoff_ids and _sfincs_boundary_handoff_locations(
+            config,
+            location_root,
+            handoff_ids,
+            submodel_id=str(submodel.get("wflow_submodel_id", "")),
+        ) is not None:
             return write_wflow_sfincs_gauge_locations(config, paths, submodel)
         return write_wflow_crossing_gauge_locations(config, paths, submodel)
     return write_wflow_sfincs_gauge_locations(config, paths, submodel)
@@ -1453,8 +1849,10 @@ def build_wflow_steps_for_submodel(
     submodel: dict,
     *,
     gauges_fn=None,
+    sfincs_snap_to_river: bool = True,
     sfincs_snap_uparea: bool = True,
     obs_gauges_fn=None,
+    obs_snap_to_river: bool = True,
     obs_snap_uparea: bool = True,
     handoff_config: dict | None = None,
 ) -> list[dict]:
@@ -1486,6 +1884,7 @@ def build_wflow_steps_for_submodel(
             gauges_fn,
             basename="sfincs",
             gauge_toml_param=toml_param,
+            snap_to_river=bool(sfincs_snap_to_river),
             snap_uparea=bool(sfincs_snap_uparea),
             derive_subcatch=True,
             replace_existing_unnamed=True,
@@ -1496,6 +1895,7 @@ def build_wflow_steps_for_submodel(
             obs_gauges_fn,
             basename="usgs",
             gauge_toml_param=toml_param,
+            snap_to_river=bool(obs_snap_to_river),
             snap_uparea=bool(obs_snap_uparea),
             derive_subcatch=False,
         )
@@ -1520,7 +1920,14 @@ def build_wflow_submodel(
     submodel = _select_wflow_submodel(domain_plan.submodels, submodel_id)
     selected_id = str(submodel["wflow_submodel_id"])
     model_root = build_plan.base_model_root / selected_id
+    apply_repairs = _legacy_wflow_repairs_enabled(config)
     if _is_built_wflow_model(model_root) and not force:
+        if apply_repairs:
+            repair_wflow_staticmaps_nodata(model_root)
+            repair_wflow_river_width(model_root)
+            repair_wflow_canopy_parameters(model_root)
+            repair_wflow_gauge_map(model_root)
+        qa = _wflow_staticmap_qa(model_root, config)
         catalog_path = build_wflow_data_catalog(config, paths) if write_catalog else build_plan.data_catalog
         model = _open_wflow_model(model_root, catalog_path, model_cls=model_cls, mode="r")
         return {
@@ -1529,6 +1936,7 @@ def build_wflow_submodel(
             "base_model_root": model_root,
             "data_catalog": catalog_path,
             "built": True,
+            "staticmap_qa_status": _qa_status(qa),
             "model": model,
         }
     if force and model_root.exists():
@@ -1554,8 +1962,12 @@ def build_wflow_submodel(
     # source points, those exact points become the Wflow gauges handed to SFINCS.
     outlet_source = str(config.get("wflow", {}).get("domain_set", {}).get("outlet_source", "reviewed_streamgages"))
     gauge_summary = _write_wflow_sfincs_handoff_gauge_locations(config, paths, submodel)
-    if outlet_source == "stream_boundary_crossings":
-        obs_gauge_summary = None
+    if outlet_source in {"stream_boundary_crossings", "boundary_handoff_watershed", "stream_boundary_watershed", "sfincs_boundary_watershed"}:
+        obs_gauge_summary = (
+            write_wflow_observation_gauge_locations(config, paths, submodel)
+            if submodel.get("gauge_site_nos")
+            else None
+        )
     elif outlet_source == "encompassing_huc":
         obs_gauge_summary = (
             write_wflow_observation_gauge_locations(config, paths, submodel)
@@ -1569,13 +1981,20 @@ def build_wflow_submodel(
         build_plan.build_config,
         submodel,
         gauges_fn=gauge_summary["gauges_fn"],
+        sfincs_snap_to_river=bool(gauge_summary.get("snap_to_river", True)),
         sfincs_snap_uparea=bool(gauge_summary.get("snap_uparea", True)),
         obs_gauges_fn=obs_gauge_summary["gauges_fn"] if obs_gauge_summary else None,
+        obs_snap_to_river=obs_gauge_summary.get("snap_to_river", True) if obs_gauge_summary else True,
         obs_snap_uparea=obs_gauge_summary["snap_uparea"] if obs_gauge_summary else True,
         handoff_config=config.get("wflow", {}).get("handoff", {}),
     )
     model = _open_wflow_model(model_root, catalog_path, model_cls=model_cls, mode="w+")
     model.build(steps=steps)
+    if apply_repairs:
+        repair_wflow_staticmaps_nodata(model_root)
+        repair_wflow_river_width(model_root)
+        repair_wflow_canopy_parameters(model_root)
+    qa = _wflow_staticmap_qa(model_root, config)
     return {
         "status": "built",
         "wflow_submodel_id": selected_id,
@@ -1586,8 +2005,38 @@ def build_wflow_submodel(
         "observation_gauges_fn": obs_gauge_summary["gauges_fn"] if obs_gauge_summary else None,
         "observation_gauge_count": obs_gauge_summary["gauge_count"] if obs_gauge_summary else 0,
         "built": _is_built_wflow_model(model_root),
+        "staticmap_qa_status": _qa_status(qa),
         "model": model,
     }
+
+
+def _legacy_wflow_repairs_enabled(config: dict) -> bool:
+    return bool((config.get("wflow", {}) or {}).get("apply_legacy_repairs", False))
+
+
+def _wflow_staticmap_qa(model_root: Path, config: dict) -> pd.DataFrame:
+    try:
+        return validate_wflow_staticmaps_physics(
+            model_root,
+            river_upa_km2=config.get("inland_coupling", {}).get("discharge_forcing", {}).get("river_upa_km2"),
+            raise_on_error=False,
+        )
+    except FileNotFoundError as exc:
+        return pd.DataFrame(
+            [{"check": "staticmaps", "status": "not_available", "message": str(exc)}]
+        )
+
+
+def _qa_status(report: pd.DataFrame) -> str:
+    if report.empty:
+        return "unknown"
+    if (report["status"] == "not_available").any():
+        return "unknown"
+    if (report["status"] == "failed").any():
+        return "failed"
+    if (report["status"] == "review_required").any():
+        return "review_required"
+    return "passed"
 
 
 def _set_setup_gauges(
@@ -1596,6 +2045,7 @@ def _set_setup_gauges(
     *,
     basename: str,
     gauge_toml_param: str,
+    snap_to_river: bool = True,
     snap_uparea: bool = True,
     derive_subcatch: bool = True,
     replace_existing_unnamed: bool = False,
@@ -1610,7 +2060,7 @@ def _set_setup_gauges(
         "setup_gauges": {
             "gauges_fn": str(gauges_fn),
             "index_col": "index",
-            "snap_to_river": True,
+            "snap_to_river": bool(snap_to_river),
             "snap_uparea": bool(snap_uparea),
             "basename": basename,
             "gauge_toml_header": ["Q"],
@@ -1680,6 +2130,476 @@ def ensure_wflow_hydrography_basemap_nodata(config, paths) -> Path | None:
         encoding[name] = options
     _write_netcdf_atomically(raw, hydrography_path, encoding=encoding)
     return hydrography_path
+
+
+def validate_wflow_staticmaps_physics(
+    model_root,
+    *,
+    river_upa_km2: float | None = None,
+    require_variable_river_geometry: bool = True,
+    max_land_slope: float = 10.0,
+    raise_on_error: bool = True,
+) -> pd.DataFrame:
+    """QA Wflow staticmaps for nodata, river geometry, river mask, and slope issues."""
+    staticmaps_path = Path(model_root) / "staticmaps.nc"
+    if not staticmaps_path.exists():
+        raise FileNotFoundError(staticmaps_path)
+    rows: list[dict] = []
+    with xr.open_dataset(staticmaps_path, mask_and_scale=False) as ds:
+        _append_wflow_nodata_checks(rows, ds)
+        _append_wflow_river_geometry_checks(
+            rows,
+            ds,
+            require_variable_river_geometry=require_variable_river_geometry,
+        )
+        _append_wflow_slope_checks(rows, ds, max_land_slope=max_land_slope)
+        _append_wflow_river_mask_checks(rows, ds, river_upa_km2=river_upa_km2)
+    report = pd.DataFrame(rows)
+    failed = report[report["status"].isin(["failed", "review_required"])] if not report.empty else report
+    if raise_on_error and not failed.empty:
+        details = "; ".join(f"{row.check}: {row.message}" for row in failed.itertuples())
+        raise RuntimeError(f"Wflow staticmap QA failed for {staticmaps_path}: {details}")
+    return report
+
+
+def _append_wflow_nodata_checks(rows: list[dict], ds: xr.Dataset) -> None:
+    if {"subcatchment", "local_drain_direction"} - set(ds.data_vars):
+        rows.append({"check": "nodata", "status": "failed", "message": "missing subcatchment or local_drain_direction"})
+        return
+    subcatchment = np.asarray(ds["subcatchment"].values)
+    ldd = np.asarray(ds["local_drain_direction"].values)
+    intmin = np.iinfo(np.int32).min
+    bad_intmin = int(np.count_nonzero(subcatchment == intmin))
+    active_missing_ldd = int(np.count_nonzero((subcatchment != 0) & (ldd == 255)))
+    status = "passed" if bad_intmin == 0 and active_missing_ldd == 0 else "failed"
+    rows.append(
+        {
+            "check": "nodata",
+            "status": status,
+            "message": f"intmin_subcatchment={bad_intmin}; active_missing_ldd={active_missing_ldd}",
+        }
+    )
+
+
+def _append_wflow_river_geometry_checks(
+    rows: list[dict],
+    ds: xr.Dataset,
+    *,
+    require_variable_river_geometry: bool,
+) -> None:
+    active = _wflow_active_river_cells(ds)
+    for name in ("river_width", "river_depth"):
+        if name not in ds:
+            rows.append({"check": name, "status": "failed", "message": f"missing {name}"})
+            continue
+        values = np.asarray(ds[name].values, dtype=float)
+        valid = values[active & np.isfinite(values) & (values > 0)]
+        unique = int(len(np.unique(np.round(valid, 4)))) if valid.size else 0
+        status = "passed"
+        if valid.size == 0:
+            status = "failed"
+        elif require_variable_river_geometry and unique <= 1:
+            status = "review_required"
+        rows.append(
+            {
+                "check": name,
+                "status": status,
+                "message": f"valid_cells={int(valid.size)}; unique_values={unique}",
+            }
+        )
+
+
+def _append_wflow_slope_checks(rows: list[dict], ds: xr.Dataset, *, max_land_slope: float) -> None:
+    for name in ("land_slope", "river_slope"):
+        if name not in ds:
+            continue
+        values = np.asarray(ds[name].values, dtype=float)
+        finite = values[np.isfinite(values)]
+        vmax = float(np.nanmax(finite)) if finite.size else np.nan
+        status = "passed"
+        if name == "land_slope" and finite.size and vmax > float(max_land_slope):
+            status = "review_required"
+        rows.append({"check": name, "status": status, "message": f"max={vmax:g}"})
+
+
+def _append_wflow_river_mask_checks(rows: list[dict], ds: xr.Dataset, *, river_upa_km2: float | None) -> None:
+    if "river_mask" not in ds:
+        rows.append({"check": "river_mask", "status": "failed", "message": "missing river_mask"})
+        return
+    active = _wflow_active_river_cells(ds)
+    count = int(np.count_nonzero(active))
+    message = f"active_river_cells={count}"
+    if river_upa_km2 is not None and "meta_upstream_area" in ds:
+        uparea = np.asarray(ds["meta_upstream_area"].values, dtype=float)
+        below = int(np.count_nonzero(active & np.isfinite(uparea) & (uparea < float(river_upa_km2))))
+        status = "passed" if below == 0 else "review_required"
+        message += f"; below_river_upa_threshold={below}"
+    else:
+        status = "passed" if count > 0 else "failed"
+    rows.append({"check": "river_mask", "status": status, "message": message})
+
+
+def _wflow_active_river_cells(ds: xr.Dataset) -> np.ndarray:
+    if "river_mask" not in ds:
+        first = next(iter(ds.data_vars.values()))
+        return np.zeros(first.shape, dtype=bool)
+    return np.asarray(ds["river_mask"].values) > 0
+
+
+def repair_wflow_staticmaps_nodata(model_root) -> Path | None:
+    """Retag HydroMT-Wflow integer-minimum subcatchment nodata as inactive cells."""
+    staticmaps_path = Path(model_root) / "staticmaps.nc"
+    if not staticmaps_path.exists():
+        return None
+
+    ds = xr.open_dataset(staticmaps_path, mask_and_scale=False)
+    try:
+        if "subcatchment" not in ds:
+            return staticmaps_path
+        subcatchment = ds["subcatchment"]
+        if not np.issubdtype(subcatchment.dtype, np.number):
+            return staticmaps_path
+        values = np.asarray(subcatchment.values)
+        sentinel = np.iinfo(np.int32).min
+        bad = values == sentinel
+        if np.issubdtype(values.dtype, np.floating):
+            bad = bad | ~np.isfinite(values)
+        needs_repair = (
+            bool(bad.any())
+            or subcatchment.dtype != np.dtype("int32")
+            or subcatchment.attrs.get("_FillValue") != 0
+        )
+        if not needs_repair:
+            return staticmaps_path
+    finally:
+        ds.close()
+
+    raw = xr.open_dataset(staticmaps_path, mask_and_scale=False).load()
+    raw.close()
+    values = np.asarray(raw["subcatchment"].values)
+    bad = values == sentinel
+    if np.issubdtype(values.dtype, np.floating):
+        bad = bad | ~np.isfinite(values)
+    repaired = np.where(bad, 0, values).astype("int32", copy=False)
+    raw["subcatchment"].values = repaired
+    raw["subcatchment"].attrs.pop("_FillValue", None)
+    _write_netcdf_atomically(
+        raw,
+        staticmaps_path,
+        encoding={"subcatchment": {"dtype": "int32", "_FillValue": np.int32(0)}},
+    )
+    return staticmaps_path
+
+
+def repair_wflow_river_width(model_root, *, min_width_m: float = 30.0) -> Path | None:
+    """Add a minimal Wflow river-width map/config entry to legacy generated models.
+
+    HydroMT-Wflow writes ``river_width`` when ``setup_rivers.river_geom_fn`` is set. Some
+    older generated bases predate that recipe contract, so keep them runnable by filling
+    river cells with the recipe's conservative ``min_rivwth`` fallback.
+    """
+    model_root = Path(model_root)
+    staticmaps_path = model_root / "staticmaps.nc"
+    toml_path = model_root / "wflow_sbm.toml"
+    repaired: Path | None = None
+
+    if staticmaps_path.exists():
+        ds = xr.open_dataset(staticmaps_path, mask_and_scale=False)
+        try:
+            needs_staticmap = "river_width" not in ds and "river_mask" in ds
+        finally:
+            ds.close()
+        if needs_staticmap:
+            raw = xr.open_dataset(staticmaps_path, mask_and_scale=False).load()
+            raw.close()
+            river_mask = raw["river_mask"]
+            fill_value = np.float32(-9999.0)
+            values = np.where(
+                np.asarray(river_mask.values) > 0,
+                np.float32(min_width_m),
+                fill_value,
+            ).astype("float32", copy=False)
+            raw["river_width"] = xr.DataArray(
+                values,
+                dims=river_mask.dims,
+                coords=river_mask.coords,
+                attrs={"units": "m"},
+            )
+            raw["river_width"].attrs.pop("_FillValue", None)
+            _write_netcdf_atomically(
+                raw,
+                staticmaps_path,
+                encoding={"river_width": {"dtype": "float32", "_FillValue": fill_value}},
+            )
+            repaired = staticmaps_path
+
+    if toml_path.exists() and _ensure_wflow_static_toml_mapping(toml_path, "river__width", "river_width"):
+        repaired = repaired or toml_path
+    return repaired
+
+
+def repair_wflow_canopy_parameters(model_root) -> Path | None:
+    """Add non-cyclic Wflow canopy parameters missing from legacy HydroMT outputs."""
+    model_root = Path(model_root)
+    staticmaps_path = model_root / "staticmaps.nc"
+    toml_path = model_root / "wflow_sbm.toml"
+    repaired: Path | None = None
+
+    if staticmaps_path.exists():
+        ds = xr.open_dataset(staticmaps_path, mask_and_scale=False)
+        try:
+            has_inputs = {"vegetation_kext", "vegetation_leaf_storage", "vegetation_wood_storage"} <= set(ds.data_vars)
+            needs_gap = "vegetation_canopy_gap_fraction" not in ds
+            needs_storage = "vegetation_water_storage_capacity" not in ds
+        finally:
+            ds.close()
+        if has_inputs and (needs_gap or needs_storage):
+            raw = xr.open_dataset(staticmaps_path, mask_and_scale=False).load()
+            raw.close()
+            kext = raw["vegetation_kext"]
+            fill_value = np.float32(-999.0)
+            valid = _valid_static_values(kext)
+            if needs_gap:
+                gap = np.full(kext.shape, fill_value, dtype="float32")
+                gap[valid] = np.exp(-np.clip(np.asarray(kext.values, dtype="float32")[valid], 0.0, None))
+                raw["vegetation_canopy_gap_fraction"] = xr.DataArray(
+                    gap,
+                    dims=kext.dims,
+                    coords=kext.coords,
+                    attrs={"units": "-"},
+                )
+                raw["vegetation_canopy_gap_fraction"].attrs.pop("_FillValue", None)
+            if needs_storage:
+                leaf = np.asarray(raw["vegetation_leaf_storage"].values, dtype="float32")
+                wood = np.asarray(raw["vegetation_wood_storage"].values, dtype="float32")
+                storage = np.full(kext.shape, fill_value, dtype="float32")
+                storage[valid] = np.maximum(leaf[valid] + wood[valid], 0.0)
+                raw["vegetation_water_storage_capacity"] = xr.DataArray(
+                    storage,
+                    dims=kext.dims,
+                    coords=kext.coords,
+                    attrs={"units": "mm"},
+                )
+                raw["vegetation_water_storage_capacity"].attrs.pop("_FillValue", None)
+            encoding = {}
+            if needs_gap:
+                encoding["vegetation_canopy_gap_fraction"] = {"dtype": "float32", "_FillValue": fill_value}
+            if needs_storage:
+                encoding["vegetation_water_storage_capacity"] = {"dtype": "float32", "_FillValue": fill_value}
+            _write_netcdf_atomically(raw, staticmaps_path, encoding=encoding)
+            repaired = staticmaps_path
+
+    if toml_path.exists():
+        if _ensure_wflow_static_toml_mapping(
+            toml_path,
+            "vegetation_canopy__gap_fraction",
+            "vegetation_canopy_gap_fraction",
+        ):
+            repaired = repaired or toml_path
+        if _ensure_wflow_static_toml_mapping(
+            toml_path,
+            "vegetation_water__storage_capacity",
+            "vegetation_water_storage_capacity",
+        ):
+            repaired = repaired or toml_path
+    return repaired
+
+
+def repair_wflow_gauge_map(model_root, *, basename: str = "sfincs") -> Path | None:
+    """Ensure every handoff gauge is represented on an active Wflow river cell.
+
+    SFINCS-native inflow points are intentionally placed on the SFINCS boundary, which
+    can fall just off the rasterized Wflow river cells. Wflow only writes a Q column for
+    gauges present in the integer gauge map, so snap the stored handoff points to nearest
+    active river cells while keeping the staticgeoms identity table unchanged.
+    """
+    model_root = Path(model_root)
+    staticmaps_path = model_root / "staticmaps.nc"
+    gauges_path = model_root / "staticgeoms" / f"gauges_{basename}.geojson"
+    gauge_var = f"gauges_{basename}"
+    if not staticmaps_path.exists() or not gauges_path.exists():
+        return None
+
+    gauges = gpd.read_file(gauges_path)
+    if gauges.empty:
+        return None
+    if "index" not in gauges:
+        gauges = gauges.copy()
+        gauges["index"] = np.arange(1, len(gauges) + 1, dtype=np.int32)
+    expected = {
+        int(value)
+        for value in pd.to_numeric(gauges["index"], errors="coerce").dropna().astype(int)
+        if int(value) > 0
+    }
+    if not expected:
+        return None
+
+    ds = xr.open_dataset(staticmaps_path, mask_and_scale=False)
+    try:
+        if "river_mask" not in ds:
+            return None
+        river_mask = ds["river_mask"]
+        y_dim, x_dim = _staticmap_yx_dims(river_mask)
+        existing = set()
+        existing_on_river = False
+        if gauge_var in ds:
+            values = np.asarray(ds[gauge_var].values)
+            existing = {int(value) for value in np.unique(values) if int(value) > 0}
+            active = _active_wflow_river_mask(ds)
+            existing_on_river = all(bool(np.any((values == idx) & active)) for idx in expected)
+        if expected <= existing and existing_on_river:
+            return staticmaps_path
+    finally:
+        ds.close()
+
+    raw = xr.open_dataset(staticmaps_path, mask_and_scale=False).load()
+    raw.close()
+    river_mask = raw["river_mask"]
+    y_dim, x_dim = _staticmap_yx_dims(river_mask)
+    active = _active_wflow_river_mask(raw)
+    active_rows, active_cols = np.where(active)
+    if active_rows.size == 0:
+        return None
+
+    xs = np.asarray(raw.coords[x_dim].values, dtype=float)
+    ys = np.asarray(raw.coords[y_dim].values, dtype=float)
+    active_x = xs[active_cols]
+    active_y = ys[active_rows]
+
+    target_crs = _staticmaps_crs(raw, x_dim=x_dim, y_dim=y_dim)
+    if target_crs is not None and gauges.crs is not None:
+        gauges = gauges.to_crs(target_crs)
+
+    values = np.zeros(river_mask.shape, dtype=np.int32)
+    used: set[tuple[int, int]] = set()
+    for _, row in gauges.iterrows():
+        try:
+            gauge_index = int(row["index"])
+        except (TypeError, ValueError):
+            continue
+        if gauge_index <= 0 or row.geometry is None or row.geometry.is_empty:
+            continue
+        dx = active_x - float(row.geometry.x)
+        dy = active_y - float(row.geometry.y)
+        order = np.argsort((dx * dx) + (dy * dy))
+        for active_pos in order:
+            cell = (int(active_rows[active_pos]), int(active_cols[active_pos]))
+            if cell not in used:
+                used.add(cell)
+                values[cell] = np.int32(gauge_index)
+                break
+
+    raw[gauge_var] = xr.DataArray(
+        values,
+        dims=river_mask.dims,
+        coords=river_mask.coords,
+        attrs={"long_name": f"{basename} gauge locations"},
+    )
+    raw[gauge_var].attrs.pop("_FillValue", None)
+    _write_netcdf_atomically(
+        raw,
+        staticmaps_path,
+        encoding={gauge_var: {"dtype": "int32", "_FillValue": np.int32(0)}},
+    )
+    return staticmaps_path
+
+
+def _staticmap_yx_dims(data_array: xr.DataArray) -> tuple[str, str]:
+    dims = tuple(data_array.dims)
+    if len(dims) < 2:
+        raise ValueError(f"{data_array.name or 'staticmap'} must have at least two dimensions")
+    y_dim = next((name for name in ("y", "lat", "latitude") if name in dims), dims[-2])
+    x_dim = next((name for name in ("x", "lon", "longitude") if name in dims), dims[-1])
+    return y_dim, x_dim
+
+
+def _active_wflow_river_mask(ds: xr.Dataset) -> np.ndarray:
+    active = np.asarray(ds["river_mask"].values) > 0
+    if "subcatchment" not in ds:
+        return active
+    subcatchment = ds["subcatchment"]
+    sub_values = np.asarray(subcatchment.values)
+    fill_value = subcatchment.attrs.get("_FillValue", 0)
+    active = active & (sub_values != fill_value) & (sub_values != np.iinfo(np.int32).min)
+    if np.issubdtype(sub_values.dtype, np.floating):
+        active = active & np.isfinite(sub_values)
+    return active
+
+
+def _staticmaps_crs(ds: xr.Dataset, *, x_dim: str, y_dim: str):
+    spatial_ref = ds.coords.get("spatial_ref")
+    if spatial_ref is None:
+        spatial_ref = ds.get("spatial_ref")
+    if spatial_ref is not None:
+        crs_wkt = spatial_ref.attrs.get("crs_wkt") or spatial_ref.attrs.get("spatial_ref")
+        epsg = spatial_ref.attrs.get("epsg_code") or spatial_ref.attrs.get("epsg")
+        try:
+            from pyproj import CRS
+
+            if crs_wkt:
+                return CRS.from_wkt(crs_wkt)
+            if epsg:
+                return CRS.from_user_input(epsg)
+        except Exception:
+            pass
+    try:
+        xs = np.asarray(ds.coords[x_dim].values, dtype=float)
+        ys = np.asarray(ds.coords[y_dim].values, dtype=float)
+    except Exception:
+        return None
+    if np.nanmin(xs) >= -180 and np.nanmax(xs) <= 180 and np.nanmin(ys) >= -90 and np.nanmax(ys) <= 90:
+        return "EPSG:4326"
+    return None
+
+
+def _valid_static_values(data_array: xr.DataArray) -> np.ndarray:
+    values = np.asarray(data_array.values)
+    valid = np.isfinite(values) if np.issubdtype(values.dtype, np.floating) else np.ones(values.shape, dtype=bool)
+    fill_value = data_array.attrs.get("_FillValue")
+    if fill_value is None:
+        return valid
+    if isinstance(fill_value, float) and np.isnan(fill_value):
+        return valid & np.isfinite(values)
+    return valid & (values != fill_value)
+
+
+def _ensure_wflow_static_toml_mapping(toml_path: Path, standard_name: str, variable_name: str) -> bool:
+    """Ensure ``[input.static]`` maps a Wflow standard name to a staticmap variable."""
+    lines = toml_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    assignment = f'{standard_name} = "{variable_name}"\n'
+    if any(line.strip().startswith(f"{standard_name} =") for line in lines):
+        return False
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+
+    static_header = None
+    for index, line in enumerate(lines):
+        if line.strip() == "[input.static]":
+            static_header = index
+            break
+    if static_header is None:
+        if lines and lines[-1].strip():
+            lines.append("\n")
+        lines.extend(["[input.static]\n", assignment])
+        toml_path.write_text("".join(lines), encoding="utf-8")
+        return True
+
+    section_end = len(lines)
+    for index in range(static_header + 1, len(lines)):
+        stripped = lines[index].strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section_end = index
+            break
+
+    insert_at = static_header + 1
+    for index in range(static_header + 1, section_end):
+        stripped = lines[index].strip()
+        if stripped.startswith(("river__length =", "river__slope =")):
+            insert_at = index + 1
+
+    lines.insert(insert_at, assignment)
+    toml_path.write_text("".join(lines), encoding="utf-8")
+    return True
 
 
 def _select_wflow_submodel(submodels: tuple[dict, ...], submodel_id: str | None) -> dict:

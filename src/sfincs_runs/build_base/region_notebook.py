@@ -1798,7 +1798,14 @@ def _write_wflow_domain_artifacts(
             for submodel in wflow_domain_plan.submodels
         ]
         if write_crossing_gauges
-        and str(runtime_config["wflow"]["domain_set"].get("outlet_source")) in {"stream_boundary_crossings", "encompassing_huc"}
+        and str(runtime_config["wflow"]["domain_set"].get("outlet_source"))
+        in {
+            "stream_boundary_crossings",
+            "encompassing_huc",
+            "boundary_handoff_watershed",
+            "stream_boundary_watershed",
+            "sfincs_boundary_watershed",
+        }
         else []
     )
     if huc_mode:

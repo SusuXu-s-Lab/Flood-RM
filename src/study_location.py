@@ -834,7 +834,7 @@ def _inland_methodology_defaults() -> dict:
                     "enabled": True,
                     "review_required": True,
                     "allow_multiple_submodels": True,
-                    "outlet_source": "encompassing_huc",
+                    "outlet_source": "boundary_handoff_watershed",
                     "event_catalog_scope": "shared_across_domain_set",
                     "submodels": [],
                     "subbasin_fabric": "data/wflow/domain_set_subbasins.gpkg",

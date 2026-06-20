@@ -613,6 +613,7 @@ def run_sfincs_model(run_root, *, runner=None, require_map=True, config=None):
     run_root = Path(run_root)
     runner = runner or build_sfincs_runner(run_root, config=config)
     log_path = run_root / "sfincs_log.txt"
+    env = _sfincs_subprocess_env(config)
     with log_path.open("w", encoding="utf-8") as stream:
         proc = subprocess.run(
             runner,
@@ -621,6 +622,7 @@ def run_sfincs_model(run_root, *, runner=None, require_map=True, config=None):
             stderr=subprocess.STDOUT,
             text=True,
             check=False,
+            env=env,
         )
     if proc.returncode != 0:
         raise RuntimeError(f"SFINCS failed (exit {proc.returncode}). See {log_path}.")
@@ -633,6 +635,22 @@ def run_sfincs_model(run_root, *, runner=None, require_map=True, config=None):
         map_path=map_path,
         returncode=int(proc.returncode),
     )
+
+
+def _sfincs_subprocess_env(config=None):
+    """Return the subprocess environment for one SFINCS solver process."""
+    env = os.environ.copy()
+    debug_value = env.get("DEBUG")
+    if debug_value is not None and not str(debug_value).lstrip("-").isdigit():
+        env["DEBUG"] = "0"
+    run_cfg = (config or {}).get("scenario_run", {}) or {}
+    threads = run_cfg.get("threads", os.environ.get("SFINCS_THREADS"))
+    if threads not in (None, ""):
+        threads = int(threads)
+        if threads < 1:
+            raise ValueError("scenario_run.threads must be at least 1")
+        env["OMP_NUM_THREADS"] = str(threads)
+    return env
 
 
 def _event_manifest(base_model_root, forcing, *, n_bnd, include_precip, include_waves, support_window):
