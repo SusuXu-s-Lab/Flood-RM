@@ -14,7 +14,7 @@ from power.artifacts import POWER_GRID
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-SHARED_FRAGILITY_DIR = PROJECT_ROOT / "artifacts" / "shared" / "fragility"
+SHARED_FRAGILITY_DIR = PROJECT_ROOT / "artifacts" / "fragility"
 DEFAULT_CURVES_CSV = SHARED_FRAGILITY_DIR / "erad_flood_depth_curves.csv"
 FRAGILITY_DIR = POWER_GRID / "fragility"
 DEFAULT_MAPPING_CSV = FRAGILITY_DIR / "asset_type_mapping.csv"

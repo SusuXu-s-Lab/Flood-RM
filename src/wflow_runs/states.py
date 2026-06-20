@@ -89,6 +89,69 @@ def prepare_wflow_event_instate(event_model_root, base_model_root, *, state_name
     return {"source": str(source), "target": str(target), "configured": True}
 
 
+def prepare_wflow_cold_instates(
+    config: dict,
+    location_root,
+    *,
+    force: bool = False,
+    model_cls=None,
+) -> pd.DataFrame:
+    """Create native Wflow ``instate/instates.nc`` files with ``setup_cold_states``.
+
+    This is the lightweight local antecedent-state bootstrap. A fully dynamic
+    warmup can later replace these files by promoting solver-produced
+    ``outstate/outstates.nc`` to the same ``instate/instates.nc`` contract.
+    """
+    location_root = Path(location_root)
+    plan = plan_wflow_baseline_warmup_state(config, location_root)
+    timestamp = plan["warmup_start"]
+    base_root = resolve_wflow_base_root(config.get("wflow", {}) or {}, location_root)
+    rows = []
+    for submodel in _configured_wflow_submodels(config, location_root):
+        submodel_id = str(submodel["wflow_submodel_id"])
+        model_root = base_root / submodel_id
+        instate = model_root / "instate" / "instates.nc"
+        if instate.exists() and not force:
+            rows.append(
+                {
+                    "submodel_id": submodel_id,
+                    "instate": str(instate),
+                    "status": "reused",
+                    "message": "existing native Wflow instate",
+                }
+            )
+            continue
+        if not (model_root / "wflow_sbm.toml").exists() or not (model_root / "staticmaps.nc").exists():
+            rows.append(
+                {
+                    "submodel_id": submodel_id,
+                    "instate": str(instate),
+                    "status": "failed",
+                    "message": f"missing built Wflow model at {model_root}",
+                }
+            )
+            continue
+        cls = model_cls or _default_wflow_model_cls()
+        model = cls(root=str(model_root), mode="r+")
+        model.read()
+        model.setup_cold_states(timestamp=timestamp)
+        model.config.set("state.path_input", "instate/instates.nc")
+        model.config.set("state.path_output", "outstate/outstates.nc")
+        model.config.set("model.cold_start__flag", False)
+        instate.parent.mkdir(parents=True, exist_ok=True)
+        model.states.write(filename="instate/instates.nc")
+        model.config.write()
+        rows.append(
+            {
+                "submodel_id": submodel_id,
+                "instate": str(instate),
+                "status": "prepared",
+                "message": f"native setup_cold_states timestamp={pd.Timestamp(timestamp).isoformat()}",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def plan_wflow_baseline_warmup_state(config: dict, location_root, *, reference_time=None) -> pd.Series:
     """Plan the reusable Wflow antecedent-state baseline.
 
@@ -214,6 +277,12 @@ def resolve_wflow_base_root(wflow: dict, location_root) -> Path:
     if not base_root.is_absolute():
         base_root = Path(location_root) / base_root
     return base_root
+
+
+def _default_wflow_model_cls():
+    from hydromt_wflow import WflowSbmModel
+
+    return WflowSbmModel
 
 
 def _configured_wflow_submodels(config: dict, location_root) -> list[dict]:

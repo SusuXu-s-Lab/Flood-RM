@@ -541,6 +541,19 @@ class PowerModelsOnmExport:
     manifest_path: Path
 
 
+@dataclass(frozen=True)
+class OnmRunBundle:
+    """Paths emitted for one event-conditioned ONM run window."""
+
+    bundle_dir: Path
+    events_path: Path
+    runtime_args_path: Path
+    nominal_load_window_path: Path
+    load_uncertainty_path: Path
+    block_demand_summary_path: Path
+    run_manifest_path: Path
+
+
 _BUS_FIELDS = ("Bus1", "Bus2", "Bus")
 _FAULT_STUDY_SOURCE_IMPEDANCE = "Z1=[0.25, 0.25] Z0=[0.25, 0.25]"
 
@@ -638,10 +651,10 @@ def _drop_named_lines(dss_text: str, line_names: set[str]) -> str:
     return "\n".join(rows)
 
 
-def _switches_text_without_disable_commands(switches_path: Path) -> str:
+def _switches_text_without_disable_commands_from_text(switches_text: str) -> str:
     rows = []
     skip_continuation = False
-    for line in switches_path.read_text(encoding="utf-8").splitlines():
+    for line in switches_text.splitlines():
         stripped = line.strip()
         lowered = stripped.lower()
         if lowered.startswith("disable "):
@@ -655,6 +668,12 @@ def _switches_text_without_disable_commands(switches_path: Path) -> str:
         skip_continuation = False
         rows.append(line)
     return "\n".join(rows) + "\n"
+
+
+def _switches_text_without_disable_commands(switches_path: Path) -> str:
+    return _switches_text_without_disable_commands_from_text(
+        switches_path.read_text(encoding="utf-8")
+    )
 
 
 def _safe_dss_name(value: str) -> str:
@@ -712,19 +731,35 @@ def _append_yearly_loadshape(line: str, loadshape_by_load_name: dict[str, str]) 
     return f"{line} Yearly={loadshape}"
 
 
-def _der_generators_text(*, smart_ds_compat_dir: Path) -> tuple[str, dict[str, int]]:
+def _der_generators_text(
+    *,
+    smart_ds_compat_dir: Path,
+    feeder_ids: set[str] | None = None,
+) -> tuple[str, dict[str, int], dict[str, dict]]:
     der_path = smart_ds_compat_dir / "der_inventory.parquet"
     profile_path = smart_ds_compat_dir / "load_profile_assignments.parquet"
     if not der_path.exists() or not profile_path.exists():
-        return "! DER inventory or load-profile assignment artifact missing.\n", {"provisional": 0, "reopt_sized": 0}
+        return (
+            "! DER inventory or load-profile assignment artifact missing.\n",
+            {"provisional": 0, "reopt_sized": 0},
+            {},
+        )
 
     ders = pd.read_parquet(der_path)
+    if feeder_ids:
+        if "feeder_id" in ders.columns:
+            ders = ders[ders["feeder_id"].astype(str).isin(feeder_ids)].copy()
+        elif "bus" in ders.columns:
+            ders = ders[
+                ders["bus"].astype(str).map(lambda bus: bus.split("__", 1)[0]).isin(feeder_ids)
+            ].copy()
     profiles = pd.read_parquet(profile_path)
-    peak_by_load_asset_id = dict(
+    _peak_by_load_asset_id = dict(
         zip(profiles["load_asset_id"].astype(str), profiles["peak_kw"].astype(float), strict=False)
     )
 
     rows: list[str] = []
+    dss_settings: dict[str, dict] = {}
     provisional = 0
     reopt_sized = 0
     for der in ders.itertuples(index=False):
@@ -748,12 +783,15 @@ def _der_generators_text(*, smart_ds_compat_dir: Path) -> tuple[str, dict[str, i
             f"New Generator.{name} Bus1={der.bus} Phases={phases} kV={kv:.6g} "
             f"kW={genset_kw:.6g} pf=1 Model=1"
         )
+        dss_settings[f"Generator.{name}"] = {
+            "inverter": "GRID_FORMING",
+        }
     if provisional and not reopt_sized:
         rows.insert(0, "! No REopt-sized DER rows available; evidence rows held out of live OpenDSS generators.")
     return "\n".join(rows) + ("\n" if rows else ""), {
         "provisional": provisional,
         "reopt_sized": reopt_sized,
-    }
+    }, dss_settings
 
 
 def _prefixed_buscoords_text(feeder_dir: Path, feeder_id: str) -> str:
@@ -781,11 +819,51 @@ def _split_pmonm_settings(stage_b_settings: dict) -> tuple[dict, dict]:
 
     stage_b_payload = stage_b_settings.get("settings", {}) or {}
     pmonm_settings = {}
-    for section in ("settings", "load", "switch"):
+    for section in (
+        "settings",
+        "dss",
+        "bus",
+        "load",
+        "switch",
+        "line",
+        "transformer",
+        "generator",
+        "storage",
+        "solar",
+        "voltage_source",
+        "options",
+        "solvers",
+    ):
         if section in stage_b_payload:
             pmonm_settings[section] = stage_b_payload[section]
     metadata = dict(stage_b_settings)
     return pmonm_settings, metadata
+
+
+def _filter_stage_b_settings(stage_b_settings: dict, *, feeder_ids: set[str] | None) -> dict:
+    """Keep only settings that refer to selected feeders in pilot exports."""
+
+    if not feeder_ids:
+        return stage_b_settings
+    filtered = json.loads(json.dumps(stage_b_settings))
+    settings = filtered.get("settings", {}) or {}
+    switch_section = settings.get("switch")
+    if isinstance(switch_section, dict):
+        settings["switch"] = {
+            name: value
+            for name, value in switch_section.items()
+            if any(str(name).startswith(f"{feeder_id}__") for feeder_id in feeder_ids)
+            or any(str(value.get("switch_id", "")).find(feeder_id) >= 0 for feeder_id in feeder_ids)
+        }
+    microgrid_section = settings.get("microgrid")
+    if isinstance(microgrid_section, dict):
+        settings["microgrid"] = {
+            name: value
+            for name, value in microgrid_section.items()
+            if any(feeder_id in str(name) for feeder_id in feeder_ids)
+        }
+    filtered["settings"] = settings
+    return filtered
 
 
 def build_powermodels_onm_export(
@@ -794,6 +872,7 @@ def build_powermodels_onm_export(
     smart_ds_compat_dir: Path,
     output_dir: Path,
     asset_registry_dir: Path | None = None,
+    feeder_ids: Sequence[str] | None = None,
 ) -> PowerModelsOnmExport:
     """Build a single OpenDSS entrypoint and companions for PowerModelsONM.
 
@@ -809,10 +888,17 @@ def build_powermodels_onm_export(
         if asset_registry_dir is not None
         else feeder_opendss_dir.parent.parent / "asset_registry"
     )
+    selected_feeder_ids = {str(feeder_id) for feeder_id in feeder_ids or []}
     sources = pd.read_csv(asset_registry_dir / "sources.csv")
+    if selected_feeder_ids and "feeder_id" in sources.columns:
+        sources = sources[sources["feeder_id"].astype(str).isin(selected_feeder_ids)].copy()
     feeder_dirs = sorted(path for path in feeder_opendss_dir.iterdir() if path.is_dir())
+    if selected_feeder_ids:
+        feeder_dirs = [path for path in feeder_dirs if path.name in selected_feeder_ids]
     if not feeder_dirs:
         raise FileNotFoundError(f"no feeder OpenDSS directories under {feeder_opendss_dir}")
+    if sources.empty:
+        raise ValueError("no voltage sources remain after applying selected feeder_ids")
 
     linecodes_path = output_dir / "LineCodes.dss"
     transformers_path = output_dir / "Transformers.dss"
@@ -828,6 +914,8 @@ def build_powermodels_onm_export(
     manifest_path = output_dir / "manifest.json"
 
     switches = pd.read_parquet(smart_ds_compat_dir / "controllable_switches.parquet")
+    if selected_feeder_ids and "feeder_id" in switches.columns:
+        switches = switches[switches["feeder_id"].astype(str).isin(selected_feeder_ids)].copy()
     replaced_line_names = set(
         switches.loc[
             switches["opens_existing_line"].fillna(False),
@@ -840,7 +928,10 @@ def build_powermodels_onm_export(
         asset_registry_dir=asset_registry_dir,
         profiles_dir=profiles_dir,
     )
-    ders_text, der_export_counts = _der_generators_text(smart_ds_compat_dir=smart_ds_compat_dir)
+    ders_text, der_export_counts, der_dss_settings = _der_generators_text(
+        smart_ds_compat_dir=smart_ds_compat_dir,
+        feeder_ids=selected_feeder_ids or None,
+    )
 
     for filename, destination in [
         ("LineCodes.dss", linecodes_path),
@@ -889,11 +980,17 @@ def build_powermodels_onm_export(
         encoding="utf-8",
     )
     stage_b_settings = json.loads((smart_ds_compat_dir / "onm_settings.json").read_text(encoding="utf-8"))
+    stage_b_settings = _filter_stage_b_settings(
+        stage_b_settings,
+        feeder_ids=selected_feeder_ids or None,
+    )
     pmonm_settings, stage_b_metadata = _split_pmonm_settings(stage_b_settings)
+    if der_dss_settings:
+        pmonm_settings.setdefault("dss", {}).update(der_dss_settings)
     settings_path.write_text(json.dumps(pmonm_settings, indent=2, sort_keys=True), encoding="utf-8")
     stage_b_metadata_path.write_text(json.dumps(stage_b_metadata, indent=2, sort_keys=True), encoding="utf-8")
     switches_path.write_text(
-        _switches_text_without_disable_commands(smart_ds_compat_dir / "switches.dss"),
+        _switches_text_without_disable_commands_from_text(render_switches_dss(switches)),
         encoding="utf-8",
     )
 
@@ -937,6 +1034,8 @@ def build_powermodels_onm_export(
         "stage_b_onm_metadata": str(stage_b_metadata_path),
         "feeder_count": len(feeder_dirs),
         "source_count": len(sources),
+        "export_scope": "pilot" if selected_feeder_ids else "full",
+        "selected_feeder_ids": sorted(selected_feeder_ids),
         "gdm_bridge": {
             "package": "gdm",
             "available": True,
@@ -1034,15 +1133,9 @@ Converts the per-asset survival trajectory in ``asset_states.parquet`` into
 the input PMONM uses to schedule restoration actions over the optimization
 horizon. PMONM ingests a list of timestamped contingency events
 (``events.json``); each event tells the optimizer when a network element
-changes status. This serializer emits one ``breaker`` event per
-``available → failed`` transition, indexed by PMONM's 1-indexed
+changes status. This serializer emits one ``switch`` event per
+``available -> failed`` transition, indexed by PMONM's 1-indexed
 ``timestep`` field.
-
-Not yet wired into the live ONM export: ``event_window.build_event_window_bundle``
-(used by ``05_onm_export``) emits the load/uncertainty slices but omits these
-contingency events. Call ``build_onm_events`` from the notebook (or fold it into
-the bundle) when DNMG contingency scheduling is needed. The superseded
-``onm_run`` orchestrator that previously chained this in was removed (ADR-0015).
 
 Schema (PowerModelsONM input-events schema, R31 in
 ``simulated_data_protocol.md``):
@@ -1050,9 +1143,9 @@ Schema (PowerModelsONM input-events schema, R31 in
     [
       {
         "timestep": <int, 1-indexed>,
-        "event_type": "breaker",
+        "event_type": "switch",
         "affected_asset": "<element_type>.<dss_name>",
-        "event_data": {"status": "OPEN"}
+        "event_data": {"dispatchable": "NO", "state": "OPEN", "status": "ENABLED"}
       }
     ]
 
@@ -1149,9 +1242,13 @@ def build_onm_events(
         events.append(
             {
                 "timestep": timestep,
-                "event_type": "breaker",
+                "event_type": "switch",
                 "affected_asset": dss_element,
-                "event_data": {"status": "OPEN"},
+                "event_data": {
+                    "dispatchable": "NO",
+                    "state": "OPEN",
+                    "status": "ENABLED",
+                },
             }
         )
 
@@ -1181,12 +1278,210 @@ def _pmonm_timestep(transition_time: datetime, event_start: datetime) -> int:
     return max(1, int(delta_hours) + 1)
 
 
+def build_asset_to_dss_element_map(
+    *,
+    assets: pd.DataFrame,
+    controllable_switches: pd.DataFrame | None = None,
+) -> dict[str, str]:
+    """Map Marshfield asset ids to DSS element names visible to PowerModelsONM."""
+
+    class_by_table = {
+        "lines": "line",
+        "line": "line",
+        "switches": "line",
+        "transformers": "transformer",
+        "loads": "load",
+        "load_buses": "load",
+        "generators": "generator",
+        "storage": "storage",
+        "solar": "pvsystem",
+    }
+    mapping: dict[str, str] = {}
+    if not assets.empty:
+        for row in assets.itertuples(index=False):
+            source_table = str(getattr(row, "source_asset_table", "") or "")
+            source_name = str(getattr(row, "source_asset_name", "") or "")
+            asset_id = str(getattr(row, "asset_id", "") or "")
+            dss_class = class_by_table.get(source_table)
+            if asset_id and dss_class and source_name and source_name != "nan":
+                mapping[asset_id] = f"{dss_class}.{source_name}"
+
+    if controllable_switches is not None and not controllable_switches.empty:
+        for row in controllable_switches.itertuples(index=False):
+            switch_id = str(getattr(row, "switch_id", "") or "")
+            opendss_element = str(getattr(row, "opendss_element", "") or "")
+            if switch_id and "." in opendss_element:
+                dss_class, name = opendss_element.split(".", 1)
+                mapping[switch_id] = f"{dss_class.lower()}.{name}"
+    return mapping
+
+
+def _asset_state_rows_from_frame(asset_states: pd.DataFrame) -> list[AssetStateRow]:
+    rows: list[AssetStateRow] = []
+    for row in asset_states.itertuples(index=False):
+        timestamp = getattr(row, "timestamp")
+        if not isinstance(timestamp, datetime):
+            timestamp = pd.Timestamp(timestamp).to_pydatetime()
+        rows.append(
+            AssetStateRow(
+                event_id=str(getattr(row, "event_id")),
+                mc_draw=int(getattr(row, "mc_draw")),
+                timestamp=_coerce_utc(timestamp),
+                asset_id=str(getattr(row, "asset_id")),
+                state=str(getattr(row, "state")),
+            )
+        )
+    return rows
+
+
+def materialize_onm_run_bundle(
+    *,
+    export_dir: Path,
+    smart_ds_compat_dir: Path,
+    event_id: str,
+    mc_draw: int,
+    event_start: datetime,
+    horizon_hours: int = DEFAULT_FEMA_LIFELINES_HORIZON_HOURS,
+    asset_states: pd.DataFrame | Iterable[AssetStateRow] | None = None,
+    asset_to_dss_element: Mapping[str, str] | None = None,
+    uncertainty_band: float = DEFAULT_LOAD_UNCERTAINTY_BAND_FRACTION,
+) -> OnmRunBundle:
+    """Write the event-window sidecar files consumed by PMONM/DynaGrid runs."""
+
+    export_dir = Path(export_dir)
+    smart_ds_compat_dir = Path(smart_ds_compat_dir)
+    bundle_dir = export_dir / "events" / event_id / f"draw_{int(mc_draw)}"
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+
+    load_profiles = pd.read_parquet(smart_ds_compat_dir / "load_profile_assignments.parquet")
+    blocks = pd.read_parquet(smart_ds_compat_dir / "switch_bounded_load_blocks.parquet")
+    bundle = build_event_window_bundle(
+        event_start=event_start,
+        horizon_hours=horizon_hours,
+        load_profiles=load_profiles,
+        blocks=blocks,
+        sandbox_id="marshfield",
+        uncertainty_band=uncertainty_band,
+        event_id=event_id,
+        mc_draw=mc_draw,
+    )
+
+    if asset_states is None:
+        event_rows: list[AssetStateRow] = []
+    elif isinstance(asset_states, pd.DataFrame):
+        event_rows = _asset_state_rows_from_frame(asset_states)
+    else:
+        event_rows = list(asset_states)
+
+    if asset_to_dss_element is None:
+        assets_path = smart_ds_compat_dir / "assets.parquet"
+        switches_path = smart_ds_compat_dir / "controllable_switches.parquet"
+        asset_to_dss_element = build_asset_to_dss_element_map(
+            assets=pd.read_parquet(assets_path) if assets_path.exists() else pd.DataFrame(),
+            controllable_switches=pd.read_parquet(switches_path) if switches_path.exists() else None,
+        )
+
+    events_result = build_onm_events(
+        event_rows,
+        event_id=event_id,
+        mc_draw=mc_draw,
+        asset_to_dss_element=asset_to_dss_element,
+        event_start_utc=_coerce_utc(event_start),
+    )
+
+    events_path = bundle_dir / "events.json"
+    runtime_args_path = bundle_dir / "runtime_args.json"
+    nominal_load_window_path = bundle_dir / "nominal_load_window.json"
+    load_uncertainty_path = bundle_dir / "load_uncertainty.json"
+    block_demand_summary_path = bundle_dir / "block_demand_summary.json"
+    run_manifest_path = bundle_dir / "run_manifest.json"
+
+    events_path.write_text(json.dumps(events_result.events, indent=2, sort_keys=True), encoding="utf-8")
+    runtime_args = {
+        "network": str(export_dir / "network.dss"),
+        "settings": str(export_dir / "settings.json"),
+        "events": str(events_path),
+        "output": str(bundle_dir / "powermodels_onm_output.json"),
+        "nprocs": 1,
+        "skip": ["faults", "stability"],
+    }
+    runtime_args_path.write_text(json.dumps(runtime_args, indent=2, sort_keys=True), encoding="utf-8")
+    nominal_load_window_path.write_text(
+        json.dumps(
+            {
+                "event_id": event_id,
+                "mc_draw": int(mc_draw),
+                "event_start": bundle["event_start"],
+                "event_end": bundle["event_end"],
+                "horizon_hours": bundle["horizon_hours"],
+                "timestep_count": bundle["timestep_count"],
+                "units": "kW",
+                "loads": bundle["nodal_demand"],
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    load_uncertainty_path.write_text(
+        json.dumps(
+            {
+                "event_id": event_id,
+                "mc_draw": int(mc_draw),
+                "units": "kW",
+                "bounds": bundle["uncertainty_bands"],
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    block_demand_summary_path.write_text(
+        json.dumps(bundle["block_demand_summary"], indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    run_manifest = {
+        "schema_version": "marshfield_onm_run_bundle.v0.1",
+        "event_id": event_id,
+        "mc_draw": int(mc_draw),
+        "event_start": bundle["event_start"],
+        "event_end": bundle["event_end"],
+        "horizon_hours": bundle["horizon_hours"],
+        "timestep_count": bundle["timestep_count"],
+        "network": str(export_dir / "network.dss"),
+        "settings": str(export_dir / "settings.json"),
+        "events": str(events_path),
+        "runtime_args": str(runtime_args_path),
+        "nominal_load_window": str(nominal_load_window_path),
+        "load_uncertainty": str(load_uncertainty_path),
+        "block_demand_summary": str(block_demand_summary_path),
+        "event_count": len(events_result.events),
+        "skipped_asset_ids": events_result.skipped_asset_ids,
+        "uncertainty_band": uncertainty_band,
+        "load_profile_count": bundle["load_profile_count"],
+        "block_count": bundle["block_count"],
+        "weather_years": bundle["weather_years"],
+    }
+    run_manifest_path.write_text(json.dumps(run_manifest, indent=2, sort_keys=True), encoding="utf-8")
+
+    return OnmRunBundle(
+        bundle_dir=bundle_dir,
+        events_path=events_path,
+        runtime_args_path=runtime_args_path,
+        nominal_load_window_path=nominal_load_window_path,
+        load_uncertainty_path=load_uncertainty_path,
+        block_demand_summary_path=block_demand_summary_path,
+        run_manifest_path=run_manifest_path,
+    )
+
+
 # Julia/PowerModelsONM smoke runner
 
 """Artifact-first Python adapters for repo-local Julia toolchains."""
 
 
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -1205,7 +1500,7 @@ class JuliaToolchainResult:
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[4]
+    return Path(__file__).resolve().parents[3]
 
 
 def run_powermodels_onm_smoke(
@@ -1213,6 +1508,8 @@ def run_powermodels_onm_smoke(
     network_dss: Path | str,
     settings_json: Path | str,
     output_json: Path | str,
+    events_json: Path | str | None = None,
+    solve_mld: bool = False,
     julia_executable: PathLike[str] | str = "julia",
     julia_channel: str = "1.10",
     repo_root: Path | str | None = None,
@@ -1232,9 +1529,63 @@ def run_powermodels_onm_smoke(
         str(settings_json),
         str(output_path),
     ]
+    if events_json is not None:
+        command.extend(["--events", str(events_json)])
+    if solve_mld:
+        command.append("--mld")
     completed = subprocess.run(
         command,
         cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    summary = json.loads(output_path.read_text(encoding="utf-8"))
+    return JuliaToolchainResult(
+        output_json=output_path,
+        command=command,
+        stdout=completed.stdout,
+        stderr=completed.stderr,
+        summary=summary,
+    )
+
+
+def run_dynagrid_smoke(
+    *,
+    network_dss: Path | str,
+    settings_json: Path | str,
+    output_json: Path | str,
+    events_json: Path | str | None = None,
+    nrel_dynagrid_path: Path | str | None = None,
+    julia_executable: PathLike[str] | str = "julia",
+    julia_channel: str = "1.10",
+    repo_root: Path | str | None = None,
+    project_dir: Path | str = "julia/onm",
+    script_path: Path | str = "scripts/julia/dynagrid_smoke.jl",
+) -> JuliaToolchainResult:
+    """Run the NRELDynaGrid online-control smoke gate through Julia."""
+
+    root = Path(repo_root) if repo_root is not None else _repo_root()
+    output_path = Path(output_json)
+    command = [
+        str(julia_executable),
+        f"+{julia_channel}",
+        f"--project={project_dir}",
+        str(script_path),
+        str(network_dss),
+        str(settings_json),
+        str(output_path),
+    ]
+    if events_json is not None:
+        command.extend(["--events", str(events_json)])
+    env = None
+    if nrel_dynagrid_path is not None:
+        env = dict(os.environ)
+        env["NRELDYNAGRID_PATH"] = str(nrel_dynagrid_path)
+    completed = subprocess.run(
+        command,
+        cwd=root,
+        env=env,
         check=True,
         capture_output=True,
         text=True,

@@ -821,6 +821,88 @@ class CachedReoptResultsClient:
         return json.loads(path.read_text(encoding="utf-8"))
 
 
+class OfflineReoptSurrogateClient:
+    """Deterministic local resilience-sizing stand-in for REopt API results.
+
+    This is intentionally explicit provenance, not a cost-optimization claim.
+    It is useful when the Marshfield artifact pipeline needs operational DERs
+    for PMONM/DynaGrid integration but no live REopt API key or cached REopt
+    responses are available.
+    """
+
+    def __init__(
+        self,
+        *,
+        reserve_margin: float = 0.15,
+        capacity_step_kw: float = 5.0,
+    ) -> None:
+        if reserve_margin < 0.0:
+            raise ValueError("reserve_margin must be non-negative")
+        if capacity_step_kw <= 0.0:
+            raise ValueError("capacity_step_kw must be positive")
+        self.reserve_margin = reserve_margin
+        self.capacity_step_kw = capacity_step_kw
+
+    def __call__(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        electric_load = payload.get("ElectricLoad", {}) or {}
+        utility = payload.get("ElectricUtility", {}) or {}
+        loads_kw = [float(value) for value in electric_load.get("loads_kw", [])]
+        critical_load_fraction = float(electric_load.get("critical_load_fraction", 1.0))
+        start = int(utility.get("outage_start_time_step", 1))
+        end = int(utility.get("outage_end_time_step", len(loads_kw)))
+        outage_loads = _wrapped_window(loads_kw, start_time_step=start, end_time_step=end)
+        peak_critical_kw = max((value * critical_load_fraction for value in outage_loads), default=0.0)
+        genset_kw = _round_up_to_step(
+            peak_critical_kw * (1.0 + self.reserve_margin),
+            self.capacity_step_kw,
+        )
+        digest = _stable_json_digest(payload)
+        return {
+            "status": "optimal_offline_surrogate",
+            "run_uuid": f"offline-surrogate-{digest[:16]}",
+            "api_version": "local_offline_surrogate",
+            "reopt_version": "offline_reopt_surrogate.v0.1",
+            "outputs": {
+                "PV": {"size_kw": 0.0},
+                "ElectricStorage": {"size_kw": 0.0, "size_kwh": 0.0},
+                "Generator": {"size_kw": genset_kw},
+                "Outages": {
+                    "critical_loads_met": genset_kw >= peak_critical_kw and peak_critical_kw > 0.0,
+                    "peak_critical_kw": peak_critical_kw,
+                    "reserve_margin": self.reserve_margin,
+                    "capacity_step_kw": self.capacity_step_kw,
+                    "sizing_method": "max_outage_window_critical_load_with_reserve_margin",
+                },
+            },
+        }
+
+
+def _wrapped_window(
+    values: list[float],
+    *,
+    start_time_step: int,
+    end_time_step: int,
+) -> list[float]:
+    """Return a 1-indexed inclusive timestep window, wrapping over year end."""
+
+    if not values:
+        return []
+    if start_time_step <= 0 or end_time_step <= 0:
+        raise ValueError("REopt outage timesteps are expected to be positive 1-indexed values")
+    count = end_time_step - start_time_step + 1
+    if count <= 0:
+        raise ValueError("end_time_step must be greater than or equal to start_time_step")
+    n = len(values)
+    start_index = (start_time_step - 1) % n
+    return [values[(start_index + offset) % n] for offset in range(count)]
+
+
+def _round_up_to_step(value: float, step: float) -> float:
+    if value <= 0.0:
+        return 0.0
+    return math.ceil(value / step) * step
+
+
 def run_layer_2_reopt_sizing(
     *,
     smart_ds_compat_dir: Path,
@@ -864,6 +946,34 @@ def run_layer_2_reopt_sizing(
         attempted_rows=len(rows_for_reopt),
         reopt_sized_rows=reopt_sized_rows,
         provisional_rows=len(sized_rows) - reopt_sized_rows,
+    )
+
+
+def run_layer_2_offline_reopt_surrogate_sizing(
+    *,
+    smart_ds_compat_dir: Path,
+    outage_duration_hours: int = FEMA_COMMUNITY_LIFELINES_OUTAGE_HOURS,
+    outage_start_hour: int = 4392,
+    reserve_margin: float = 0.15,
+    capacity_step_kw: float = 5.0,
+    live_limit: int | None = None,
+) -> ReoptSizingResult:
+    """Size Layer 1 DER rows with deterministic local outage-window logic.
+
+    Use this when a live/cached REopt refresh is unavailable but PMONM/DynaGrid
+    integration needs operational grid-forming generators. Provenance is marked
+    as `offline_reopt_surrogate.v0.1` via the parsed REopt-like response.
+    """
+
+    return run_layer_2_reopt_sizing(
+        smart_ds_compat_dir=smart_ds_compat_dir,
+        reopt_client=OfflineReoptSurrogateClient(
+            reserve_margin=reserve_margin,
+            capacity_step_kw=capacity_step_kw,
+        ),
+        outage_duration_hours=outage_duration_hours,
+        outage_start_hour=outage_start_hour,
+        live_limit=live_limit,
     )
 
 

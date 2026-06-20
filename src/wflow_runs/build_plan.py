@@ -1922,8 +1922,8 @@ def build_wflow_submodel(
     model_root = build_plan.base_model_root / selected_id
     apply_repairs = _legacy_wflow_repairs_enabled(config)
     if _is_built_wflow_model(model_root) and not force:
+        normalize_wflow_staticmaps_nodata(model_root)
         if apply_repairs:
-            repair_wflow_staticmaps_nodata(model_root)
             repair_wflow_river_width(model_root)
             repair_wflow_canopy_parameters(model_root)
             repair_wflow_gauge_map(model_root)
@@ -1990,8 +1990,8 @@ def build_wflow_submodel(
     )
     model = _open_wflow_model(model_root, catalog_path, model_cls=model_cls, mode="w+")
     model.build(steps=steps)
+    normalize_wflow_staticmaps_nodata(model_root)
     if apply_repairs:
-        repair_wflow_staticmaps_nodata(model_root)
         repair_wflow_river_width(model_root)
         repair_wflow_canopy_parameters(model_root)
     qa = _wflow_staticmap_qa(model_root, config)
@@ -2246,8 +2246,13 @@ def _wflow_active_river_cells(ds: xr.Dataset) -> np.ndarray:
     return np.asarray(ds["river_mask"].values) > 0
 
 
-def repair_wflow_staticmaps_nodata(model_root) -> Path | None:
-    """Retag HydroMT-Wflow integer-minimum subcatchment nodata as inactive cells."""
+def normalize_wflow_staticmaps_nodata(model_root) -> Path | None:
+    """Normalize HydroMT-Wflow subcatchment nodata to Wflow's inactive-cell contract.
+
+    HydroMT-Wflow can write integer-minimum values in ``subcatchment`` even when
+    the declared fill value is 0. Wflow treats ``subcatchment != 0`` as active,
+    so those cells must be written as 0 in the base model artifact.
+    """
     staticmaps_path = Path(model_root) / "staticmaps.nc"
     if not staticmaps_path.exists():
         return None
@@ -2289,6 +2294,11 @@ def repair_wflow_staticmaps_nodata(model_root) -> Path | None:
         encoding={"subcatchment": {"dtype": "int32", "_FillValue": np.int32(0)}},
     )
     return staticmaps_path
+
+
+def repair_wflow_staticmaps_nodata(model_root) -> Path | None:
+    """Backward-compatible emergency alias for ``normalize_wflow_staticmaps_nodata``."""
+    return normalize_wflow_staticmaps_nodata(model_root)
 
 
 def repair_wflow_river_width(model_root, *, min_width_m: float = 30.0) -> Path | None:

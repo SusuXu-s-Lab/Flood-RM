@@ -56,10 +56,86 @@ def summarize_powermodels_onm_smoke_readiness(smoke: Mapping[str, Any]) -> dict[
         "passed": not blockers,
         "parser_passed": parser_passed,
         "strict_settings_validated": strict_settings_validated,
+        "mld_solved": bool(smoke.get("mld", {}).get("solved") or smoke.get("mld_solved")),
         "bus_count": int(smoke.get("bus_count", 0) or 0),
         "load_count": int(smoke.get("load_count", 0) or 0),
         "generator_count": int(smoke.get("generator_count", 0) or 0),
         "switch_count": int(smoke.get("switch_count", 0) or 0),
+        "blockers": blockers,
+    }
+
+
+def summarize_dynagrid_smoke_readiness(smoke: Mapping[str, Any]) -> dict[str, Any]:
+    """Summarize NRELDynaGrid online-control smoke evidence."""
+
+    status_ok = smoke.get("status") == "ok"
+    tracked_voltage_count = int(smoke.get("tracked_voltage_count", 0) or 0)
+    der_setpoint_count = int(smoke.get("der_setpoint_count", 0) or 0)
+    blockers = []
+    if not status_ok:
+        blockers.append("NRELDynaGrid smoke has not passed for the pilot export.")
+    elif tracked_voltage_count <= 0:
+        blockers.append("NRELDynaGrid smoke passed without tracked voltage outputs.")
+    elif der_setpoint_count <= 0:
+        blockers.append("NRELDynaGrid smoke passed without DER setpoint outputs.")
+
+    return {
+        "passed": not blockers,
+        "status_ok": status_ok,
+        "tracked_voltage_count": tracked_voltage_count,
+        "der_setpoint_count": der_setpoint_count,
+        "time_periods": int(smoke.get("time_periods", 0) or 0),
+        "time_steps": int(smoke.get("time_steps", 0) or 0),
+        "blockers": blockers,
+    }
+
+
+def summarize_event_bundle_readiness(export_dir: Path | str) -> dict[str, Any]:
+    """Check for event-conditioned run bundles beside the ONM export."""
+
+    root = Path(export_dir)
+    manifests = sorted(root.glob("events/*/draw_*/run_manifest.json"))
+    blockers = []
+    bundles = []
+    required_fields = (
+        "events",
+        "runtime_args",
+        "nominal_load_window",
+        "load_uncertainty",
+        "block_demand_summary",
+    )
+    for manifest_path in manifests:
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            blockers.append(f"Invalid event run manifest {manifest_path}: {exc}")
+            continue
+        missing_files = []
+        for field in required_fields:
+            raw_path = manifest.get(field)
+            if not raw_path or not Path(str(raw_path)).exists():
+                missing_files.append(field)
+        timestep_count = int(manifest.get("timestep_count", 0) or 0)
+        if missing_files:
+            blockers.append(f"Event bundle {manifest_path.parent} is missing files: {missing_files}")
+        if timestep_count <= 0:
+            blockers.append(f"Event bundle {manifest_path.parent} has no positive timestep_count.")
+        bundles.append(
+            {
+                "bundle_dir": str(manifest_path.parent),
+                "event_id": manifest.get("event_id"),
+                "mc_draw": manifest.get("mc_draw"),
+                "event_count": int(manifest.get("event_count", 0) or 0),
+                "timestep_count": timestep_count,
+            }
+        )
+    if not manifests:
+        blockers.append("No event-conditioned ONM run bundle found under events/<event_id>/draw_<mc_draw>.")
+
+    return {
+        "passed": not blockers,
+        "bundle_count": len(manifests),
+        "bundles": bundles,
         "blockers": blockers,
     }
 
@@ -122,6 +198,7 @@ def build_onm_readiness_report(
     export_dir: Path | str,
     *,
     smoke_filename: str = "powermodels_onm_smoke.json",
+    dynagrid_smoke_filename: str = "dynagrid_smoke.json",
 ) -> dict[str, Any]:
     """Build a combined readiness report from a PMONM-facing export directory."""
 
@@ -132,11 +209,18 @@ def build_onm_readiness_report(
         smoke = json.loads(smoke_path.read_text(encoding="utf-8"))
     else:
         smoke = {"status": "missing", "smoke_file": str(smoke_path)}
+    dynagrid_smoke_path = root / dynagrid_smoke_filename
+    if dynagrid_smoke_path.exists():
+        dynagrid_smoke = json.loads(dynagrid_smoke_path.read_text(encoding="utf-8"))
+    else:
+        dynagrid_smoke = {"status": "missing", "smoke_file": str(dynagrid_smoke_path)}
 
     gates = {
         "powermodels_onm": summarize_powermodels_onm_smoke_readiness(smoke),
         "opendss": summarize_opendss_solve_readiness(root / "network.dss"),
         "der_export": summarize_der_export_readiness(manifest),
+        "event_bundle": summarize_event_bundle_readiness(root),
+        "dynagrid": summarize_dynagrid_smoke_readiness(dynagrid_smoke),
     }
     blockers = [
         blocker
@@ -147,6 +231,9 @@ def build_onm_readiness_report(
     if blockers:
         recommended_next_tests = [
             "Run strict PowerModelsONM settings/schema validation.",
+            "Run the pilot MLD smoke with scripts/julia/powermodels_onm_smoke.jl --mld.",
+            "Run the NRELDynaGrid smoke with NRELDYNAGRID_PATH set to the pinned source checkout.",
+            "Materialize at least one event-conditioned ONM run bundle.",
             "Diagnose OpenDSS non-convergence and re-run the base solve gate.",
             "Run Layer 2 REopt sizing or mark the scenario explicitly as non-sizing/topology-only.",
             "Re-run the focused ONM readiness tests and the Marshfield power test subset.",
@@ -155,6 +242,7 @@ def build_onm_readiness_report(
     return {
         "passed": not blockers,
         "export_dir": str(root),
+        "export_scope": manifest.get("export_scope", "unknown"),
         "gates": gates,
         "blockers": blockers,
         "recommended_next_tests": recommended_next_tests,

@@ -112,7 +112,7 @@ def build_event_meteo_forcing(
     AORC event temperature, pressure, and radiation fields using the native
     HydroMT-Wflow ``setup_temp_pet_forcing`` contract for De Bruin PET.
     """
-    location_root = Path(location_root)
+    location_root = Path(location_root).resolve()
     wflow = config.get("wflow", {})
     events_root = resolve_location_path(location_root, wflow.get("events_root", "data/wflow/events"))
     event_dir = events_root / str(event_id)
@@ -683,7 +683,7 @@ def replay_inland_domain_set(
     without spawning anything. With ``execute=True`` it runs the updates + Wflow engine
     and writes ``events/<event>/sfincs_discharge.nc``.
     """
-    location_root = Path(location_root)
+    location_root = Path(location_root).resolve()
     wflow = config.get("wflow", {})
     base_root = resolve_location_path(location_root, wflow.get("base_model_root", "data/wflow/base"))
     events_root = resolve_location_path(location_root, wflow.get("events_root", "data/wflow/events"))
@@ -818,6 +818,105 @@ def replay_inland_domain_set(
     report["sfincs_discharge_written"] = bool(execute and discharge_path.exists())
     report["sfincs_discharge_source"] = discharge_source
     return report
+
+
+def run_zero_rain_control(
+    config: dict,
+    location_root,
+    event_id: str,
+    *,
+    execute: bool = False,
+) -> pd.DataFrame:
+    """Run a Wflow startup/baseflow control with event rainfall and inflow set to zero.
+
+    The control reuses the already materialised event Wflow model folders. It copies
+    them below ``events/<event>/_zero_rain/<submodel>``, zeros the dynamic forcing
+    variables in ``inmaps-event.nc``, runs Wflow, and writes
+    ``events/<event>/_zero_rain/sfincs_discharge.nc`` for dynamic-handoff QA.
+    """
+    location_root = Path(location_root).resolve()
+    wflow = config.get("wflow", {}) or {}
+    events_root = resolve_location_path(location_root, wflow.get("events_root", "data/wflow/events"))
+    model_crs = wflow.get("model_crs", config.get("project", {}).get("model_crs", "EPSG:32617"))
+    event_dir = events_root / str(event_id)
+    zero_root = event_dir / "_zero_rain"
+    run_command_template = _wflow_run_command(config)
+    rows = []
+    outputs = []
+    for submodel in _domain_set_submodels(config, location_root):
+        submodel_id = str(submodel["wflow_submodel_id"])
+        source_model = event_dir / submodel_id
+        control_model = zero_root / submodel_id
+        if not (source_model / "wflow_sbm.toml").exists():
+            raise FileNotFoundError(
+                f"Zero-rain control requires the event Wflow model first: {source_model}"
+            )
+        status = "planned"
+        if execute:
+            if control_model.exists():
+                shutil.rmtree(control_model)
+            control_model.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(source_model, control_model)
+            _zero_event_forcing(control_model / "inmaps-event.nc")
+            _prepare_wflow_run_output_dir(control_model / "wflow_sbm.toml")
+            _run(shlex.split(run_command_template.format(run_config=control_model / "wflow_sbm.toml")), cwd=location_root)
+            status = "completed"
+        run_output_dir = control_model / "run_event"
+        gauges_geojson = control_model / "staticgeoms" / "gauges_sfincs.geojson"
+        outputs.append({"run_output_dir": run_output_dir, "gauges_geojson": gauges_geojson})
+        rows.append(
+            {
+                "event_id": str(event_id),
+                "submodel_id": submodel_id,
+                "control_model_root": str(control_model),
+                "run_output_dir": str(run_output_dir),
+                "status": status,
+            }
+        )
+    discharge_path = zero_root / "sfincs_discharge.nc"
+    if execute:
+        merge_submodel_discharge(
+            outputs,
+            model_crs=model_crs,
+            out_path=discharge_path,
+            handoff_points=_sfincs_handoff_points_for_replay(config, location_root, model_crs),
+        )
+        (zero_root / "zero_rain_control.provenance.json").write_text(
+            json.dumps(
+                {
+                    "event_id": str(event_id),
+                    "control": "zero_event_forcing",
+                    "zeroed_variables": ["precip", "river_inflow"],
+                    "purpose": "dynamic_handoff_startup_baseflow_qa",
+                    "sfincs_discharge": str(discharge_path),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    report = pd.DataFrame(rows)
+    report["sfincs_discharge_forcing"] = str(discharge_path)
+    report["sfincs_discharge_written"] = bool(execute and discharge_path.exists())
+    return report
+
+
+def _zero_event_forcing(forcing_path: Path) -> None:
+    if not forcing_path.exists():
+        raise FileNotFoundError(forcing_path)
+    import xarray as xr
+
+    with xr.open_dataset(forcing_path) as src:
+        ds = src.load()
+    zeroed = []
+    for name in ("precip", "river_inflow"):
+        if name in ds:
+            ds[name] = ds[name] * 0
+            zeroed.append(name)
+    if "precip" not in zeroed:
+        raise ValueError(f"{forcing_path} lacks precip variable for zero-rain control")
+    tmp = forcing_path.with_suffix(".zero.tmp.nc")
+    ds.to_netcdf(tmp)
+    tmp.replace(forcing_path)
 
 
 # ─── orchestration helpers ────────────────────────────────────────────────────

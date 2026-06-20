@@ -16,6 +16,7 @@ from wflow_runs.replay import (
     _sfincs_handoff_locations_for_replay,
     replay_inland_domain_set,
     resolve_event_window,
+    run_zero_rain_control,
 )
 from wflow_runs.build_plan import validate_wflow_staticmaps_physics
 from wflow_runs.states import plan_wflow_warmup_state, validate_warmup_forcing, validate_wflow_instates, write_cold_state_workflow
@@ -101,10 +102,14 @@ def prepare_dynamic_wflow_handoff(
     thresholds = ((config.get("wflow", {}) or {}).get("dynamic_handoff", {}) or {}).get("qa", {}) or {}
     max_zero = float(thresholds.get("max_zero_rain_peak_fraction", 0.2))
     zero_path = zero_rain_discharge_nc or (paths["zero_rain_discharge"] if paths["zero_rain_discharge"].exists() else None)
+    zero_report = pd.DataFrame()
+    if zero_path is None:
+        zero_report = run_zero_rain_control(config, location_root, event_id, execute=True)
+        zero_path = paths["zero_rain_discharge"] if paths["zero_rain_discharge"].exists() else None
     if zero_path is None:
         raise FileNotFoundError(
             f"Dynamic Wflow handoff requires a zero-rain control before acceptance: {paths['zero_rain_discharge']}. "
-            "Run the zero-rain Wflow control and rerun handoff QA."
+            "The automatic zero-rain control did not produce the expected discharge file."
         )
     qa = validate_dynamic_handoff(
         paths["discharge"],
@@ -128,6 +133,8 @@ def prepare_dynamic_wflow_handoff(
     )
     replay_report["dynamic_handoff_acceptance"] = str(paths["acceptance"])
     replay_report["acceptance_status"] = "accepted"
+    if not zero_report.empty:
+        replay_report["zero_rain_control"] = str(paths["zero_rain_discharge"])
     return replay_report
 
 
