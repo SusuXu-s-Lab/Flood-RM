@@ -4,7 +4,6 @@ __pycache__/
 build/
 dist/
 wheels/
-.agents
 *.egg-info
 .pytest_cache
 
@@ -21,13 +20,13 @@ locations/*/data/smart_ds/
 code
 tests
 cluster
-tests
 docs
 
 # data
 locations/marshfield/data
 locations/austin/data
 locations/greensboro/data
+locations/sfo/data
 
 # local Slurm output logs
 slurm-*.out

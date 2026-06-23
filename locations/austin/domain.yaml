@@ -8,7 +8,7 @@ sfincs:
 
 sfincs_domain_set:
   include_domain_ids:              # SMART-DS evaluation component(s) to model
-    - austin_p4u                   # watershed-encapsulated candidate ~matching the greensboro_east reference
+    - austin_p5u                   # smaller Austin pilot domain with lighter Wflow/SFINCS footprint
 
 wflow:
   dynamic_handoff:
