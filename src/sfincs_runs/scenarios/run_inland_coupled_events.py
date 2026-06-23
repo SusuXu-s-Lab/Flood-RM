@@ -88,6 +88,7 @@ def run_inland_coupled_event(
         {"location_root": location_root},
         catalog_path=catalog_path,
         event_ids=[event_id],
+        staged_catalog=scenario_report[["event_id", "run_root"]],
     )
     failed = audit[audit["status"].ne("passed")]
     if not failed.empty:

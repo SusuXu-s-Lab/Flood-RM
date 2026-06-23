@@ -4,6 +4,7 @@ from pathlib import Path
 import shutil
 import tomllib
 
+import numpy as np
 import pandas as pd
 import tomli_w
 import xarray as xr
@@ -242,6 +243,7 @@ def validate_wflow_instates(config: dict, location_root, *, raise_on_error: bool
     """Require Wflow submodels to have native ``instate/instates.nc`` before dynamic replay."""
     location_root = Path(location_root)
     base_root = resolve_wflow_base_root(config.get("wflow", {}) or {}, location_root)
+    require_reservoir_state = _wflow_reservoirs_enabled(config)
     rows = []
     submodels = _configured_wflow_submodels(config, location_root)
     if not submodels:
@@ -256,12 +258,20 @@ def validate_wflow_instates(config: dict, location_root, *, raise_on_error: bool
     for submodel in submodels:
         submodel_id = str(submodel["wflow_submodel_id"])
         instate = base_root / submodel_id / "instate" / "instates.nc"
+        status = "passed" if instate.exists() else "failed"
+        message = "ready" if instate.exists() else "missing instate/instates.nc"
+        if instate.exists() and require_reservoir_state:
+            state_report = validate_wflow_reservoir_states(base_root / submodel_id, required=True, raise_on_error=False)
+            failed_state = state_report[state_report["status"].isin(["failed", "review_required"])]
+            if not failed_state.empty:
+                status = "failed"
+                message = "; ".join(f"{row.check}: {row.message}" for row in failed_state.itertuples())
         rows.append(
             {
                 "submodel_id": submodel_id,
                 "instate": str(instate),
-                "status": "passed" if instate.exists() else "failed",
-                "message": "ready" if instate.exists() else "missing instate/instates.nc",
+                "status": status,
+                "message": message,
             }
         )
     report = pd.DataFrame(rows)
@@ -272,11 +282,57 @@ def validate_wflow_instates(config: dict, location_root, *, raise_on_error: bool
     return report
 
 
+def validate_wflow_reservoir_states(model_root, *, required: bool = True, raise_on_error: bool = True) -> pd.DataFrame:
+    """Check native Wflow instates for reservoir water levels."""
+    model_root = Path(model_root)
+    instate = model_root / "instate" / "instates.nc"
+    if not instate.exists():
+        raise FileNotFoundError(instate)
+    rows: list[dict] = []
+    try:
+        with xr.open_dataset(instate, mask_and_scale=False) as ds:
+            if "reservoir_water_level" not in ds:
+                status = "failed" if required else "not_available"
+                rows.append({"check": "reservoir_water_level", "status": status, "message": "missing reservoir_water_level"})
+            else:
+                values = np.asarray(ds["reservoir_water_level"].values, dtype=float)
+                finite = values[np.isfinite(values)]
+                positive = finite[finite > 0]
+                status = "passed" if positive.size else "failed"
+                rows.append(
+                    {
+                        "check": "reservoir_water_level",
+                        "status": status,
+                        "message": (
+                            f"valid_cells={int(positive.size)}; "
+                            f"min={float(np.nanmin(positive)) if positive.size else np.nan:g}; "
+                            f"max={float(np.nanmax(positive)) if positive.size else np.nan:g}"
+                        ),
+                    }
+                )
+    except Exception as exc:
+        rows.append({"check": "reservoir_water_level", "status": "failed", "message": f"unreadable instate: {exc}"})
+    report = pd.DataFrame(rows)
+    failed = report[report["status"].isin(["failed", "review_required"])] if not report.empty else report
+    if raise_on_error and not failed.empty:
+        details = "; ".join(f"{row.check}: {row.message}" for row in failed.itertuples())
+        raise RuntimeError(f"Wflow reservoir state QA failed for {instate}: {details}")
+    return report
+
+
 def resolve_wflow_base_root(wflow: dict, location_root) -> Path:
     base_root = Path(wflow.get("base_model_root", "data/wflow/base"))
     if not base_root.is_absolute():
         base_root = Path(location_root) / base_root
     return base_root
+
+
+def _wflow_reservoirs_enabled(config: dict) -> bool:
+    return bool(
+        ((config.get("collection", {}) or {}).get("national_hydrography", {}) or {})
+        .get("reservoirs", {})
+        .get("enabled", False)
+    )
 
 
 def _default_wflow_model_cls():

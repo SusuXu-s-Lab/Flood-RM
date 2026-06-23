@@ -21,6 +21,7 @@ def validate_dynamic_handoff(
     zero_rain_discharge_nc=None,
     expected_source_ids: set[str] | None = None,
     max_zero_peak_fraction: float = 0.2,
+    max_source_shape_correlation: float = 0.9999,
     raise_on_error: bool = True,
 ) -> pd.DataFrame:
     rows: list[dict] = []
@@ -37,6 +38,7 @@ def validate_dynamic_handoff(
         fraction = zero_peak / event_peak if event_peak > 0 else np.inf
         status = "passed" if fraction <= float(max_zero_peak_fraction) else "failed"
         rows.append({"check": "zero_rain_peak_fraction", "status": status, "message": f"zero_peak_m3s={zero_peak:g}; fraction={fraction:g}"})
+    rows.append(_source_hydrograph_shape_diversity(event_discharge_nc, max_correlation=max_source_shape_correlation))
     report = pd.DataFrame(rows)
     failed = report[report["status"].isin(["failed", "review_required"])]
     if raise_on_error and not failed.empty:
@@ -76,3 +78,53 @@ def _total_peak(discharge_nc) -> float:
         if "index" in da.dims:
             da = da.sum("index")
         return float(da.max(skipna=True))
+
+
+def _source_hydrograph_shape_diversity(discharge_nc, *, max_correlation: float) -> dict:
+    with xr.open_dataset(discharge_nc) as ds:
+        if "discharge" not in ds:
+            raise ValueError(f"{discharge_nc} lacks discharge variable")
+        da = ds["discharge"]
+        if "index" not in da.dims or da.sizes.get("index", 0) < 2:
+            return {
+                "check": "source_hydrograph_shape_diversity",
+                "status": "passed",
+                "message": "sources<2; diversity check skipped",
+            }
+        values = da.transpose("index", "time").values.astype(float)
+        names = discharge_source_ids(discharge_nc)
+
+    max_seen = -np.inf
+    duplicate_pairs: list[str] = []
+    for i in range(values.shape[0]):
+        left = _normalized_shape(values[i])
+        for j in range(i + 1, values.shape[0]):
+            right = _normalized_shape(values[j])
+            if np.allclose(left, right, rtol=1e-6, atol=1e-8):
+                corr = 1.0
+            else:
+                corr = float(np.corrcoef(left, right)[0, 1])
+            max_seen = max(max_seen, corr)
+            if corr >= float(max_correlation):
+                duplicate_pairs.append(f"{names[i]}~{names[j]}:{corr:.6f}")
+    status = "failed" if duplicate_pairs else "passed"
+    pairs = ", ".join(duplicate_pairs[:5]) if duplicate_pairs else "none"
+    if len(duplicate_pairs) > 5:
+        pairs += f", +{len(duplicate_pairs) - 5} more"
+    return {
+        "check": "source_hydrograph_shape_diversity",
+        "status": status,
+        "message": f"sources={values.shape[0]}; max_corr={max_seen:.6f}; duplicate_shape_pairs={pairs}",
+    }
+
+
+def _normalized_shape(values: np.ndarray) -> np.ndarray:
+    clean = np.asarray(values, dtype=float)
+    if clean.size == 0:
+        return clean
+    fill = np.nanmedian(clean) if np.isfinite(clean).any() else 0.0
+    clean = np.nan_to_num(clean, nan=float(fill), posinf=float(fill), neginf=float(fill))
+    span = float(clean.max() - clean.min())
+    if span <= 0.0:
+        return np.zeros_like(clean, dtype=float)
+    return (clean - float(clean.min())) / span

@@ -71,6 +71,7 @@ class SourceCollectionPlan:
 source_order = (
     "cora",
     "usgs_streamgages",
+    "lcra_hydromet",
     "stream_geo_nldi",
     "national_hydrography",
     "nwm",
@@ -144,6 +145,7 @@ def _default_run_collect_funcs():
     from design_events.collect_sources.cora import collect_cora
     from design_events.collect_sources.era5_waves import collect_era5_waves
     from design_events.collect_sources.hurdat2 import collect_hurdat2
+    from design_events.collect_sources.lcra_hydromet import collect_lcra_hydromet
     from design_events.collect_sources.national_hydrography import collect_national_hydrography
     from design_events.collect_sources.nwm import collect_nwm
     from design_events.collect_sources.stream_geo_nldi import collect_stream_geo_nldi
@@ -154,6 +156,7 @@ def _default_run_collect_funcs():
         "collect_cora": collect_cora,
         "collect_era5_waves": collect_era5_waves,
         "collect_hurdat2": collect_hurdat2,
+        "collect_lcra_hydromet": collect_lcra_hydromet,
         "collect_national_hydrography": collect_national_hydrography,
         "collect_nwm": collect_nwm,
         "collect_stream_geo_nldi": collect_stream_geo_nldi,
@@ -221,6 +224,17 @@ def run_collect(
                 )
             elif step.name == "usgs_streamgages":
                 result = funcs["collect_usgs_streamgages"](settings, skip_existing=skip_existing, smoke=False)
+                status = "reused" if result.get("reused") else "collected"
+                _record(
+                    rows,
+                    step.name,
+                    status,
+                    started,
+                    rows=result.get("candidate_count", 0),
+                    artifact=str(result.get("candidate_geojson")),
+                )
+            elif step.name == "lcra_hydromet":
+                result = funcs["collect_lcra_hydromet"](settings, skip_existing=skip_existing, smoke=False)
                 status = "reused" if result.get("reused") else "collected"
                 _record(
                     rows,
@@ -608,6 +622,7 @@ import pandas as pd
 
 from design_events import utils as source_artifacts_module
 from design_events.collect_sources import era5_waves as era5_waves_module
+from design_events.collect_sources import lcra_hydromet as lcra_hydromet_module
 from design_events.collect_sources import usgs_streamgages as usgs_streamgages_module
 from design_events.collect_sources.nwm import soil_moisture_csv_has_variables
 from design_events.collect_sources.usgs_streamgages import (
@@ -748,6 +763,35 @@ def source_record_location_table(runtime: CollectSourcesNotebookRuntime) -> pd.D
         "NHDPlus catchments": collection["national_hydrography"]["catchments"],
         "Wflow soil parameters": collection["national_hydrography"]["wflow_soil_parameters"],
     }
+    reservoirs_cfg = collection["national_hydrography"].get("reservoirs", {})
+    if reservoirs_cfg.get("enabled", False):
+        records["NHDPlus Wflow reservoirs"] = reservoirs_cfg.get(
+            "output",
+            collection["national_hydrography"].get(
+                "reservoirs_output",
+                "data/sources/national_hydrography/nhdplus_hr_wflow_reservoirs.gpkg",
+            ),
+        )
+        condition_cfg = reservoirs_cfg.get("conditions", {}) or {}
+        if condition_cfg.get("enabled", False):
+            records["TWDB reservoir condition summary"] = condition_cfg.get(
+                "summary_csv",
+                "data/sources/twdb_reservoirs/reservoir_condition_summary.csv",
+            )
+            records["TWDB reservoir condition provenance"] = condition_cfg.get(
+                "provenance_json",
+                "data/sources/twdb_reservoirs/reservoir_condition_provenance.json",
+            )
+    if "lcra_hydromet" in collection:
+        hydromet = collection["lcra_hydromet"]
+        records["supplemental LCRA Hydromet flow sites"] = hydromet.get(
+            "output",
+            lcra_hydromet_module.DEFAULT_OUTPUT,
+        )
+        records["supplemental LCRA Hydromet current flow"] = hydromet.get(
+            "current_output",
+            lcra_hydromet_module.DEFAULT_CURRENT_OUTPUT,
+        )
     return _location_record_table(runtime.location_root, records)
 
 
@@ -756,6 +800,7 @@ def source_role_labels() -> dict[str, str]:
         "usgs_streamgages": "active records for POT, validation, and handoff",
         "stream_geo_nldi": "STREAM-geo width/depth cache with NLDI COMID lookup provenance",
         "national_hydrography": "USA hydrography and SSURGO pedology for HydroMT-Wflow build sources",
+        "lcra_hydromet": "supplemental distinct LCRA/COA flow-gage coverage for Austin review",
         "aorc_sst": "direct rainfall members shared by Wflow and SFINCS",
         "nwm": "antecedent soil-moisture context",
     }
@@ -953,6 +998,31 @@ def source_collection_readiness(runtime: CollectSourcesNotebookRuntime) -> pd.Da
         "rainfall members": runtime.data_sources["event_catalog"]["forcing_members"]["rainfall"],
         "soil moisture": runtime.data_sources["event_catalog"]["forcing_members"]["soil_moisture"],
     }
+    reservoirs_cfg = national_hydrography.get("reservoirs", {})
+    if reservoirs_cfg.get("enabled", False):
+        outputs["NHDPlus Wflow reservoirs"] = reservoirs_cfg.get(
+            "output",
+            national_hydrography.get(
+                "reservoirs_output",
+                "data/sources/national_hydrography/nhdplus_hr_wflow_reservoirs.gpkg",
+            ),
+        )
+        condition_cfg = reservoirs_cfg.get("conditions", {}) or {}
+        if condition_cfg.get("enabled", False):
+            outputs["TWDB reservoir condition summary"] = condition_cfg.get(
+                "summary_csv",
+                "data/sources/twdb_reservoirs/reservoir_condition_summary.csv",
+            )
+            outputs["TWDB reservoir condition provenance"] = condition_cfg.get(
+                "provenance_json",
+                "data/sources/twdb_reservoirs/reservoir_condition_provenance.json",
+            )
+    if "lcra_hydromet" in collection:
+        hydromet = collection["lcra_hydromet"]
+        outputs["supplemental LCRA Hydromet flow sites"] = hydromet.get(
+            "output",
+            lcra_hydromet_module.DEFAULT_OUTPUT,
+        )
     readiness = exists_table(runtime.location_root, outputs)
     readiness["ready"] = readiness["exists"]
     readiness.loc[readiness["artifact"].eq("streamgage candidates"), "ready"] = (
@@ -1278,6 +1348,59 @@ def stream_geo_nldi_source_summary(config: dict, paths: dict) -> pd.Series:
         },
         name="stream_geo_nldi",
     )
+
+
+def reservoir_condition_source_summary(config: dict, paths: dict) -> pd.Series:
+    reservoirs = (config.get("collection", {}).get("national_hydrography", {}) or {}).get("reservoirs", {}) or {}
+    conditions = reservoirs.get("conditions", {}) or {}
+    summary_path = _source_location_path(
+        paths,
+        conditions.get("summary_csv", "data/sources/twdb_reservoirs/reservoir_condition_summary.csv"),
+    )
+    provenance_path = _source_location_path(
+        paths,
+        conditions.get("provenance_json", "data/sources/twdb_reservoirs/reservoir_condition_provenance.json"),
+    )
+    return pd.Series(
+        {
+            "enabled": bool(conditions.get("enabled", False)),
+            "provider": conditions.get("provider", "twdb_water_data_for_texas"),
+            "period_suffix": conditions.get("period_suffix", "-1year"),
+            "statistic": conditions.get("statistic", "median"),
+            "reservoir_slugs": ", ".join(sorted((conditions.get("reservoir_slugs") or {}).values())),
+            "summary_csv": str(summary_path),
+            "summary_exists": summary_path.exists(),
+            "provenance_json": str(provenance_path),
+            "provenance_exists": provenance_path.exists(),
+        },
+        name="reservoir_conditions",
+    )
+
+
+def reservoir_condition_table(config: dict, paths: dict) -> pd.DataFrame:
+    reservoirs = (config.get("collection", {}).get("national_hydrography", {}) or {}).get("reservoirs", {}) or {}
+    conditions = reservoirs.get("conditions", {}) or {}
+    summary_path = _source_location_path(
+        paths,
+        conditions.get("summary_csv", "data/sources/twdb_reservoirs/reservoir_condition_summary.csv"),
+    )
+    if not summary_path.exists():
+        return pd.DataFrame()
+    frame = pd.read_csv(summary_path)
+    display_columns = [
+        "waterbody_name",
+        "twdb_slug",
+        "condition_status",
+        "condition_statistic",
+        "condition_period_start",
+        "condition_period_end",
+        "Depth_avg",
+        "reservoir_storage_acft",
+        "surface_area_acres",
+        "percent_full",
+        "condition_reason",
+    ]
+    return frame[[column for column in display_columns if column in frame.columns]]
 
 
 def nwm_soil_moisture_source_summary(config: dict, paths: dict) -> pd.Series:

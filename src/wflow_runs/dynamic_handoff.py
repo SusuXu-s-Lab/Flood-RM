@@ -18,7 +18,7 @@ from wflow_runs.replay import (
     resolve_event_window,
     run_zero_rain_control,
 )
-from wflow_runs.build_plan import validate_wflow_staticmaps_physics
+from wflow_runs.build_plan import validate_wflow_reservoir_staticmaps, validate_wflow_staticmaps_physics, write_wflow_reservoir_readiness
 from wflow_runs.states import plan_wflow_warmup_state, validate_warmup_forcing, validate_wflow_instates, write_cold_state_workflow
 from wflow_runs.streamflow_realization import validate_wflow_streamflow_realization
 from wflow_runs.notebook import resolve_location_path
@@ -101,6 +101,7 @@ def prepare_dynamic_wflow_handoff(
     expected = _expected_handoff_ids(config, location_root)
     thresholds = ((config.get("wflow", {}) or {}).get("dynamic_handoff", {}) or {}).get("qa", {}) or {}
     max_zero = float(thresholds.get("max_zero_rain_peak_fraction", 0.2))
+    max_shape_corr = float(thresholds.get("max_source_shape_correlation", 0.9999))
     zero_path = zero_rain_discharge_nc or (paths["zero_rain_discharge"] if paths["zero_rain_discharge"].exists() else None)
     zero_report = pd.DataFrame()
     if zero_path is None:
@@ -116,6 +117,7 @@ def prepare_dynamic_wflow_handoff(
         zero_rain_discharge_nc=zero_path,
         expected_source_ids=expected,
         max_zero_peak_fraction=max_zero,
+        max_source_shape_correlation=max_shape_corr,
         raise_on_error=True,
     )
     paths["qa_csv"].parent.mkdir(parents=True, exist_ok=True)
@@ -203,16 +205,31 @@ def _validate_dynamic_wflow_base_staticmaps(config: dict, location_root: Path) -
         report = validate_wflow_staticmaps_physics(base_root / submodel_id, raise_on_error=False)
         report.insert(0, "submodel_id", submodel_id)
         rows.append(report)
+        if _reservoirs_enabled(config):
+            reservoir_report = validate_wflow_reservoir_staticmaps(base_root / submodel_id, required=True, raise_on_error=False)
+            reservoir_report.insert(0, "submodel_id", submodel_id)
+            rows.append(reservoir_report)
     if not rows:
         raise RuntimeError("Dynamic Wflow handoff cannot find Wflow submodels for staticmap QA.")
     report = pd.concat(rows, ignore_index=True)
-    failed = report[report["status"].isin(["failed", "review_required"])]
+    if _reservoirs_enabled(config):
+        reservoir_readiness = write_wflow_reservoir_readiness(config, location_root, raise_on_error=False)
+        report = pd.concat([report, reservoir_readiness], ignore_index=True)
+    failed = report[report["status"].eq("failed")]
     if not failed.empty:
         details = "; ".join(
             f"{row.submodel_id}:{row.check}: {row.message}"
             for row in failed.itertuples()
         )
         raise RuntimeError(f"Dynamic Wflow handoff blocked by Wflow staticmap QA: {details}")
+
+
+def _reservoirs_enabled(config: dict) -> bool:
+    return bool(
+        ((config.get("collection", {}) or {}).get("national_hydrography", {}) or {})
+        .get("reservoirs", {})
+        .get("enabled", False)
+    )
 
 
 def plan_wflow_streamflow_realization(config: dict, location_root, event_id: str, *, catalog_path=None) -> pd.DataFrame:

@@ -216,6 +216,7 @@ def audit_inland_coupled_batch_readiness(
     catalog_path=None,
     event_ids=None,
     limit=None,
+    staged_catalog=None,
 ) -> pd.DataFrame:
     """Audit whether selected inland coupled scenarios are ready for run_events.
 
@@ -250,27 +251,36 @@ def audit_inland_coupled_batch_readiness(
     if not accepted_ids:
         return pd.DataFrame(rows)
 
-    scenario_catalog = scenarios_root / "scenario_catalog.csv"
-    if not scenario_catalog.exists():
-        for event_id in accepted_ids:
-            rows.append(
-                {
-                    "event_id": event_id,
-                    "sfincs_domain_id": "",
-                    "check": "scenario_catalog",
-                    "status": "failed",
-                    "path": str(scenario_catalog),
-                    "message": "Run 05_create_scenarios.ipynb to stage accepted events.",
-                }
-            )
-        return pd.DataFrame(rows)
+    # The atomic per-event cluster run stages in-process and passes its scenario
+    # report directly (the global scenario_catalog.csv is only written by the
+    # notebook batch-staging path, and a full overwrite would race across parallel
+    # array tasks). Fall back to the on-disk catalog when no report is supplied.
+    if staged_catalog is not None:
+        staged_df = staged_catalog.copy()
+        catalog_source = "staged scenario report"
+    else:
+        scenario_catalog = scenarios_root / "scenario_catalog.csv"
+        if not scenario_catalog.exists():
+            for event_id in accepted_ids:
+                rows.append(
+                    {
+                        "event_id": event_id,
+                        "sfincs_domain_id": "",
+                        "check": "scenario_catalog",
+                        "status": "failed",
+                        "path": str(scenario_catalog),
+                        "message": "Run 05_create_scenarios.ipynb to stage accepted events.",
+                    }
+                )
+            return pd.DataFrame(rows)
+        staged_df = pd.read_csv(scenario_catalog)
+        catalog_source = str(scenario_catalog)
 
-    staged_catalog = pd.read_csv(scenario_catalog)
     for column in ["event_id", "run_root"]:
-        if column not in staged_catalog:
-            raise ValueError(f"Scenario catalog is missing {column!r}: {scenario_catalog}")
-    staged_catalog["event_id"] = staged_catalog["event_id"].astype(str)
-    selected = staged_catalog[staged_catalog["event_id"].isin(accepted_ids)].copy()
+        if column not in staged_df:
+            raise ValueError(f"Scenario catalog is missing {column!r}: {catalog_source}")
+    staged_df["event_id"] = staged_df["event_id"].astype(str)
+    selected = staged_df[staged_df["event_id"].isin(accepted_ids)].copy()
     missing_from_catalog = sorted(set(accepted_ids) - set(selected["event_id"]))
     for event_id in missing_from_catalog:
         rows.append(
@@ -279,7 +289,7 @@ def audit_inland_coupled_batch_readiness(
                 "sfincs_domain_id": "",
                 "check": "scenario_catalog_entry",
                 "status": "failed",
-                "path": str(scenario_catalog),
+                "path": catalog_source,
                 "message": "Accepted dynamic handoff is not staged in scenario_catalog.csv.",
             }
         )

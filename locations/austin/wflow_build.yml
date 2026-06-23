@@ -29,6 +29,11 @@ steps:
       slope_len: 2000
       smooth_len: 5000
 
+  - setup_reservoirs_no_control:
+      reservoirs_fn: nhdplus_hr_wflow_reservoirs
+      min_area: 1.0
+      duplicate_id: skip
+
   - setup_lulcmaps:
       lulc_fn: esa_worldcover
 

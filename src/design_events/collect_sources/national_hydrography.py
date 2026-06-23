@@ -13,6 +13,9 @@ import rioxarray as rxr
 from shapely.geometry import box
 import xarray as xr
 
+from design_events.collect_sources.reservoir_conditions import (
+    enrich_wflow_reservoirs_with_public_conditions,
+)
 from design_events.collect_sources.ssurgo import (
     fetch_ssurgo_mapunit_attributes,
     ssurgo_attribute_columns,
@@ -20,6 +23,7 @@ from design_events.collect_sources.ssurgo import (
 
 NHDPLUS_HR_MAPSERVER = "https://hydro.nationalmap.gov/arcgis/rest/services/NHDPlus_HR/MapServer"
 NHDPLUS_HR_NETWORK_FLOWLINE_LAYER = 3
+NHDPLUS_HR_WATERBODY_LAYER = 9
 NHDPLUS_HR_CATCHMENT_LAYER = 10
 
 # USGS Watershed Boundary Dataset (WBD) ArcGIS service: HUC polygons by level.
@@ -40,10 +44,16 @@ def collect_national_hydrography(settings, *, skip_existing=True, smoke=False):
     hydrography_nc = _location_path(location_root, collection.get("hydromt_basemap", "data/wflow/hydrography/us_hydrography_basemap.nc"))
     river_gpkg = _location_path(location_root, collection.get("river_geometry", "data/sources/national_hydrography/nhdplus_hr_river_geometry.gpkg"))
     catchments_gpkg = _location_path(location_root, collection.get("catchments", "data/sources/national_hydrography/nhdplus_hr_catchments.gpkg"))
+    reservoirs_gpkg = _location_path(
+        location_root,
+        collection.get("reservoirs", {}).get("output", collection.get("reservoirs_output", "data/sources/national_hydrography/nhdplus_hr_wflow_reservoirs.gpkg")),
+    )
     soil_nc = _location_path(location_root, collection.get("wflow_soil_parameters", "data/wflow/static/ssurgo_wflow_soil_parameters.nc"))
     manifest = Path(paths.get("source_artifacts_root", location_root / "data/sources/source_artifacts")) / "national_hydrography_wflow_sources.json"
     target_resolution_degrees = float(collection.get("basemap_source_resolution_degrees", 1 / 1080))
     collect_review_vectors = bool(collection.get("collect_review_vectors", False))
+    reservoir_cfg = collection.get("reservoirs", {})
+    collect_reservoirs = bool(reservoir_cfg.get("enabled", False))
     stream_geo_spec = config.get("collection", {}).get("stream_geo_nldi", {})
     stream_geo_table = _optional_location_path(
         location_root,
@@ -67,12 +77,49 @@ def collect_national_hydrography(settings, *, skip_existing=True, smoke=False):
     required_outputs = [hydrography_nc, soil_nc]
     if collect_review_vectors:
         required_outputs.extend([river_gpkg, catchments_gpkg])
+    if collect_reservoirs:
+        required_outputs.append(reservoirs_gpkg)
+    base_outputs = [path for path in required_outputs if path != reservoirs_gpkg]
+    if (
+        skip_existing
+        and collect_reservoirs
+        and not reservoirs_gpkg.exists()
+        and all(path.exists() for path in base_outputs)
+        and _hydromt_basemap_ready(hydrography_nc, target_resolution_degrees)
+    ):
+        reservoir_summary = write_wflow_reservoir_waterbodies(
+            static_sources.get("wflow_collection_extent", {}).get("watersheds", "data/static/aoi/wflow_nhdplus_watersheds.geojson"),
+            reservoirs_gpkg,
+            river_geometry=river_gpkg if river_gpkg.exists() else None,
+            service_url=str(collection.get("nhdplus_hr_service_url", NHDPLUS_HR_MAPSERVER)),
+            timeout_seconds=float(collection.get("request_timeout_seconds", 120)),
+            min_area_km2=float(reservoir_cfg.get("min_area_km2", 1.0)),
+            default_depth_m=float(reservoir_cfg.get("default_depth_m", 5.0)),
+            default_discharge_m3s=float(reservoir_cfg.get("default_discharge_m3s", 0.01)),
+            source_layer_id=int(reservoir_cfg.get("source_layer_id", NHDPLUS_HR_WATERBODY_LAYER)),
+            condition_cfg=reservoir_cfg.get("conditions", {}),
+            location_root=location_root,
+        )
+        return {
+            **_result(
+                "collected",
+                hydrography_nc,
+                river_gpkg,
+                catchments_gpkg,
+                soil_nc,
+                manifest,
+                collect_review_vectors=collect_review_vectors,
+                reservoirs_gpkg=reservoirs_gpkg,
+            ),
+            **reservoir_summary,
+            "reservoir_only": True,
+        }
     if (
         skip_existing
         and all(path.exists() for path in required_outputs)
         and _hydromt_basemap_ready(hydrography_nc, target_resolution_degrees)
     ):
-        return _result(
+        result = _result(
             "reused",
             hydrography_nc,
             river_gpkg,
@@ -80,7 +127,18 @@ def collect_national_hydrography(settings, *, skip_existing=True, smoke=False):
             soil_nc,
             manifest,
             collect_review_vectors=collect_review_vectors,
+            reservoirs_gpkg=reservoirs_gpkg if collect_reservoirs else None,
         )
+        if collect_reservoirs:
+            result.update(
+                _refresh_existing_reservoir_conditions(
+                    reservoirs_gpkg,
+                    reservoir_cfg,
+                    location_root=location_root,
+                    skip_existing=skip_existing,
+                )
+            )
+        return result
 
     wflow_extent = static_sources.get("wflow_collection_extent", {})
     dem_path = _location_path(
@@ -130,6 +188,25 @@ def collect_national_hydrography(settings, *, skip_existing=True, smoke=False):
             "review_vector_status": "skipped",
             "review_vector_note": "NHDPlus/3DHP vectors are optional QA artifacts and are not Wflow build inputs.",
         }
+    if collect_reservoirs:
+        reservoir_summary = write_wflow_reservoir_waterbodies(
+            static_sources.get("wflow_collection_extent", {}).get("watersheds", "data/static/aoi/wflow_nhdplus_watersheds.geojson"),
+            reservoirs_gpkg,
+            river_geometry=river_gpkg if river_gpkg.exists() else None,
+            service_url=str(collection.get("nhdplus_hr_service_url", NHDPLUS_HR_MAPSERVER)),
+            timeout_seconds=float(collection.get("request_timeout_seconds", 120)),
+            min_area_km2=float(reservoir_cfg.get("min_area_km2", 1.0)),
+            default_depth_m=float(reservoir_cfg.get("default_depth_m", 5.0)),
+            default_discharge_m3s=float(reservoir_cfg.get("default_discharge_m3s", 0.01)),
+            source_layer_id=int(reservoir_cfg.get("source_layer_id", NHDPLUS_HR_WATERBODY_LAYER)),
+            condition_cfg=reservoir_cfg.get("conditions", {}),
+            location_root=location_root,
+        )
+    else:
+        reservoir_summary = {
+            "reservoir_status": "skipped",
+            "reservoir_note": "Reservoir/waterbody source collection is not enabled.",
+        }
     ssurgo_polygons = _location_path(
         location_root,
         collection.get(
@@ -171,12 +248,14 @@ def collect_national_hydrography(settings, *, skip_existing=True, smoke=False):
                     "smoke": bool(smoke),
                     **hydrography_summary,
                     **river_summary,
+                    **reservoir_summary,
                     **soil_summary,
                 },
                 "artifacts": {
                     "hydromt_basemap": str(hydrography_nc),
                     "river_geometry": str(river_gpkg),
                     "catchments": str(catchments_gpkg),
+                    "reservoirs": str(reservoirs_gpkg),
                     "wflow_soil_parameters": str(soil_nc),
                 },
             },
@@ -192,7 +271,34 @@ def collect_national_hydrography(settings, *, skip_existing=True, smoke=False):
         soil_nc,
         manifest,
         collect_review_vectors=collect_review_vectors,
+        reservoirs_gpkg=reservoirs_gpkg if collect_reservoirs else None,
     )
+
+
+def _refresh_existing_reservoir_conditions(
+    reservoirs_gpkg: Path,
+    reservoir_cfg: dict,
+    *,
+    location_root: Path,
+    skip_existing: bool,
+):
+    condition_cfg = reservoir_cfg.get("conditions", {}) or {}
+    if not condition_cfg.get("enabled", False) or not reservoirs_gpkg.exists():
+        return {}
+    enriched = enrich_wflow_reservoirs_with_public_conditions(
+        reservoirs_gpkg,
+        condition_cfg,
+        location_root=location_root,
+        output_path=reservoirs_gpkg,
+        skip_existing=skip_existing,
+    )
+    return {
+        "reservoir_condition_status": enriched.provenance.get("status", "collected"),
+        "reservoir_condition_provider": enriched.provenance.get("provider", ""),
+        "reservoir_condition_matched": enriched.provenance.get("matched_reservoirs", 0),
+        "reservoir_condition_unmatched": enriched.provenance.get("unmatched_reservoirs", 0),
+        "reservoir_condition_summary": enriched.provenance.get("summary_csv", ""),
+    }
 
 
 def refresh_wflow_hydrography_basemap(settings, *, skip_existing=False):
@@ -848,6 +954,191 @@ def fetch_nhdplus_hr_catchments(
     if catchments.empty:
         raise ValueError(f"NHDPlus HR NHDPlusCatchment returned no features for bbox {bbox_wgs84}")
     return _prepare_nhdplus_catchments(catchments)
+
+
+def write_wflow_reservoir_waterbodies(
+    search_geometry,
+    output_path,
+    *,
+    river_geometry=None,
+    service_url=NHDPLUS_HR_MAPSERVER,
+    timeout_seconds=120,
+    min_area_km2=1.0,
+    default_depth_m=5.0,
+    default_discharge_m3s=0.01,
+    source_layer_id=NHDPLUS_HR_WATERBODY_LAYER,
+    condition_cfg=None,
+    location_root=None,
+    session_get=None,
+):
+    """Fetch public NHDPlus HR waterbodies and write Wflow reservoir input fields."""
+    location_root = Path(location_root or ".")
+    search_path = _location_path(location_root, search_geometry)
+    if not search_path.exists():
+        raise FileNotFoundError(search_path)
+    region = gpd.read_file(search_path)
+    if region.empty:
+        raise ValueError(f"Wflow reservoir search geometry is empty: {search_path}")
+    if region.crs is None:
+        region = region.set_crs("EPSG:4326")
+    region = region.to_crs("EPSG:4326")
+    geom = region.geometry.union_all()
+    minx, miny, maxx, maxy = geom.bounds
+    raw = fetch_nhdplus_hr_layer(
+        (minx, miny, maxx, maxy),
+        layer_id=source_layer_id,
+        service_url=service_url,
+        timeout_seconds=timeout_seconds,
+        session_get=session_get,
+    )
+    prepared = prepare_nhdplus_hr_waterbodies_for_wflow(
+        raw,
+        geom,
+        river_geometry=river_geometry,
+        min_area_km2=min_area_km2,
+        default_depth_m=default_depth_m,
+        default_discharge_m3s=default_discharge_m3s,
+    )
+    condition_summary = {}
+    if condition_cfg and condition_cfg.get("enabled", False):
+        enriched = enrich_wflow_reservoirs_with_public_conditions(
+            prepared,
+            condition_cfg,
+            location_root=location_root,
+            skip_existing=True,
+            session_get=session_get,
+        )
+        prepared = enriched.frame
+        condition_summary = {
+            "reservoir_condition_status": enriched.provenance.get("status", "collected"),
+            "reservoir_condition_provider": enriched.provenance.get("provider", ""),
+            "reservoir_condition_matched": enriched.provenance.get("matched_reservoirs", 0),
+            "reservoir_condition_unmatched": enriched.provenance.get("unmatched_reservoirs", 0),
+            "reservoir_condition_summary": enriched.provenance.get("summary_csv", ""),
+        }
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    prepared.to_file(output_path, driver="GPKG")
+    return {
+        "reservoir_status": "collected",
+        "reservoir_source": "USGS NHDPlus HR NHDWaterbody",
+        "reservoir_features": int(len(prepared)),
+        "reservoir_min_area_km2": float(min_area_km2),
+        "reservoir_parameter_status": "source_backed_no_control" if condition_summary else "estimated_no_control",
+        "reservoir_output": str(output_path),
+        **condition_summary,
+    }
+
+
+def prepare_nhdplus_hr_waterbodies_for_wflow(
+    waterbodies,
+    search_geometry,
+    *,
+    river_geometry=None,
+    min_area_km2=1.0,
+    default_depth_m=5.0,
+    default_discharge_m3s=0.01,
+):
+    """Return NHDPlus HR waterbodies with HydroMT-Wflow reservoir columns."""
+    if waterbodies is None or waterbodies.empty:
+        return _empty_wflow_reservoir_frame()
+    gdf = waterbodies.copy()
+    if gdf.crs is None:
+        gdf = gdf.set_crs("EPSG:4326")
+    gdf = gdf.to_crs("EPSG:4326")
+    gdf = gdf[gdf.geometry.notna() & ~gdf.geometry.is_empty & gdf.geometry.intersects(search_geometry)].copy()
+    if "ftype" in gdf:
+        gdf = gdf[pd.to_numeric(gdf["ftype"], errors="coerce").eq(390)].copy()
+    area_km2 = pd.to_numeric(gdf.get("areasqkm", pd.Series(dtype=float)), errors="coerce")
+    gdf = gdf.loc[area_km2 >= float(min_area_km2)].copy()
+    if gdf.empty:
+        return _empty_wflow_reservoir_frame()
+    gdf["_area_km2"] = pd.to_numeric(gdf["areasqkm"], errors="coerce")
+    gdf = gdf.sort_values(["_area_km2", "nhdplusid"], ascending=[False, True]).reset_index(drop=True)
+    gdf["waterbody_id"] = np.arange(1, len(gdf) + 1, dtype="int64")
+    gdf["source_nhdplusid"] = gdf.get("nhdplusid", pd.Series(index=gdf.index, dtype=object)).astype(str)
+    gdf["waterbody_name"] = gdf.get("gnis_name", pd.Series(index=gdf.index, dtype=object)).fillna("").astype(str)
+    gdf["Area_avg"] = gdf["_area_km2"].astype(float) * 1_000_000.0
+    gdf["Depth_avg"] = float(default_depth_m)
+    gdf["Vol_avg"] = gdf["Area_avg"] * gdf["Depth_avg"]
+    gdf["Dis_avg"] = _waterbody_discharge_estimates(
+        gdf,
+        river_geometry,
+        default_discharge_m3s=float(default_discharge_m3s),
+    )
+    gdf["reservoir_parameter_source"] = "NHDPlus HR geometry + estimated no-control defaults"
+    gdf["review_status"] = "review_required_public_waterbody_estimates"
+    gdf["reservoir_operation"] = "no_control"
+    keep = [
+        "waterbody_id",
+        "source_nhdplusid",
+        "waterbody_name",
+        "Area_avg",
+        "Depth_avg",
+        "Vol_avg",
+        "Dis_avg",
+        "areasqkm",
+        "elevation",
+        "ftype",
+        "fcode",
+        "purpcode",
+        "onoffnet",
+        "reservoir_operation",
+        "reservoir_parameter_source",
+        "review_status",
+        "geometry",
+    ]
+    return gpd.GeoDataFrame(gdf[[column for column in keep if column in gdf.columns]], geometry="geometry", crs="EPSG:4326")
+
+
+def _waterbody_discharge_estimates(waterbodies, river_geometry, *, default_discharge_m3s):
+    estimates = pd.Series(default_discharge_m3s, index=waterbodies.index, dtype=float)
+    if river_geometry in (None, ""):
+        return estimates
+    river_path = Path(river_geometry)
+    if not river_path.exists():
+        return estimates
+    rivers = gpd.read_file(river_path)
+    if rivers.empty or "qbankfull" not in rivers:
+        return estimates
+    if rivers.crs is None:
+        rivers = rivers.set_crs("EPSG:4326")
+    projected_crs = _local_projected_crs(waterbodies)
+    wb = waterbodies.to_crs(projected_crs).copy()
+    rv = rivers.to_crs(projected_crs).copy()
+    rv = rv[pd.to_numeric(rv["qbankfull"], errors="coerce").notna()].copy()
+    if rv.empty:
+        return estimates
+    joined = gpd.sjoin_nearest(
+        wb[["waterbody_id", "geometry"]],
+        rv[["qbankfull", "geometry"]],
+        how="left",
+        max_distance=5000,
+        distance_col="river_distance_m",
+    )
+    q = pd.to_numeric(joined["qbankfull"], errors="coerce").groupby(joined.index).max()
+    estimates.loc[q.index] = q.fillna(default_discharge_m3s).clip(lower=default_discharge_m3s)
+    return estimates
+
+
+def _empty_wflow_reservoir_frame():
+    return gpd.GeoDataFrame(
+        columns=[
+            "waterbody_id",
+            "source_nhdplusid",
+            "waterbody_name",
+            "Area_avg",
+            "Depth_avg",
+            "Vol_avg",
+            "Dis_avg",
+            "reservoir_operation",
+            "reservoir_parameter_source",
+            "review_status",
+            "geometry",
+        ],
+        geometry="geometry",
+        crs="EPSG:4326",
+    )
 
 
 def load_or_fetch_nhdplus_v2_flowlines(
@@ -1513,8 +1804,18 @@ def _optional_location_path(location_root, value):
     return _location_path(location_root, value)
 
 
-def _result(status, hydrography_nc, river_gpkg, catchments_gpkg, soil_nc, manifest, *, collect_review_vectors=False):
-    return {
+def _result(
+    status,
+    hydrography_nc,
+    river_gpkg,
+    catchments_gpkg,
+    soil_nc,
+    manifest,
+    *,
+    collect_review_vectors=False,
+    reservoirs_gpkg=None,
+):
+    result = {
         "reused": status == "reused",
         "status": status,
         "hydromt_basemap": Path(hydrography_nc),
@@ -1524,3 +1825,7 @@ def _result(status, hydrography_nc, river_gpkg, catchments_gpkg, soil_nc, manife
         "source_artifact_json": Path(manifest),
         "artifact_count": 4 if collect_review_vectors else 2,
     }
+    if reservoirs_gpkg is not None:
+        result["reservoirs"] = Path(reservoirs_gpkg)
+        result["artifact_count"] += 1
+    return result

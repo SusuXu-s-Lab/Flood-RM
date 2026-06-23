@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -1060,8 +1061,27 @@ def _domain_set_submodels(config: dict, location_root: Path) -> list[dict]:
 
 
 def _write_per_event_data_catalog(data_catalog: Path, event_dir: Path, event_id: str) -> Path:
-    """Materialise the data catalog with ``<event_id>`` placeholders bound to this event."""
+    """Materialise the data catalog with ``<event_id>`` placeholders bound to this event.
+
+    Source ``uri:`` paths in the base catalog are stored absolute against whatever
+    machine generated them (e.g. a local ``/home/<user>/.../locations/<name>/...``).
+    Re-root each one under the *runtime* location root so the catalog resolves
+    wherever the repo lives (local vs cluster). Paths already relative are made
+    absolute against the location root; paths outside this location are left as-is.
+    """
+    location_root = Path(data_catalog).resolve().parents[2]
+    marker = f"/locations/{location_root.name}/"
     text = Path(data_catalog).read_text(encoding="utf-8").replace("<event_id>", str(event_id))
+
+    def _reroot(match: "re.Match[str]") -> str:
+        uri = match.group("path").strip()
+        if marker in uri:
+            uri = str(location_root / uri.split(marker, 1)[1])
+        elif not uri.startswith("/"):
+            uri = str(location_root / uri)
+        return f"{match.group('indent')}{uri}"
+
+    text = re.sub(r"(?m)^(?P<indent>\s*uri:\s*)(?P<path>\S.*)$", _reroot, text)
     out = event_dir / "_replay_data_catalog.yml"
     out.write_text(text, encoding="utf-8")
     return out
@@ -1123,9 +1143,17 @@ def _prepare_wflow_run_output_dir(run_config: Path) -> None:
 
 
 def _wflow_run_command(config: dict) -> str:
-    """Resolve the Wflow engine command template (``{run_config}`` placeholder)."""
+    """Resolve the Wflow engine command template (``{run_config}`` placeholder).
+
+    The ``bin_env`` environment variable (default ``WFLOW_BIN``) takes precedence over
+    a configured ``command`` so a deployment can point at an absolute engine path
+    (e.g. a cluster ``wflow_cli`` build) without editing the portable config — config
+    always carries the ``wflow_cli {run_config}`` default, so checking it first would
+    otherwise mask the env override entirely.
+    """
     run_cfg = config.get("wflow", {}).get("run", {}) or {}
-    command = run_cfg.get("command") or os.environ.get(run_cfg.get("bin_env", "WFLOW_BIN"), "")
+    bin_env = run_cfg.get("bin_env") or "WFLOW_BIN"
+    command = os.environ.get(bin_env, "") or run_cfg.get("command")
     if command:
         return command if "{run_config}" in command else f"{command} {{run_config}}"
     # Default to the Wflow.jl CLI convention used by the reference coupling workflow.

@@ -28,6 +28,16 @@ static_sources:
     ksat_output: data/static/soils/ksat_mmhr_austin.tif
 
 collection:
+  lcra_hydromet:
+    output: data/sources/lcra_hydromet/flow_sites.geojson
+    current_output: data/sources/lcra_hydromet/flow_sites_current.csv
+    search_geometry: data/static/aoi/wflow_nhdplus_watersheds.geojson
+    exclude_agencies:
+    - USGS
+    distinct_from_usgs_network: data/sources/usgs_streamgages/streamgage_network.geojson
+    distinct_distance_m: 150
+    status: supplemental_current_flow_discovery
+    promotion_note: Validate historical Hydromet records before using these sites in POT/design-event streamflow catalogs.
   stream_geo_nldi:
     stream_geo_table: data/sources/national_hydrography/stream_geo.parquet
     raw_dir: data/sources/national_hydrography/stream_geo_raw
@@ -37,6 +47,33 @@ collection:
     stream_geo_table: data/sources/national_hydrography/stream_geo.parquet
     nldi_lookup_cache: data/sources/national_hydrography/nldi_stream_geo_comid_cache.csv
     nhdplus_v2_flowlines: data/sources/national_hydrography/nhdplus_v2_flowlines.gpkg
+    reservoirs:
+      enabled: true
+      output: data/sources/national_hydrography/nhdplus_hr_wflow_reservoirs.gpkg
+      source_layer: USGS NHDPlus HR NHDWaterbody
+      operation: no_control
+      min_area_km2: 1.0
+      default_depth_m: 5.0
+      default_discharge_m3s: 0.01
+      conditions:
+        enabled: true
+        provider: twdb_water_data_for_texas
+        provider_label: TWDB Water Data for Texas
+        base_url: https://waterdatafortexas.org/reservoirs/individual
+        period_suffix: -1year
+        statistic: median
+        cache_dir: data/sources/twdb_reservoirs
+        summary_csv: data/sources/twdb_reservoirs/reservoir_condition_summary.csv
+        provenance_json: data/sources/twdb_reservoirs/reservoir_condition_provenance.json
+        request_timeout_seconds: 60
+        min_depth_m: 0.25
+        max_depth_m: 200.0
+        reservoir_slugs:
+          Lake Travis: travis
+          Lake Austin: austin
+          Lake Lyndon B Johnson: lyndon-b-johnson
+          Lake Marble Falls: marble-falls
+      review_note: Public NHDPlus waterbody geometry with TWDB source-backed no-control storage/area/depth where available; unmatched waterbodies and controlled operations require reviewed City/LCRA/GRanD storage, elevation, and release data.
     stream_geo_join_method: attribute_transfer
     stream_geo_join_max_distance_m: 2500
     use_nldi_stream_geo_join: false

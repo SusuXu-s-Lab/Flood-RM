@@ -35,6 +35,7 @@ def plot_wflow_basemap(
     figsize=(8, 6),
     diagnostic: bool = False,
     streamorder_levels: tuple[int, ...] | None = None,
+    legend_outside: bool = True,
 ):
     """Plot a built HydroMT-Wflow model as a reference-style base map.
 
@@ -71,6 +72,9 @@ def plot_wflow_basemap(
         degree buffer for geographic maps and a 2500 m buffer for projected maps.
     streamorder_levels : tuple[int, ...]
         Optional gridded ``meta_streamorder`` classes to overlay for stream-order QA.
+    legend_outside : bool
+        Place the map legend outside the plotting area so it does not obscure
+        SFINCS domains, gauges, rivers, or reservoirs.
     title : str, optional
         Title for the left (elevation) panel.
 
@@ -245,6 +249,7 @@ def plot_wflow_basemap(
     _set_unique_legend(
         ax,
         extra_patches=[*legend_handles, *streamorder_handles, *_waterbody_patches(model, map_crs, ax)],
+        outside=legend_outside,
     )
     return fig, ax
 
@@ -399,8 +404,8 @@ def _reference_rivers_for_basemap(
     streamorder_field: str,
     min_river_streamorder: int | None,
     sfincs_domain_min_river_streamorder: int | None,
-    gage_min_river_streamorder: int | None,
-    gage_river_buffer: float | None,
+    gage_min_river_streamorder: int | None = 1,
+    gage_river_buffer: float | None = None,
 ):
     rivers = _to_map_crs(rivers, map_crs)
     if streamorder_field not in rivers:
@@ -714,7 +719,7 @@ def _iter_geoms(model):
     return []
 
 
-def _set_unique_legend(ax, *, extra_patches=()):
+def _set_unique_legend(ax, *, extra_patches=(), outside: bool = True):
     handles, labels = ax.get_legend_handles_labels()
     ordered = []
     seen = set()
@@ -724,16 +729,27 @@ def _set_unique_legend(ax, *, extra_patches=()):
         seen.add(label)
         ordered.append((handle, label))
     if ordered:
-        ax.legend(
+        kwargs = dict(
             handles=[handle for handle, _ in ordered],
             labels=[label for _, label in ordered],
             title="Legend",
-            loc="lower right",
             frameon=True,
-            framealpha=0.7,
+            framealpha=0.86,
             edgecolor="black",
             facecolor="white",
         )
+        if outside:
+            kwargs.update(
+                loc="upper center",
+                bbox_to_anchor=(0.5, -0.16),
+                ncol=min(3, len(ordered)),
+                borderaxespad=0.0,
+                columnspacing=1.25,
+                handlelength=1.8,
+            )
+        else:
+            kwargs.update(loc="lower right")
+        ax.legend(**kwargs)
 
 
 def _dataarray_bounds(data):
