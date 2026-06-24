@@ -57,24 +57,10 @@ Hydrodynamic models are built in three modes:
 - **Standard**: regular hydrodynamic SFINCS for comparison, smoke tests, or locations that do not require wave coupling
 - **Inland coupled**: HydroMT-Wflow routes upstream rainfall-runoff to SFINCS discharge handoff points while SFINCS receives local direct rainfall using Wflow.jl v1.0.2 [4]
 
-For inland coupled locations, `02_flood/01_region_setup.ipynb` should stay narrow:
-load the merged Region config, build or read the SMART-DS evaluation footprint,
-select the SFINCS domain only from `sfincs_domain_set.include_domain_ids` in the
-Location override, encapsulate that selected coverage in the Wflow HUC watershed
-domain, collect required static data for Wflow and then SFINCS, and plot the
-collected inputs. The notebook should fail clearly when the configured SFINCS
-domain cannot be derived from the `01_grid`/SMART-DS subregions. Do not add
-extra notebook-side domain selection, static-source inventory tables, HydroMT
-data-catalog checks, or broad QA cells there; put that behavior behind deeper
-`src/` modules or in the later model-activation notebooks.
-
-These modes use configured mitigation and hydraulic-structure inputs, such as weirs and thin dams, when those layers were manually incorporated for the Study Location.
-
 Current design-event defaults are:
-
 - 100,000 candidate driver combinations before tail filtering
 - 500 tail-sampled design drivers in the stress/training catalogue
-- one SFINCS or coupled Wflow-SFINCS scenario folder per selected design driver
+- one coupled Wflow-SFINCS or SFINCS-SnapWave scenario folder per selected design driver
 - run outputs and evaluation products
 
 ## References
