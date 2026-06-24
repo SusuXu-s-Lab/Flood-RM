@@ -63,10 +63,7 @@ from wflow_runs.notebook import (
     resolve_location_path,
 )
 from wflow_runs.states import prepare_wflow_event_instate
-from wflow_runs.streamflow_realization import (
-    prepare_wflow_streamflow_realization_for_event_model,
-    require_wflow_external_streamflow_inflow,
-)
+from wflow_runs.streamflow_realization import apply_same_frequency_amplification
 
 CFS_TO_CMS = 0.028316846592
 
@@ -752,24 +749,11 @@ def replay_inland_domain_set(
         if execute:
             _run(_resolve_hydromt_command(step.update_command, location_root), cwd=location_root)
             prepare_wflow_event_instate(event_dir / step.submodel_id, base_root / step.submodel_id)
-            if discharge_source == "wflow_dynamic":
-                prepare_wflow_streamflow_realization_for_event_model(
-                    config,
-                    location_root,
-                    event_id,
-                    catalog_path=catalog_path,
-                    event_model_root=event_dir / step.submodel_id,
-                    submodel_id=step.submodel_id,
-                    start=start,
-                    end=end,
-                )
-                require_wflow_external_streamflow_inflow(
-                    config,
-                    location_root,
-                    event_id,
-                    catalog_path=catalog_path,
-                    event_model_root=event_dir / step.submodel_id,
-                )
+            # ADR-0016: Wflow is the discharge generator. Event models run with rainfall +
+            # antecedent moisture ONLY; no scaled gage hydrograph is injected as external
+            # inflow (that double-counted the gauged catchment's rainfall-runoff response).
+            # Frequency provenance is applied as a single-K Same-Frequency Amplification on
+            # the merged Wflow output below, anchored on the Primary Reference Gage.
             repair_wflow_staticmaps_nodata(event_dir / step.submodel_id)
             repair_wflow_canopy_parameters(event_dir / step.submodel_id)
             if apply_repairs:
@@ -813,6 +797,18 @@ def replay_inland_domain_set(
                 model_crs=model_crs,
                 out_path=discharge_path,
                 handoff_points=_sfincs_handoff_points_for_replay(config, location_root, model_crs),
+            )
+            # ADR-0016: honor the streamflow return period with one Same-Frequency
+            # Amplification K applied uniformly to the Wflow-generated handoff hydrographs,
+            # anchored on the Primary Reference Gage. No-op (K=1) until the catalog provides
+            # a per-event target and a primary_reference_gage is configured.
+            apply_same_frequency_amplification(
+                config,
+                location_root,
+                event_id,
+                catalog_path=catalog_path,
+                discharge_nc=discharge_path,
+                submodel_runs=[{"run_output_dir": s.run_output_dir, "gauges_geojson": s.gauges_geojson} for s in steps],
             )
     report = pd.DataFrame(rows)
     report["sfincs_discharge_forcing"] = str(discharge_path)
@@ -887,7 +883,7 @@ def run_zero_rain_control(
                 {
                     "event_id": str(event_id),
                     "control": "zero_event_forcing",
-                    "zeroed_variables": ["precip", "river_inflow"],
+                    "zeroed_variables": ["precip"],
                     "purpose": "dynamic_handoff_startup_baseflow_qa",
                     "sfincs_discharge": str(discharge_path),
                 },
@@ -909,6 +905,9 @@ def _zero_event_forcing(forcing_path: Path) -> None:
     with xr.open_dataset(forcing_path) as src:
         ds = src.load()
     zeroed = []
+    # ADR-0016: Wflow event models no longer carry an injected ``river_inflow`` forcing;
+    # the zero-rain control isolates baseflow/startup by zeroing precip only (river_inflow
+    # is still handled if a legacy event model carries it).
     for name in ("precip", "river_inflow"):
         if name in ds:
             ds[name] = ds[name] * 0

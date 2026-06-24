@@ -2,19 +2,189 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import re
 import tomllib
 
 import numpy as np
 import pandas as pd
 import tomli_w
 import xarray as xr
+import yaml
 
+from design_events.collect_sources.usgs_streamgages import fetch_nwis_discharge_records
 from wflow_runs.notebook import resolve_location_path
 
 
 WFLOW_EXTERNAL_RIVER_INFLOW = "river_water__external_inflow_volume_flow_rate"
 WFLOW_EXTERNAL_RIVER_INFLOW_VAR = "river_inflow"
 CFS_TO_CMS = 0.028316846592
+
+
+def apply_same_frequency_amplification(
+    config: dict,
+    location_root,
+    event_id: str,
+    *,
+    catalog_path=None,
+    discharge_nc,
+    submodel_runs,
+) -> dict:
+    """ADR-0016 Same-Frequency Amplification of Wflow-generated handoff discharge.
+
+    Scales every handoff hydrograph in ``discharge_nc`` by a single event-level factor
+    ``K = streamflow_target / Q_wflow_peak`` evaluated at the Primary Reference Gage, so the
+    routed flow honors the observed streamflow-frequency target while preserving hydrograph
+    shape, timing, and inter-tributary structure. This is an empirical bias/frequency
+    correction on model output, never a prescribed boundary forcing.
+
+    No-op (``K=1``) unless a ``primary_reference_gage`` is configured and the catalog row
+    carries a streamflow target and the reference gage's simulated peak can be read. Writes
+    ``sfincs_discharge.amplification.json`` provenance next to ``discharge_nc``.
+    """
+    location_root = Path(location_root)
+    discharge_nc = Path(discharge_nc)
+    amp_cfg = (((config.get("inland_coupling", {}) or {}).get("amplification", {})) or {})
+    provenance = {
+        "event_id": str(event_id),
+        "method": "same_frequency_amplification",
+        "K": 1.0,
+        "status": "disabled",
+        "reference_gage": None,
+        "target_cms": None,
+        "wflow_peak_cms": None,
+        "k_band": list(amp_cfg.get("k_band", [])) or None,
+    }
+    provenance_path = discharge_nc.with_name("sfincs_discharge.amplification.json")
+
+    reference_gage = amp_cfg.get("primary_reference_gage") or (
+        ((config.get("inland_coupling", {}) or {}).get("primary_reference_gage"))
+    )
+    if not amp_cfg.get("enabled", True):
+        _write_amplification_provenance(provenance_path, provenance)
+        return provenance
+
+    # Response-based (ADR-0016): discharge is the Wflow response; K is an empirical
+    # calibration BIAS correction, not a per-event streamflow return period. A configured
+    # ``k_calibration`` constant (derived from Wflow calibration/validation against the
+    # Primary Reference Gage) is applied uniformly; absent that, K=1 (unbiased) unless the
+    # catalog carries an explicit per-event ``streamflow_target_cfs``.
+    k_calibration = _finite_float(amp_cfg.get("k_calibration"))
+    if k_calibration and k_calibration > 0 and not amp_cfg.get("prefer_per_event_target", False):
+        k = float(k_calibration)
+        band = amp_cfg.get("k_band")
+        in_band = True if not band else (float(band[0]) <= k <= float(band[1]))
+        provenance.update(K=k, status="calibration_constant" if in_band else "calibration_constant_out_of_band", reference_gage=str(reference_gage) if reference_gage else None)
+        _scale_discharge_in_place(discharge_nc, k, reference_gage)
+        _write_amplification_provenance(provenance_path, provenance)
+        return provenance
+
+    if not reference_gage:
+        provenance["status"] = "response_based_unbiased"
+        _write_amplification_provenance(provenance_path, provenance)
+        return provenance
+
+    try:
+        row = _event_catalog_row(location_root, event_id, catalog_path)
+        target_cms = _event_streamflow_target_cms(row)
+        wflow_peak_cms = _reference_gage_simulated_peak_cms(
+            config, location_root, reference_gage, submodel_runs
+        )
+    except Exception as exc:  # defensive: amplification must never break the handoff
+        provenance.update(status=f"skipped:{type(exc).__name__}", reference_gage=str(reference_gage))
+        _write_amplification_provenance(provenance_path, provenance)
+        return provenance
+
+    provenance.update(reference_gage=str(reference_gage), target_cms=target_cms, wflow_peak_cms=wflow_peak_cms)
+    if not target_cms or not wflow_peak_cms or wflow_peak_cms <= 0:
+        provenance["status"] = "no_target" if not target_cms else "no_wflow_peak"
+        _write_amplification_provenance(provenance_path, provenance)
+        return provenance
+
+    k = float(target_cms) / float(wflow_peak_cms)
+    band = amp_cfg.get("k_band")
+    in_band = True if not band else (float(band[0]) <= k <= float(band[1]))
+    provenance.update(K=k, status="applied" if in_band else "applied_out_of_band")
+    _scale_discharge_in_place(discharge_nc, k, reference_gage)
+    _write_amplification_provenance(provenance_path, provenance)
+    return provenance
+
+
+def _scale_discharge_in_place(discharge_nc: Path, k: float, reference_gage) -> None:
+    if not float(k) or float(k) == 1.0:
+        return
+    with xr.open_dataset(discharge_nc) as src:
+        ds = src.load()
+    if "discharge" not in ds:
+        return
+    ds["discharge"] = ds["discharge"] * float(k)
+    ds["discharge"].attrs["same_frequency_amplification_K"] = float(k)
+    ds.attrs["same_frequency_amplification_K"] = float(k)
+    if reference_gage:
+        ds.attrs["amplification_reference_gage"] = str(reference_gage)
+    tmp = discharge_nc.with_suffix(".amp.tmp.nc")
+    ds.to_netcdf(tmp)
+    tmp.replace(discharge_nc)
+
+
+def _write_amplification_provenance(path: Path, provenance: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(provenance, indent=2), encoding="utf-8")
+
+
+def _event_streamflow_target_cms(row: pd.Series) -> float | None:
+    """Per-event streamflow target peak at the Primary Reference Gage, in m3/s.
+
+    Reads ONLY the ADR-0016 catalog column ``streamflow_target_cfs`` — the POT target at the
+    Primary Reference Gage produced by 03's in-domain anchor. The legacy ``streamflow_cfs`` /
+    ``streamflow`` columns are deliberately NOT used: they hold the retired cross-basin
+    max-envelope magnitude (~mainstem scale), which would massively over-amplify. Until 03 is
+    migrated, this returns None and amplification safely no-ops (status ``no_target``).
+    """
+    value = _finite_float(row.get("streamflow_target_cfs"))
+    if value and value > 0:
+        return float(value) * CFS_TO_CMS
+    return None
+
+
+def _reference_gage_simulated_peak_cms(
+    config: dict, location_root: Path, reference_gage: str, submodel_runs
+) -> float | None:
+    """Peak simulated Wflow discharge (m3/s) at the Primary Reference Gage's output cell.
+
+    Locates the reference gage in each submodel's observation-gauge set, matches its Wflow
+    ``Q_<index>`` output column, and returns the peak. Returns None if the gage is not an
+    output point in any submodel (then amplification no-ops rather than guesses).
+    """
+    import geopandas as gpd
+
+    from wflow_runs.replay import _match_gauge_column, _resolve_wflow_output_csv
+
+    reference_gage = str(reference_gage)
+    for entry in submodel_runs or []:
+        run_output_dir = Path(entry["run_output_dir"])
+        # The output dir is .../events/<event>/<submodel_id>/run_event; submodel id is its parent name.
+        submodel_id = run_output_dir.parent.name
+        gauges_path = _observation_gauges_path(config, location_root, submodel_id)
+        if not gauges_path.exists():
+            continue
+        gauges = gpd.read_file(gauges_path)
+        if "site_no" not in gauges or "index" not in gauges:
+            continue
+        match = gauges[gauges["site_no"].astype(str) == reference_gage]
+        if match.empty:
+            continue
+        try:
+            csv_path = _resolve_wflow_output_csv(run_output_dir, None)
+            table = pd.read_csv(csv_path, index_col=0, parse_dates=True)
+        except (FileNotFoundError, ValueError):
+            continue
+        column = _match_gauge_column(table.columns, match.iloc[0]["index"])
+        if column is None:
+            continue
+        peak = float(pd.to_numeric(table[column], errors="coerce").max())
+        if np.isfinite(peak):
+            return peak
+    return None
 
 
 def prepare_wflow_streamflow_realization_for_event_model(
@@ -54,7 +224,16 @@ def prepare_wflow_streamflow_realization_for_event_model(
             f"{member['member_id']} sites."
         )
 
-    records = _load_streamflow_records(config, location_root, sorted(set(gauges["site_no"].astype(str))))
+    records, records_metadata = _load_event_streamflow_records(
+        config,
+        location_root,
+        event_id=event_id,
+        row=row,
+        member=member,
+        site_nos=sorted(set(gauges["site_no"].astype(str))),
+        start=pd.Timestamp(start),
+        end=pd.Timestamp(end),
+    )
     series_by_site = _event_site_streamflow_series(
         records,
         row,
@@ -110,7 +289,7 @@ def prepare_wflow_streamflow_realization_for_event_model(
         "streamflow_scale_factor": _streamflow_scale_factor(row, member),
         "source_sites": sorted(series_by_site),
         "placed_sites": placement,
-        "records_path": str(_streamflow_records_path(config, location_root)),
+        **records_metadata,
     }
     provenance_path = event_model_root / "streamflow_realization.provenance.json"
     provenance_path.write_text(json.dumps(provenance, indent=2), encoding="utf-8")
@@ -134,28 +313,141 @@ def validate_wflow_streamflow_realization(
     event_model_root=None,
     raise_on_error: bool = True,
 ) -> pd.DataFrame:
-    """Validate that the catalog POT/scaled streamflow event is wired into Wflow.
+    """ADR-0016: validate the rainfall-driven inland event is ready for Wflow generation.
 
-    Dynamic Wflow-to-SFINCS coupling should not accept a discharge handoff unless the
-    selected streamflow realization is represented as Wflow external river inflow. The
-    catalog streamflow fallback is a valid SFINCS time-series source, but it bypasses
-    Wflow routing and is therefore not enough for ``source: wflow_dynamic``.
+    Discharge is the Wflow *response*, not an injected streamflow member, so readiness now
+    checks the rainfall-driven design contract: a rainfall member is wired, and the
+    Same-Frequency Amplification / baseflow Primary Reference Gage is configured. When an
+    event model is supplied it confirms precip forcing is present and that NO external river
+    inflow is wired (legacy injection would double-count the gauged rainfall-runoff response).
     """
     location_root = Path(location_root)
     row = _event_catalog_row(location_root, event_id, catalog_path)
     rows = [
-        _catalog_streamflow_row(row),
-        _streamflow_records_row(config, location_root),
-        _streamflow_members_row(config, location_root, row),
+        _catalog_rainfall_row(row),
+        _amplification_reference_row(config),
     ]
     if event_model_root is not None:
-        rows.extend(_event_model_external_inflow_rows(Path(event_model_root)))
+        rows.extend(_event_model_rainfall_forcing_rows(Path(event_model_root)))
     report = pd.DataFrame(rows)
-    failed = report[report["status"].isin(["failed", "review_required"])]
+    failed = report[report["status"].isin(["failed"])]
     if raise_on_error and not failed.empty:
         details = "; ".join(f"{row.check}: {row.message}" for row in failed.itertuples())
-        raise RuntimeError(f"Wflow streamflow realization is not wired into the event model: {details}")
+        raise RuntimeError(f"Inland rainfall-driven event is not ready for Wflow generation: {details}")
     return report
+
+
+def _catalog_rainfall_row(row: pd.Series) -> dict:
+    missing = [
+        key
+        for key in ("rainfall_member_id", "rainfall_member_file")
+        if row.get(key) is None or pd.isna(row.get(key)) or str(row.get(key)).strip() == ""
+    ]
+    if missing:
+        return {"check": "catalog_rainfall_member", "status": "failed", "message": "missing " + ", ".join(missing)}
+    return {
+        "check": "catalog_rainfall_member",
+        "status": "passed",
+        "message": f"member={row.get('rainfall_member_id')}; scale={row.get('rainfall_scale_factor')}",
+    }
+
+
+def _amplification_reference_row(config: dict) -> dict:
+    gage = (((config.get("inland_coupling", {}) or {}).get("amplification", {}) or {}).get("primary_reference_gage"))
+    if not gage:
+        return {
+            "check": "amplification_reference_gage",
+            "status": "review_required",
+            "message": "inland_coupling.amplification.primary_reference_gage unset (single-K/baseflow validation anchor)",
+        }
+    return {"check": "amplification_reference_gage", "status": "passed", "message": f"primary_reference_gage={gage}"}
+
+
+def _event_model_rainfall_forcing_rows(event_model_root: Path) -> list[dict]:
+    forcing_path = event_model_root / "inmaps-event.nc"
+    rows: list[dict] = []
+    if not forcing_path.exists():
+        rows.append({"check": "wflow_event_precip_forcing", "status": "failed", "message": f"missing {forcing_path}"})
+        return rows
+    with xr.open_dataset(forcing_path) as ds:
+        has_precip = "precip" in ds
+        has_inflow = WFLOW_EXTERNAL_RIVER_INFLOW_VAR in ds
+    rows.append(
+        {
+            "check": "wflow_event_precip_forcing",
+            "status": "passed" if has_precip else "failed",
+            "message": "precip present" if has_precip else "precip missing from inmaps-event.nc",
+        }
+    )
+    rows.append(
+        {
+            "check": "wflow_no_external_inflow",
+            "status": "passed" if not has_inflow else "review_required",
+            "message": (
+                "no external river_inflow (rainfall-driven, ADR-0016)"
+                if not has_inflow
+                else "legacy external river_inflow present — rainfall-runoff double-count risk"
+            ),
+        }
+    )
+    return rows
+
+
+def wflow_streamflow_gage_overlap(
+    config: dict,
+    location_root,
+    event_id: str,
+    *,
+    catalog_path=None,
+    submodel_ids: list[str] | None = None,
+) -> dict:
+    """Describe whether an event's streamflow member can force reviewed Wflow gauges."""
+    import geopandas as gpd
+
+    location_root = Path(location_root)
+    row = _event_catalog_row(location_root, event_id, catalog_path)
+    member = _streamflow_member_metadata(config, location_root, row)
+    member_sites = {str(site) for site in member["site_nos"]}
+    submodel_ids = submodel_ids or _active_wflow_submodel_ids(config, location_root)
+    reviewed_sites: set[str] = set()
+    gauge_paths: list[str] = []
+    missing_paths: list[str] = []
+    for submodel_id in submodel_ids:
+        gauges_path = _observation_gauges_path(config, location_root, submodel_id)
+        if not gauges_path.exists():
+            missing_paths.append(str(gauges_path))
+            continue
+        gauge_paths.append(str(gauges_path))
+        gauges = gpd.read_file(gauges_path)
+        if "site_no" not in gauges:
+            raise ValueError(f"{gauges_path} lacks site_no column for streamflow realization")
+        reviewed_sites.update(gauges["site_no"].astype(str))
+
+    overlap = sorted(member_sites & reviewed_sites)
+    compatible = bool(overlap)
+    if compatible:
+        message = (
+            f"streamflow member {member['member_id']} overlaps reviewed Wflow gauges: "
+            + ", ".join(overlap)
+        )
+    else:
+        message = (
+            f"streamflow member {member['member_id']} sites do not overlap reviewed Wflow observation gauges "
+            f"for active submodels {submodel_ids or 'none'}."
+        )
+        if missing_paths:
+            message += " Missing gauge files: " + ", ".join(missing_paths)
+    return {
+        "event_id": str(event_id),
+        "member_id": member["member_id"],
+        "member_sites": sorted(member_sites),
+        "submodel_ids": list(submodel_ids),
+        "reviewed_site_count": len(reviewed_sites),
+        "overlap_site_nos": overlap,
+        "compatible": compatible,
+        "gauge_paths": gauge_paths,
+        "message": message,
+    }
 
 
 def require_wflow_external_streamflow_inflow(
@@ -178,6 +470,96 @@ def require_wflow_external_streamflow_inflow(
     return report
 
 
+def cache_wflow_event_instantaneous_streamflow(
+    config: dict,
+    location_root,
+    event_id: str,
+    *,
+    catalog_path=None,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    overwrite: bool = False,
+) -> dict:
+    """Fetch and cache USGS instantaneous discharge for one event analog window.
+
+    The cache is the production input used by ``prepare_wflow_streamflow_realization``.
+    It is intentionally separate from model execution so local preflight can download
+    event-window IV hydrographs before inputs are synced to the cluster.
+    """
+    import geopandas as gpd
+
+    location_root = Path(location_root)
+    row = _event_catalog_row(location_root, event_id, catalog_path)
+    member = _streamflow_member_metadata(config, location_root, row)
+    cache_path = _event_streamflow_records_path(config, location_root, event_id, member, start, end)
+    if cache_path.exists() and not overwrite:
+        records = pd.read_csv(cache_path, dtype={"site_no": str}, parse_dates=["time"])
+        return {
+            "event_id": str(event_id),
+            "member_id": member["member_id"],
+            "status": "cached",
+            "records_path": str(cache_path),
+            "record_count": int(len(records)),
+            "site_count": int(records["site_no"].astype(str).nunique()) if "site_no" in records else 0,
+            "records_source": _record_source_summary(records),
+            "records_resolution": _record_resolution_summary(records),
+        }
+
+    reviewed_sites: set[str] = set()
+    for submodel_id in _active_wflow_submodel_ids(config, location_root):
+        gauges_path = _observation_gauges_path(config, location_root, submodel_id)
+        if not gauges_path.exists():
+            continue
+        gauges = gpd.read_file(gauges_path)
+        if "site_no" not in gauges:
+            raise ValueError(f"{gauges_path} lacks site_no column for streamflow realization")
+        reviewed_sites.update(gauges["site_no"].astype(str))
+    source_sites = sorted(set(member["site_nos"]) & reviewed_sites)
+    if not source_sites:
+        return {
+            "event_id": str(event_id),
+            "member_id": member["member_id"],
+            "status": "no_reviewed_site_overlap",
+            "records_path": str(cache_path),
+            "record_count": 0,
+            "site_count": 0,
+            "records_source": "",
+            "records_resolution": "",
+        }
+
+    records = _fetch_event_instantaneous_records(
+        config,
+        member=member,
+        site_nos=source_sites,
+        row=row,
+        start=pd.Timestamp(start),
+        end=pd.Timestamp(end),
+    )
+    if records.empty:
+        return {
+            "event_id": str(event_id),
+            "member_id": member["member_id"],
+            "status": "no_iv_records",
+            "records_path": str(cache_path),
+            "record_count": 0,
+            "site_count": 0,
+            "records_source": "",
+            "records_resolution": "",
+        }
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    records.to_csv(cache_path, index=False)
+    return {
+        "event_id": str(event_id),
+        "member_id": member["member_id"],
+        "status": "fetched",
+        "records_path": str(cache_path),
+        "record_count": int(len(records)),
+        "site_count": int(records["site_no"].astype(str).nunique()),
+        "records_source": _record_source_summary(records),
+        "records_resolution": _record_resolution_summary(records),
+    }
+
+
 def _configure_external_inflow(toml_path: Path) -> None:
     if not toml_path.exists():
         raise FileNotFoundError(toml_path)
@@ -198,6 +580,39 @@ def _observation_gauges_path(config: dict, location_root: Path, submodel_id: str
     return root / f"{submodel_id}_observation_gauges.geojson"
 
 
+def _active_wflow_submodel_ids(config: dict, location_root: Path) -> list[str]:
+    domain_set = ((config.get("wflow", {}) or {}).get("domain_set", {}) or {})
+    configured = [
+        str(item["wflow_submodel_id"])
+        for item in domain_set.get("submodels", []) or []
+        if item.get("wflow_submodel_id")
+    ]
+    if configured:
+        return configured
+
+    manifest_path = resolve_location_path(
+        location_root,
+        (config.get("wflow", {}) or {}).get("domain_set_manifest", "data/wflow/domain_set.yaml"),
+    )
+    if manifest_path.exists():
+        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
+        manifested = [
+            str(item["wflow_submodel_id"])
+            for item in manifest.get("submodels", []) or []
+            if item.get("wflow_submodel_id")
+        ]
+        if manifested:
+            return manifested
+
+    gauges_root = (
+        ((config.get("wflow", {}) or {}).get("gauges", {}) or {}).get("root")
+        or "data/wflow/domain_set_gauges"
+    )
+    gauges_root = resolve_location_path(location_root, gauges_root)
+    suffix = "_observation_gauges.geojson"
+    return sorted(path.name[: -len(suffix)] for path in gauges_root.glob(f"*{suffix}"))
+
+
 def _load_streamflow_records(config: dict, location_root: Path, site_nos: list[str]) -> pd.DataFrame:
     records_path = _streamflow_records_path(config, location_root)
     if not records_path.exists():
@@ -207,6 +622,155 @@ def _load_streamflow_records(config: dict, location_root: Path, site_nos: list[s
     if records.empty:
         raise ValueError(f"No streamflow records for requested Wflow sites in {records_path}")
     return records
+
+
+def _load_event_streamflow_records(
+    config: dict,
+    location_root: Path,
+    *,
+    event_id: str,
+    row: pd.Series,
+    member: dict,
+    site_nos: list[str],
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+) -> tuple[pd.DataFrame, dict]:
+    settings = (((config.get("wflow", {}) or {}).get("streamflow_realization", {}) or {}))
+    cache_path = _event_streamflow_records_path(config, location_root, event_id, member, start, end)
+    source_sites = sorted(set(site_nos) & set(member["site_nos"]))
+
+    if cache_path.exists():
+        records = pd.read_csv(cache_path, dtype={"site_no": str}, parse_dates=["time"])
+        records = records[records["site_no"].astype(str).isin(set(site_nos))].copy()
+        if not records.empty:
+            return records, {
+                "records_path": str(cache_path),
+                "records_source": _record_source_summary(records),
+                "records_resolution": _record_resolution_summary(records),
+            }
+
+    fetch_iv = bool(settings.get("fetch_instantaneous_usgs", False))
+    require_iv = bool(settings.get("require_instantaneous_usgs", False))
+    if fetch_iv:
+        fetched = _fetch_event_instantaneous_records(
+            config,
+            member=member,
+            site_nos=source_sites,
+            row=row,
+            start=start,
+            end=end,
+        )
+        if not fetched.empty:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            fetched.to_csv(cache_path, index=False)
+            return fetched, {
+                "records_path": str(cache_path),
+                "records_source": _record_source_summary(fetched),
+                "records_resolution": _record_resolution_summary(fetched),
+            }
+        if require_iv:
+            raise ValueError(
+                "No USGS instantaneous streamflow records were fetched for event "
+                f"{event_id!r} member {member['member_id']!r}."
+            )
+
+    fallback = _load_streamflow_records(config, location_root, site_nos)
+    if require_iv and not fallback.get("source", pd.Series(dtype=str)).astype(str).str.contains("usgs_iv").any():
+        raise ValueError(
+            "USGS instantaneous event-window records are required, but no cached IV records "
+            f"exist at {cache_path} and fetch_instantaneous_usgs is disabled or returned no data."
+        )
+    return fallback, {
+        "records_path": str(_streamflow_records_path(config, location_root)),
+        "records_source": _record_source_summary(fallback),
+        "records_resolution": _record_resolution_summary(fallback),
+    }
+
+
+def _fetch_event_instantaneous_records(
+    config: dict,
+    *,
+    member: dict,
+    site_nos: list[str],
+    row: pd.Series,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+) -> pd.DataFrame:
+    if not site_nos:
+        return pd.DataFrame(columns=["site_no", "time", "discharge_cfs", "source"])
+    window_start, window_end = _analog_window(row, member, start=start, end=end)
+    spec = dict(((config.get("collection", {}) or {}).get("usgs_streamgages", {}) or {}))
+    records_cfg = dict(spec.get("streamflow_records", {}) or {})
+    records_cfg["service"] = "iv"
+    records_cfg.pop("stat_cd", None)
+    spec["streamflow_records"] = records_cfg
+    records = []
+    for site_no in site_nos:
+        records.extend(fetch_nwis_discharge_records(spec, site_no, window_start, window_end))
+    frame = pd.DataFrame(records, columns=["site_no", "time", "discharge_cfs", "source"])
+    if frame.empty:
+        return frame
+    frame["site_no"] = frame["site_no"].astype(str)
+    frame["time"] = pd.to_datetime(frame["time"], errors="coerce")
+    frame["discharge_cfs"] = pd.to_numeric(frame["discharge_cfs"], errors="coerce")
+    return frame.dropna(subset=["site_no", "time", "discharge_cfs"]).sort_values(["site_no", "time"]).reset_index(drop=True)
+
+
+def _analog_window(row: pd.Series, member: dict, *, start: pd.Timestamp, end: pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp]:
+    reference_time = pd.Timestamp(row.get("event_reference_time"))
+    analog_event_time = pd.Timestamp(member["event_time"])
+    pre = reference_time - start
+    post = end - reference_time
+    return analog_event_time - pre, analog_event_time + post
+
+
+def _event_streamflow_records_path(
+    config: dict,
+    location_root: Path,
+    event_id: str,
+    member: dict,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+) -> Path:
+    settings = (((config.get("wflow", {}) or {}).get("streamflow_realization", {}) or {}))
+    root = resolve_location_path(
+        location_root,
+        settings.get("event_records_root", "data/sources/usgs_streamgages/event_streamflow_iv"),
+    )
+    token = "_".join(
+        [
+            str(event_id),
+            str(member["member_id"]),
+            pd.Timestamp(start).strftime("%Y%m%dT%H%M%S"),
+            pd.Timestamp(end).strftime("%Y%m%dT%H%M%S"),
+        ]
+    )
+    return root / f"{_safe_filename_token(token)}.csv"
+
+
+def _safe_filename_token(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
+
+
+def _record_source_summary(records: pd.DataFrame) -> str:
+    if "source" not in records:
+        return "unknown"
+    counts = records["source"].fillna("unknown").astype(str).value_counts().sort_index()
+    return ",".join(f"{source}:{count}" for source, count in counts.items())
+
+
+def _record_resolution_summary(records: pd.DataFrame) -> str:
+    if records.empty:
+        return "empty"
+    pieces = []
+    for site_no, group in records.groupby(records["site_no"].astype(str), sort=True):
+        times = pd.Series(pd.to_datetime(group["time"], errors="coerce")).dropna().sort_values()
+        diffs = times.diff().dropna().dt.total_seconds() / 3600.0
+        if diffs.empty:
+            pieces.append(f"{site_no}:single")
+        else:
+            pieces.append(f"{site_no}:median_dt_h={float(diffs.median()):.3g}")
+    return ";".join(pieces)
 
 
 def _event_site_streamflow_series(
@@ -219,10 +783,7 @@ def _event_site_streamflow_series(
 ) -> dict[str, pd.Series]:
     reference_time = pd.Timestamp(row.get("event_reference_time"))
     analog_event_time = pd.Timestamp(member["event_time"])
-    pre = reference_time - start
-    post = end - reference_time
-    window_start = analog_event_time - pre
-    window_end = analog_event_time + post
+    window_start, window_end = _analog_window(row, member, start=start, end=end)
     target_index = pd.date_range(start=start, end=end, freq="h")
     scale = _streamflow_scale_factor(row, member)
     out: dict[str, pd.Series] = {}

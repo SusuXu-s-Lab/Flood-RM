@@ -17,6 +17,7 @@ from sfincs_runs.build_base import (
 )
 from sfincs_runs.scenarios.inland_initial_conditions import configure_hydrograph_initial_conditions
 from wflow_runs.dynamic_handoff import dynamic_handoff_paths, require_accepted_dynamic_handoff
+from wflow_runs.streamflow_realization import wflow_streamflow_gage_overlap
 
 
 stale_sfincs_outputs = {
@@ -190,13 +191,32 @@ def dynamic_handoff_readiness_table(
                 }
             )
         except Exception as exc:
+            status = "blocked"
+            issue = str(exc)
+            compatibility = {}
+            try:
+                compatibility = wflow_streamflow_gage_overlap(
+                    config,
+                    location_root,
+                    event_id,
+                    catalog_path=catalog_path,
+                )
+                if not compatibility.get("compatible", False):
+                    status = "incompatible"
+                    issue = str(compatibility.get("message", issue))
+            except Exception:
+                compatibility = {}
             rows.append(
                 {
                     "event_id": event_id,
-                    "status": "blocked",
+                    "status": status,
                     "sfincs_discharge_forcing": str(paths["discharge"]),
                     "acceptance": str(paths["acceptance"]),
-                    "issue": str(exc),
+                    "issue": issue,
+                    "streamflow_member_id": compatibility.get("member_id", ""),
+                    "streamflow_member_sites": ",".join(compatibility.get("member_sites", [])),
+                    "reviewed_gage_overlap": ",".join(compatibility.get("overlap_site_nos", [])),
+                    "reviewed_gage_count": compatibility.get("reviewed_site_count", ""),
                 }
             )
     return pd.DataFrame(rows)

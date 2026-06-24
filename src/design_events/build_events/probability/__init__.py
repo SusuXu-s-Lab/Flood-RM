@@ -14,6 +14,11 @@ from design_events.build_events.probability.design_catalog import (
     build_joint_design_catalog,
     fit_index_marginal,
 )
+from design_events.build_events.probability.inland_dependence import (
+    InlandDesignCatalogResult,
+    build_inland_design_catalog,
+    fit_reference_streamflow_pot,
+)
 from design_events.build_events.probability.exceedance import (
     AndExceedanceLabels,
     and_joint_survival,
@@ -36,9 +41,12 @@ __all__ = [
     "and_label_frame",
     "and_return_period",
     "attach_field_preserving_realization",
+    "InlandDesignCatalogResult",
     "build_historical_tail_catalog",
+    "build_inland_design_catalog",
     "build_joint_design_catalog",
     "check_stress_budget",
+    "fit_reference_streamflow_pot",
     "draw_relative_lags",
     "fit_driver_dependence",
     "fit_index_marginal",

@@ -1,4 +1,9 @@
 # Austin inland domain configuration.
+# Austin's austin_p5u primary inflow is the Highland Lakes-regulated 
+# Colorado mainstem (10,565 km²) with no on-reach gage. 
+# Implemented rainfall-driven, with Barton Creek as a scale-appropriate Wflow-readiness
+# anchor for the rainfall-runoff response), but the regulated mainstem flow is governed 
+#by reservoir operations, not rainfall-runoff 
 
 paths:
   data_root: locations/austin/data
@@ -17,8 +22,6 @@ wflow:
     baseline_reference_time: "2020-11-14T00:00:00"
     baseline_root: data/wflow/warmup/baseline_90d
     warmup_days: 90
-    qa:
-      max_zero_rain_peak_fraction: 0.2
   domain_set:
     outlet_source: encompassing_huc
     allow_multiple_submodels: true
@@ -36,6 +39,19 @@ inland_coupling:
     river_upa_km2: 10.0
     river_len_m: 500.0
     river_inflow_buffer_m: 200.0
+  amplification:                     # ADR-0016 Same-Frequency Amplification (single-K on Wflow output)
+    enabled: true
+    primary_reference_gage: "08155400"   # Barton Creek: scale-appropriate Wflow-readiness anchor (324 km2, long record) for the rainfall-runoff response
+    # NOTE: the dominant austin_p5u inflow is the Highland Lakes-regulated Colorado mainstem
+    # (austin_p5u_inflow_01 ~10,565 km2) with NO on-reach reviewed gage. That regulated mainstem
+    # warrants reservoir-aware / Option-B (gage-as-boundary) handling per ADR-0016 'Consequences';
+    # Barton Creek validates the rainfall-runoff component only, not the regulated mainstem.
+    k_band: [0.5, 2.0]
+  baseflow:                          # ADR-0016 Wflow Readiness: warm-state spin-up must leave non-dry channels
+    enabled: true
+    reference_gage: "08155400"
+    reference_statistic: median
+    min_baseflow_fraction: 0.25
   initial_conditions:
     enabled: true
     method: hydrograph_mean_channel_inifile

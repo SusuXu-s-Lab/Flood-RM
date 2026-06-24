@@ -7,12 +7,12 @@
 # Units are feet throughout, the native unit of NSI first-floor heights and the
 # HAZUS curves, so no curve resampling is needed.
 #
-# Coupling: per-event hazard is produced as inundation depth above the SFINCS
-# subgrid DEM (hydromt_sfincs.utils.downscale_floodmap of zsmax onto dep_subgrid),
-# i.e. the SFINCS DEM is baked into the hazard. FIAT therefore reads a DEM-referenced
-# depth map (settings.toml hazard.elevation_reference = "DEM") and only subtracts the
-# NSI ground-floor height. The model CRS is EPSG:4326 (NSI native); hazard rasters are
-# reprojected to match.
+# Coupling: per-event hazard is exported as datum-referenced peak water level from
+# SFINCS (`zsmax`) in feet. FIAT subtracts each structure's ground elevation and
+# ground-floor height. The ground elevation in exposure.csv is overwritten after the
+# HydroMT-FIAT build by sampling the SFINCS subgrid DEM at each NSI building point, so
+# FIAT structure depths are evaluated against the same vertical datum as the SFINCS
+# water-level raster. Event settings therefore use hazard.elevation_reference = "datum".
 #
 # Region is injected at build time by fiat_runs.build_model (reprojected to EPSG:4326,
 # which the NSI API requires).

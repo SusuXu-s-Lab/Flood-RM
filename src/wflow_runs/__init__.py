@@ -64,6 +64,7 @@ from wflow_runs.dynamic_handoff import (
 from wflow_runs.streamflow_realization import (
     prepare_wflow_streamflow_realization_for_event_model,
     validate_wflow_streamflow_realization,
+    wflow_streamflow_gage_overlap,
 )
 
 __all__ = [
@@ -126,4 +127,5 @@ __all__ = [
     "require_accepted_dynamic_handoff",
     "prepare_wflow_streamflow_realization_for_event_model",
     "validate_wflow_streamflow_realization",
+    "wflow_streamflow_gage_overlap",
 ]

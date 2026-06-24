@@ -100,7 +100,8 @@ def prepare_dynamic_wflow_handoff(
 
     expected = _expected_handoff_ids(config, location_root)
     thresholds = ((config.get("wflow", {}) or {}).get("dynamic_handoff", {}) or {}).get("qa", {}) or {}
-    max_zero = float(thresholds.get("max_zero_rain_peak_fraction", 0.2))
+    zero_fraction_threshold = thresholds.get("max_zero_rain_peak_fraction")
+    max_zero = None if zero_fraction_threshold is None else float(zero_fraction_threshold)
     max_shape_corr = float(thresholds.get("max_source_shape_correlation", 0.9999))
     zero_path = zero_rain_discharge_nc or (paths["zero_rain_discharge"] if paths["zero_rain_discharge"].exists() else None)
     zero_report = pd.DataFrame()

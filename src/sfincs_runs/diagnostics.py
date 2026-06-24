@@ -33,6 +33,9 @@ import xarray as xr
 from IPython.display import display
 from shapely.geometry import LineString
 
+M_TO_FT = 3.28084
+DEFAULT_PROBABILITY_DEPTHS_FT = (0.5, 1.0, 2.0)
+
 
 # ─── private helpers ──────────────────────────────────────────────────────────
 
@@ -42,6 +45,372 @@ def _axis_message(ax, message: str) -> None:
     ax.text(0.5, 0.5, message, ha="center", va="center", transform=ax.transAxes)
     ax.set_xticks([])
     ax.set_yticks([])
+
+
+def completed_sfincs_runs(storage_root) -> pd.DataFrame:
+    """Discover completed SFINCS event outputs."""
+    rows = []
+    for event_dir in sorted(Path(storage_root).glob("*")):
+        map_path = event_dir / "sfincs_map.nc"
+        if not map_path.exists():
+            continue
+        scenario = "base"
+        manifest = event_dir / "forcing_manifest.json"
+        if manifest.exists():
+            try:
+                scenario = json.loads(manifest.read_text(encoding="utf-8")).get("design_scenario", "base")
+            except Exception:
+                scenario = "base"
+        rows.append({"event_id": event_dir.name, "design_scenario": scenario, "map_path": str(map_path)})
+    return pd.DataFrame(rows)
+
+
+def annual_rate_table(weights: pd.DataFrame, total_rate: float) -> pd.DataFrame:
+    """Event weights with annual occurrence rates from the copula mixture rate."""
+    table = weights.copy()
+    table["probability_weight"] = pd.to_numeric(table["probability_weight"], errors="coerce")
+    table["annual_rate"] = float(total_rate) * table["probability_weight"]
+    return table
+
+
+def poisson_exceedance_probability(annual_rate) -> np.ndarray:
+    """At-least-one annual exceedance probability for a Poisson event process."""
+    return 1.0 - np.exp(-np.asarray(annual_rate, dtype=float))
+
+
+def event_outcome_table(
+    runs: pd.DataFrame,
+    catalog_csv,
+    weights: pd.DataFrame,
+    total_rate: float,
+    outcomes: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Join completed SFINCS outcomes to catalog driver values and annual rates."""
+    catalog = pd.read_csv(catalog_csv)
+    stress_catalog = Path(catalog_csv).with_name("resilience_stress_training_catalog.csv")
+    if stress_catalog.exists():
+        stress = pd.read_csv(stress_catalog)
+        extra_cols = [c for c in stress.columns if c != "event_id" and c not in catalog.columns]
+        if extra_cols:
+            catalog = catalog.merge(stress[["event_id", *extra_cols]], on="event_id", how="left")
+
+    rate = annual_rate_table(weights, total_rate)
+    out = runs[["event_id", "design_scenario", "map_path"]].merge(catalog, on="event_id", how="left")
+    out = out.merge(
+        rate[["event_id", "probability_weight", "annual_rate"]],
+        on="event_id",
+        how="left",
+        suffixes=("", "_weight"),
+    )
+    if "probability_weight_weight" in out:
+        out["probability_weight"] = out["probability_weight_weight"].combine_first(out.get("probability_weight"))
+        out = out.drop(columns=["probability_weight_weight"])
+    if outcomes is not None and not outcomes.empty:
+        outcome_cols = [c for c in outcomes.columns if c not in out.columns or c in ("event_id", "design_scenario")]
+        out = out.merge(outcomes[outcome_cols], on=["event_id", "design_scenario"], how="left")
+    out["probability_weight"] = pd.to_numeric(out["probability_weight"], errors="coerce")
+    out["annual_rate"] = pd.to_numeric(out["annual_rate"], errors="coerce")
+    return out
+
+
+def outcome_coverage(outcomes: pd.DataFrame, weights: pd.DataFrame) -> pd.Series:
+    """Coverage receipt for partial/full Event Catalog probability integration."""
+    covered = outcomes[pd.to_numeric(outcomes.get("probability_weight"), errors="coerce").notna()].copy()
+    total_weight = float(pd.to_numeric(weights["probability_weight"], errors="coerce").sum())
+    covered_weight = float(pd.to_numeric(covered["probability_weight"], errors="coerce").sum())
+    return pd.Series(
+        {
+            "completed_outcome_events": int(len(covered)),
+            "catalog_weighted_events": int(len(weights)),
+            "covered_probability_weight": covered_weight,
+            "catalog_probability_weight": total_weight,
+            "weight_coverage": covered_weight / total_weight if total_weight else np.nan,
+        },
+        name="catalog_probability_coverage",
+    )
+
+
+def masked_sfincs_depth(
+    map_path,
+    *,
+    huthresh_m: float = 0.1,
+    land_min_elev_m: float | None = -0.5,
+) -> dict:
+    """Masked SFINCS flood depth in feet for catalog probability maps."""
+    with xr.open_dataset(map_path) as ds:
+        zsmax = ds["zsmax"].max("timemax") if "zsmax" in ds and "timemax" in ds["zsmax"].dims else ds["zsmax"]
+        zs0 = ds["zs"].isel(time=0)
+        depth_m = zsmax - ds["zb"]
+        flooded = (depth_m > huthresh_m) & ((zsmax - zs0) > huthresh_m)
+        if land_min_elev_m is not None:
+            flooded = flooded & (ds["zb"] >= land_min_elev_m)
+        return {
+            "x": np.asarray(ds["x"].values, dtype=float),
+            "y": np.asarray(ds["y"].values, dtype=float),
+            "depth_ft": np.asarray((depth_m.where(flooded) * M_TO_FT).values, dtype=float),
+        }
+
+
+def event_depth_metrics(runs: pd.DataFrame, *, huthresh_m: float = 0.1, land_min_elev_m: float | None = -0.5) -> pd.DataFrame:
+    """Per-event flood-depth response metrics from completed SFINCS maps."""
+    rows = []
+    for row in runs.itertuples(index=False):
+        data = masked_sfincs_depth(row.map_path, huthresh_m=huthresh_m, land_min_elev_m=land_min_elev_m)
+        depth = np.asarray(data["depth_ft"], dtype=float)
+        wet = np.isfinite(depth) & (depth > 0)
+        rows.append(
+            {
+                "event_id": row.event_id,
+                "design_scenario": row.design_scenario,
+                "max_depth_ft": float(np.nanmax(depth)) if wet.any() else 0.0,
+                "mean_wet_depth_ft": float(np.nanmean(depth[wet])) if wet.any() else 0.0,
+                "flooded_cell_count": int(wet.sum()),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def catalog_depth_probability(
+    runs: pd.DataFrame,
+    outcomes: pd.DataFrame,
+    *,
+    thresholds_ft=DEFAULT_PROBABILITY_DEPTHS_FT,
+    huthresh_m: float = 0.1,
+    land_min_elev_m: float | None = -0.5,
+) -> xr.Dataset:
+    """Catalog-weighted flood-depth annual exceedance probability rasters."""
+    if runs.empty:
+        raise ValueError("runs is empty")
+    threshold_values = tuple(float(t) for t in thresholds_ft)
+    lookup = outcomes.drop_duplicates(["event_id", "design_scenario"]).set_index(["event_id", "design_scenario"])
+    first = masked_sfincs_depth(runs.iloc[0]["map_path"], huthresh_m=huthresh_m, land_min_elev_m=land_min_elev_m)
+    shape = np.asarray(first["depth_ft"]).shape
+    exceedance_rate = {t: np.zeros(shape, dtype=float) for t in threshold_values}
+    used_weight = 0.0
+    used_events = 0
+
+    for row in runs.itertuples(index=False):
+        key = (row.event_id, row.design_scenario)
+        if key not in lookup.index:
+            continue
+        rec = lookup.loc[key]
+        annual_rate = float(pd.to_numeric(rec.get("annual_rate"), errors="coerce"))
+        weight = float(pd.to_numeric(rec.get("probability_weight"), errors="coerce"))
+        if not np.isfinite(annual_rate) or annual_rate <= 0:
+            continue
+        data = masked_sfincs_depth(row.map_path, huthresh_m=huthresh_m, land_min_elev_m=land_min_elev_m)
+        depth = np.asarray(data["depth_ft"], dtype=float)
+        for threshold in threshold_values:
+            exceedance_rate[threshold] += np.where(np.isfinite(depth) & (depth > threshold), annual_rate, 0.0)
+        used_weight += weight if np.isfinite(weight) else 0.0
+        used_events += 1
+
+    ds = xr.Dataset(coords={"n": np.arange(shape[0]), "m": np.arange(shape[1])})
+    ds = ds.assign_coords(
+        x=(("n", "m"), np.asarray(first["x"], dtype=float)),
+        y=(("n", "m"), np.asarray(first["y"], dtype=float)),
+    )
+    for threshold in threshold_values:
+        token = str(threshold).replace(".", "p")
+        rate_name = f"depth_gt_{token}ft_annual_rate"
+        prob_name = f"depth_gt_{token}ft_aep"
+        ds[rate_name] = (("n", "m"), exceedance_rate[threshold])
+        ds[prob_name] = (("n", "m"), poisson_exceedance_probability(exceedance_rate[threshold]))
+        ds[rate_name].attrs.update(long_name=f"Annual exceedance rate for depth > {threshold:g} ft", units="1/year")
+        ds[prob_name].attrs.update(long_name=f"P(annual max flood depth > {threshold:g} ft)", units="1")
+    ds.attrs.update(
+        completed_event_count=int(used_events),
+        covered_probability_weight=float(used_weight),
+        thresholds_ft=list(threshold_values),
+        probability_method="1 - exp(-sum(total_rate_per_year * probability_weight for exceeding events))",
+    )
+    return ds
+
+
+def _add_evaluation_basemap(ax, *, crs="EPSG:32619", style: str = "osm") -> None:
+    providers = {
+        "dark": ctx.providers.CartoDB.DarkMatter,
+        "satellite": ctx.providers.Esri.WorldImagery,
+        "osm": ctx.providers.OpenStreetMap.HOT,
+    }
+    ctx.add_basemap(ax, crs=crs, source=providers.get(style, providers["osm"]), attribution_size=7)
+
+
+def plot_depth_probability(
+    probability_ds: xr.Dataset,
+    threshold_ft: float,
+    *,
+    ax=None,
+    basemap_style: str = "osm",
+    title: str | None = None,
+    vmax: float | None = None,
+    crs: str = "EPSG:32619",
+):
+    """Plot a catalog-weighted flood-depth annual exceedance probability layer."""
+    key = f"depth_gt_{str(float(threshold_ft)).replace('.', 'p')}ft_aep"
+    if key not in probability_ds:
+        key = f"depth_gt_{str(threshold_ft).replace('.', 'p')}ft_aep"
+    if key not in probability_ds:
+        raise KeyError(f"{key} not in probability dataset")
+    if ax is None:
+        _, ax = plt.subplots(figsize=(8, 7))
+    x = np.asarray(probability_ds["x"].values, dtype=float)
+    y = np.asarray(probability_ds["y"].values, dtype=float)
+    raw = np.asarray(probability_ds[key].values, dtype=float)
+    prob = np.ma.masked_where(~np.isfinite(raw) | (raw <= 0), raw)
+    ax.set_xlim(float(np.nanmin(x)), float(np.nanmax(x)))
+    ax.set_ylim(float(np.nanmin(y)), float(np.nanmax(y)))
+    try:
+        _add_evaluation_basemap(ax, crs=crs, style=basemap_style)
+    except Exception as exc:
+        ax.text(0.01, 0.01, f"Basemap unavailable: {exc}", transform=ax.transAxes, fontsize=8)
+    positive = raw[np.isfinite(raw) & (raw > 0)]
+    plot_vmax = vmax if vmax is not None else (float(np.nanpercentile(positive, 99)) if positive.size else 0.01)
+    plot_vmax = max(plot_vmax, 0.01)
+    mesh = ax.pcolormesh(x, y, prob, shading="auto", cmap="magma", vmin=0.0, vmax=plot_vmax, alpha=0.84, zorder=3)
+    ax.set_title(title or f"Annual probability depth > {threshold_ft:g} ft")
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    return ax, mesh
+
+
+def weighted_standardized_associations(
+    data: pd.DataFrame,
+    drivers: list[str],
+    outcomes: list[str],
+    *,
+    weight_col: str = "probability_weight",
+    group_col: str = "storm_type",
+    min_rows: int = 8,
+) -> pd.DataFrame:
+    """Weighted standardized driver/outcome associations for diagnostic review."""
+    rows = []
+    groups = [("all", data)]
+    if group_col in data:
+        groups.extend((str(name), group) for name, group in data.groupby(group_col, dropna=False))
+    for group_name, group in groups:
+        available_drivers = [d for d in drivers if d in group]
+        for outcome in [o for o in outcomes if o in group]:
+            cols = [outcome, *available_drivers]
+            if weight_col in group:
+                cols.append(weight_col)
+            sub = group[cols].copy()
+            for col in [outcome, *available_drivers, weight_col]:
+                if col in sub:
+                    sub[col] = pd.to_numeric(sub[col], errors="coerce")
+            sub = sub.dropna(subset=[outcome, *available_drivers])
+            if len(sub) < int(min_rows) or not available_drivers:
+                continue
+            weights = sub[weight_col].to_numpy(dtype=float) if weight_col in sub else np.ones(len(sub), dtype=float)
+            weights = np.where(np.isfinite(weights) & (weights > 0), weights, 0.0)
+            if weights.sum() <= 0:
+                weights = np.ones(len(sub), dtype=float)
+            y = _weighted_zscore(sub[outcome].to_numpy(dtype=float), weights)
+            xcols = []
+            used_drivers = []
+            for driver in available_drivers:
+                z = _weighted_zscore(sub[driver].to_numpy(dtype=float), weights)
+                if np.isfinite(z).all() and np.nanstd(z) > 0:
+                    xcols.append(z)
+                    used_drivers.append(driver)
+            if not xcols:
+                continue
+            x = np.column_stack([np.ones(len(sub)), *xcols])
+            root_w = np.sqrt(weights / weights.mean())
+            try:
+                beta = np.linalg.lstsq(x * root_w[:, None], y * root_w, rcond=None)[0][1:]
+            except np.linalg.LinAlgError:
+                continue
+            for driver, coefficient in zip(used_drivers, beta):
+                rows.append(
+                    {
+                        "storm_type": group_name,
+                        "outcome": outcome,
+                        "driver": driver,
+                        "standardized_wls_coefficient": float(coefficient),
+                        "weighted_correlation": float(_weighted_corr(sub[driver].to_numpy(dtype=float), sub[outcome].to_numpy(dtype=float), weights)),
+                        "n_events": int(len(sub)),
+                        "interpretation": "diagnostic association, not causal attribution",
+                    }
+                )
+    columns = [
+        "storm_type",
+        "outcome",
+        "driver",
+        "standardized_wls_coefficient",
+        "weighted_correlation",
+        "n_events",
+        "interpretation",
+    ]
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    return pd.DataFrame(rows, columns=columns).sort_values(["outcome", "storm_type", "driver"]).reset_index(drop=True)
+
+
+def _weighted_zscore(values: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    values = np.asarray(values, dtype=float)
+    weights = np.asarray(weights, dtype=float)
+    mean = np.average(values, weights=weights)
+    var = np.average((values - mean) ** 2, weights=weights)
+    sd = np.sqrt(var)
+    return (values - mean) / sd if sd > 0 else np.zeros_like(values)
+
+
+def _weighted_corr(x: np.ndarray, y: np.ndarray, weights: np.ndarray) -> float:
+    xz = _weighted_zscore(x, weights)
+    yz = _weighted_zscore(y, weights)
+    return float(np.average(xz * yz, weights=weights))
+
+
+def plot_driver_outcome_matrix(
+    data: pd.DataFrame,
+    drivers: list[str],
+    outcomes: list[str],
+    *,
+    storm_col: str = "storm_type",
+    weight_col: str = "probability_weight",
+):
+    """Maduwantha-style scatter panels linking drivers to flood outcomes."""
+    from scipy.stats import kendalltau
+
+    drivers = [d for d in drivers if d in data]
+    outcomes = [o for o in outcomes if o in data]
+    if not drivers or not outcomes:
+        raise ValueError("no requested drivers/outcomes are present in data")
+    palette = {"nor_easter": "#4c78a8", "other_non_tropical": "#54a24b", "tc": "#e45756", "unresolved": "#bab0ac"}
+    fig, axes = plt.subplots(len(outcomes), len(drivers), figsize=(4.1 * len(drivers), 3.4 * len(outcomes)), squeeze=False)
+    storm_values = data[storm_col].fillna("unresolved").astype(str) if storm_col in data else pd.Series("all", index=data.index)
+    max_weight = pd.to_numeric(data[weight_col], errors="coerce").max() if weight_col in data else np.nan
+    max_weight = max(float(max_weight), 1e-12) if np.isfinite(max_weight) else 1.0
+    for row_idx, outcome in enumerate(outcomes):
+        for col_idx, driver in enumerate(drivers):
+            ax = axes[row_idx, col_idx]
+            plotted = False
+            for storm_type in [s for s in palette if s in set(storm_values)]:
+                sub = data[storm_values == storm_type]
+                x = pd.to_numeric(sub[driver], errors="coerce")
+                y = pd.to_numeric(sub[outcome], errors="coerce")
+                mask = x.notna() & y.notna()
+                if mask.any():
+                    if weight_col in sub:
+                        weights = pd.to_numeric(sub.loc[mask, weight_col], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+                        sizes = 18 + 90 * np.sqrt(weights / max_weight)
+                    else:
+                        sizes = 28
+                    ax.scatter(x[mask], y[mask], s=sizes, alpha=0.62, color=palette[storm_type], label=storm_type)
+                    plotted = True
+            valid = data[[driver, outcome]].apply(pd.to_numeric, errors="coerce").dropna()
+            if len(valid) >= 3:
+                tau, p = kendalltau(valid[driver], valid[outcome])
+                ax.text(0.04, 0.95, f"Kendall tau={tau:.2f}\np={p:.2g}", transform=ax.transAxes, va="top", fontsize=8, bbox=dict(boxstyle="round", fc="white", alpha=0.8))
+            ax.set_xlabel(driver)
+            ax.set_ylabel(outcome)
+            ax.grid(True, alpha=0.3)
+            if plotted and row_idx == 0 and col_idx == len(drivers) - 1:
+                ax.legend(loc="best", fontsize=8)
+    fig.suptitle("Driver/flood-response diagnostic associations (not causal attribution)", y=1.01)
+    fig.tight_layout()
+    return fig
 
 
 def _spatial_time_stats(da) -> pd.DataFrame:

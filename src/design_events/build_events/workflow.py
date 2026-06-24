@@ -264,10 +264,16 @@ def _replay_columns(catalog: pd.DataFrame) -> list[str]:
         for column in [
             "event_id",
             "streamflow_member_id",
+            "streamflow_member_file",
+            "streamflow_member_time",
             "streamflow_scale_factor",
             "rainfall_member_id",
+            "rainfall_member_file",
+            "rainfall_member_time",
             "rainfall_scale_factor",
             "soil_moisture_member_id",
+            "soil_moisture_member_file",
+            "soil_moisture_member_time",
             "wflow_event_dir",
         ]
         if column in catalog.columns

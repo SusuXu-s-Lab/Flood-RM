@@ -20,6 +20,7 @@ stale_run_files = {"sfincs_map.nc", "sfincs_his.nc", "sfincs_rst.nc", "sfincs.lo
 retained_output_files = {
     "sfincs_map.nc",
     "sfincs_his.nc",
+    "sfincs.nc",
     "sfincs.log",
     "sfincs_log.txt",
     "sfincs.inp",
@@ -125,11 +126,22 @@ def stage_event(src_dir, stage_dir):
             shutil.copytree(src, stage_dir / src.name, copy_function=link_or_copy)
 
 
-def save_outputs(stage_dir, storage_dir, metadata):
+def copy_retained_output_files(source_dir, storage_dir, *, overwrite=True):
+    copied = []
     storage_dir.mkdir(parents=True, exist_ok=True)
     for name in retained_output_files:
-        if (stage_dir / name).exists():
-            shutil.copy2(stage_dir / name, storage_dir / name)
+        src = source_dir / name
+        dst = storage_dir / name
+        if not src.exists() or (dst.exists() and not overwrite):
+            continue
+        shutil.copy2(src, dst)
+        copied.append(name)
+    return copied
+
+
+def save_outputs(stage_dir, storage_dir, metadata):
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    copy_retained_output_files(stage_dir, storage_dir)
     (storage_dir / "run_metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
 
 
@@ -172,7 +184,13 @@ def run_one(key, src_dir, args, command_template):
     storage_dir = args.storage_dir / key
     stage_dir = args.run_root / key
     if (storage_dir / "sfincs_map.nc").exists() and not args.force_rerun:
-        return {"event_id": key, "status": "skipped", "reason": "sfincs_map.nc exists"}
+        copied = copy_retained_output_files(src_dir, storage_dir, overwrite=False)
+        return {
+            "event_id": key,
+            "status": "skipped",
+            "reason": "sfincs_map.nc exists",
+            "retained_files_synced": copied,
+        }
 
     stage_event(src_dir, stage_dir)
     if args.dry_run:

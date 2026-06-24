@@ -125,8 +125,14 @@ def build_inland_event_artifacts(config, paths) -> InlandEventArtifacts:
             "event_reference_time",
             "basis_site_no",
             "streamflow_member_id",
+            "streamflow_member_file",
+            "streamflow_member_time",
             "rainfall_member_id",
+            "rainfall_member_file",
+            "rainfall_member_time",
             "soil_moisture_member_id",
+            "soil_moisture_member_file",
+            "soil_moisture_member_time",
             "wflow_event_dir",
         ]
     ].copy()

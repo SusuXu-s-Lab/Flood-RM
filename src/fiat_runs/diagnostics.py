@@ -245,3 +245,236 @@ def plot_damaged_assets(
     ax.set_xlabel("x")
     ax.set_ylabel("y")
     return ax
+
+
+def load_exposure_buildings(model_root) -> gpd.GeoDataFrame:
+    """Load HydroMT-FIAT NSI building points and enrich them with exposure attributes."""
+    model_root = Path(model_root)
+    buildings = gpd.read_file(model_root / "exposure" / "buildings.gpkg")
+    exposure = pd.read_csv(model_root / "exposure" / "exposure.csv")
+    if "object_id" in buildings and "object_id" in exposure:
+        buildings["object_id"] = buildings["object_id"].astype(str)
+        exposure["object_id"] = exposure["object_id"].astype(str)
+        buildings = buildings.merge(exposure, on="object_id", how="left", suffixes=("", "_exposure"))
+    return buildings
+
+
+def exposure_summary(buildings: gpd.GeoDataFrame) -> pd.Series:
+    """Human-readable FIAT exposure summary for notebook review."""
+    max_structure = _numeric_column(buildings, "max_damage_structure")
+    max_content = _numeric_column(buildings, "max_damage_content")
+    ground = _numeric_column(buildings, "ground_elevtn")
+    return pd.Series(
+        {
+            "n_building_assets": int(len(buildings)),
+            "crs": str(buildings.crs),
+            "occupancy_classes": int(buildings.get("primary_object_type", pd.Series(dtype=object)).nunique()),
+            "max_potential_structure_damage": float(max_structure.sum(skipna=True)),
+            "max_potential_content_damage": float(max_content.sum(skipna=True)),
+            "median_ground_elev_ft": float(ground.median(skipna=True)),
+            "grounded_assets": int(ground.notna().sum()),
+        },
+        name="fiat_building_exposure",
+    )
+
+
+def _numeric_column(frame: pd.DataFrame, column: str) -> pd.Series:
+    if column not in frame:
+        return pd.Series(np.nan, index=frame.index, dtype=float)
+    return pd.to_numeric(frame[column], errors="coerce")
+
+
+def aggregate_building_risk_frames(
+    event_assets: list[gpd.GeoDataFrame],
+    outcomes: pd.DataFrame,
+    *,
+    exposure: pd.DataFrame | None = None,
+) -> gpd.GeoDataFrame:
+    """Aggregate per-event FIAT asset damage into annualized building risk."""
+    if not event_assets:
+        return gpd.GeoDataFrame()
+    outcome_cols = ["event_id", "design_scenario", "probability_weight", "annual_rate"]
+    rates = outcomes[[c for c in outcome_cols if c in outcomes]].drop_duplicates()
+    frames = []
+    for gdf in event_assets:
+        if "event_id" not in gdf or "design_scenario" not in gdf:
+            raise ValueError("each event asset frame must include event_id and design_scenario")
+        frame = gdf[["object_id", "event_id", "design_scenario", "total_damage", "inun_depth", "geometry"]].copy()
+        frame["object_id"] = frame["object_id"].astype(str)
+        frame["total_damage"] = pd.to_numeric(frame["total_damage"], errors="coerce").fillna(0.0)
+        frame["inun_depth"] = pd.to_numeric(frame["inun_depth"], errors="coerce")
+        frames.append(frame)
+    all_assets = pd.concat(frames, ignore_index=True).merge(rates, on=["event_id", "design_scenario"], how="left")
+    all_assets["annual_rate"] = pd.to_numeric(all_assets["annual_rate"], errors="coerce").fillna(0.0)
+    all_assets["probability_weight"] = pd.to_numeric(all_assets["probability_weight"], errors="coerce").fillna(0.0)
+    all_assets["damage_positive_rate"] = np.where(all_assets["total_damage"] > 0, all_assets["annual_rate"], 0.0)
+    all_assets["annual_damage_component"] = all_assets["annual_rate"] * all_assets["total_damage"]
+    all_assets["depth_weight_component"] = all_assets["probability_weight"] * all_assets["inun_depth"].fillna(0.0)
+    all_assets["depth_weight"] = np.where(all_assets["inun_depth"].notna(), all_assets["probability_weight"], 0.0)
+
+    grouped = (
+        all_assets.groupby("object_id", as_index=False)
+        .agg(
+            annual_damage=("annual_damage_component", "sum"),
+            damage_positive_rate=("damage_positive_rate", "sum"),
+            event_damage_sum=("total_damage", "sum"),
+            max_event_damage=("total_damage", "max"),
+            max_inun_depth_ft=("inun_depth", "max"),
+            weighted_depth_sum=("depth_weight_component", "sum"),
+            depth_weight=("depth_weight", "sum"),
+            events_reviewed=("event_id", "nunique"),
+        )
+    )
+    grouped["damage_aep"] = 1.0 - np.exp(-grouped["damage_positive_rate"].to_numpy(dtype=float))
+    grouped["weighted_mean_inun_depth_ft"] = np.divide(
+        grouped["weighted_depth_sum"],
+        grouped["depth_weight"],
+        out=np.zeros(len(grouped), dtype=float),
+        where=grouped["depth_weight"].to_numpy(dtype=float) > 0,
+    )
+    geom = gpd.GeoDataFrame(all_assets[["object_id", "geometry"]].drop_duplicates("object_id"), geometry="geometry", crs=event_assets[0].crs)
+    out = geom.merge(grouped, on="object_id", how="left")
+    if exposure is not None:
+        exp = exposure.copy()
+        exp["object_id"] = exp["object_id"].astype(str)
+        keep = [
+            c
+            for c in [
+                "object_id",
+                "primary_object_type",
+                "secondary_object_type",
+                "max_damage_structure",
+                "max_damage_content",
+                "ground_elevtn",
+                "ground_flht",
+                "aggregation_label:Census Blockgroup",
+            ]
+            if c in exp
+        ]
+        out = out.merge(exp[keep].drop_duplicates("object_id"), on="object_id", how="left")
+    return out
+
+
+def aggregate_building_risk(
+    risk_root,
+    outcomes: pd.DataFrame,
+    *,
+    scenario: str = "base",
+    exposure_csv=None,
+) -> gpd.GeoDataFrame:
+    """Load per-event FIAT outputs and aggregate building-level annualized risk."""
+    risk_root = Path(risk_root)
+    event_assets = []
+    sub = outcomes[outcomes["design_scenario"] == scenario].copy()
+    for row in sub.itertuples(index=False):
+        gpkg = risk_root / row.design_scenario / row.event_id / "spatial.gpkg"
+        if not gpkg.exists():
+            continue
+        gdf = gpd.read_file(gpkg)
+        gdf["event_id"] = row.event_id
+        gdf["design_scenario"] = row.design_scenario
+        gdf["total_damage"] = pd.to_numeric(gdf.get("total_damage"), errors="coerce").fillna(0.0)
+        if "inun_depth" not in gdf:
+            gdf["inun_depth"] = np.nan
+        event_assets.append(gdf)
+    exposure = pd.read_csv(exposure_csv) if exposure_csv is not None and Path(exposure_csv).exists() else None
+    return aggregate_building_risk_frames(event_assets, outcomes, exposure=exposure)
+
+
+def top_neighborhoods(
+    building_risk: gpd.GeoDataFrame,
+    *,
+    label_col: str = "aggregation_label:Census Blockgroup",
+    n: int = 4,
+) -> pd.DataFrame:
+    """Top affected Census Blockgroups used as the default neighborhood proxy."""
+    if label_col not in building_risk:
+        return pd.DataFrame(columns=[label_col, "annual_damage", "damaged_buildings", "max_damage_aep"])
+    frame = building_risk.copy()
+    frame[label_col] = frame[label_col].fillna("unassigned").astype(str)
+    out = (
+        frame.groupby(label_col, dropna=False)
+        .agg(
+            annual_damage=("annual_damage", "sum"),
+            damaged_buildings=("damage_aep", lambda s: int((pd.to_numeric(s, errors="coerce").fillna(0) > 0).sum())),
+            max_damage_aep=("damage_aep", "max"),
+            max_event_damage=("max_event_damage", "max"),
+        )
+        .sort_values(["annual_damage", "damaged_buildings"], ascending=False)
+        .head(int(n))
+        .reset_index()
+    )
+    return out
+
+
+def plot_building_exposure(buildings: gpd.GeoDataFrame, *, ax=None, basemap_style: str = "osm", title: str | None = None):
+    """Map NSI building exposure points from the HydroMT-FIAT model."""
+    gdf = buildings.to_crs("EPSG:32619")
+    if ax is None:
+        _, ax = plt.subplots(figsize=(8, 7))
+    if len(gdf):
+        minx, miny, maxx, maxy = gdf.total_bounds
+        pad = max(maxx - minx, maxy - miny, 1000.0) * 0.06
+        ax.set_xlim(minx - pad, maxx + pad)
+        ax.set_ylim(miny - pad, maxy + pad)
+    try:
+        add_review_basemap(ax, style=basemap_style)
+    except Exception as exc:
+        ax.text(0.01, 0.01, f"Basemap unavailable: {exc}", transform=ax.transAxes, fontsize=8)
+    if len(gdf):
+        gdf.plot(ax=ax, markersize=2, color="#2b8cbe", alpha=0.45, linewidth=0, zorder=3)
+    ax.set_title(title or "HydroMT-FIAT NSI building exposure")
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    return ax
+
+
+def plot_building_risk(
+    building_risk: gpd.GeoDataFrame,
+    *,
+    metric: str = "annual_damage",
+    ax=None,
+    basemap_style: str = "dark",
+    title: str | None = None,
+    neighborhood=None,
+    neighborhood_col: str = "aggregation_label:Census Blockgroup",
+):
+    """Map annualized FIAT building risk with optional Census Blockgroup zoom."""
+    gdf = building_risk.copy()
+    if neighborhood is not None and neighborhood_col in gdf:
+        gdf = gdf[gdf[neighborhood_col].astype(str) == str(neighborhood)]
+    gdf = gdf.to_crs("EPSG:32619")
+    positive = gdf[pd.to_numeric(gdf.get(metric), errors="coerce").fillna(0.0) > 0].copy()
+    if ax is None:
+        _, ax = plt.subplots(figsize=(8, 7))
+    bounds_source = positive if len(positive) else gdf
+    if len(bounds_source):
+        minx, miny, maxx, maxy = bounds_source.total_bounds
+        pad = max(maxx - minx, maxy - miny, 600.0) * 0.25
+        ax.set_xlim(minx - pad, maxx + pad)
+        ax.set_ylim(miny - pad, maxy + pad)
+    try:
+        add_review_basemap(ax, style=basemap_style)
+    except Exception as exc:
+        ax.text(0.01, 0.01, f"Basemap unavailable: {exc}", transform=ax.transAxes, fontsize=8)
+    if len(gdf):
+        gdf.plot(ax=ax, markersize=1.5, color="white", alpha=0.12, linewidth=0, zorder=2)
+    if len(positive):
+        values = pd.to_numeric(positive[metric], errors="coerce").fillna(0.0)
+        sizes = 12 + 85 * np.sqrt(values / values.max()) if values.max() > 0 else 12
+        positive.plot(
+            ax=ax,
+            column=metric,
+            cmap="inferno",
+            markersize=sizes,
+            alpha=0.88,
+            edgecolor="white",
+            linewidth=0.25,
+            legend=True,
+            legend_kwds={"label": metric.replace("_", " ")},
+            zorder=4,
+        )
+    ax.set_title(title or f"Building risk: {metric}")
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    return ax

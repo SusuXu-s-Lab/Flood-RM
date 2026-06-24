@@ -30,8 +30,9 @@ def dynamic_handoff_batch_worklist(
     """Build a Wflow dynamic handoff batch worklist.
 
     ``status="blocked"`` selects events without current accepted handoff
-    artifacts. ``status="accepted"`` selects already-ready events, and
-    ``status="all"`` selects every requested catalog event.
+    artifacts that are still compatible with the reviewed Wflow gauge set.
+    ``status="accepted"`` selects already-ready events, and ``status="all"``
+    selects every requested catalog event including incompatible diagnostics.
     """
     from sfincs_runs.scenarios import dynamic_handoff_readiness_table
 
@@ -45,7 +46,7 @@ def dynamic_handoff_batch_worklist(
     )
     status = str(status).lower()
     if status == "blocked":
-        out = readiness[readiness["status"].ne("accepted")].copy()
+        out = readiness[readiness["status"].eq("blocked")].copy()
     elif status == "accepted":
         out = readiness[readiness["status"].eq("accepted")].copy()
     elif status == "all":

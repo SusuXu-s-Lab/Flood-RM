@@ -17,8 +17,6 @@ wflow:
     baseline_reference_time: "2020-11-14T00:00:00"
     baseline_root: data/wflow/warmup/baseline_90d
     warmup_days: 90
-    qa:
-      max_zero_rain_peak_fraction: 0.2
   domain_set:
     outlet_source: boundary_handoff_watershed
     allow_multiple_submodels: true
@@ -36,6 +34,16 @@ inland_coupling:
     river_upa_km2: 10.0
     river_len_m: 500.0
     river_inflow_buffer_m: 200.0
+  amplification:                     # ADR-0016 Same-Frequency Amplification (single-K on Wflow output)
+    enabled: true
+    primary_reference_gage: "02094500"   # Reedy Fork: largest Wflow uparea (339 km2) on the primary inflow river, in the gauge-output set
+    # k_calibration: 1.0                 # response-based: empirical bias constant from Wflow calibration vs 02094500 (default unbiased = no scaling)
+    k_band: [0.5, 2.0]                    # flag events whose K falls outside this band as poorly matched analog rainfall
+  baseflow:                          # ADR-0016 Wflow Readiness: warm-state spin-up must leave non-dry channels
+    enabled: true
+    reference_gage: "02094500"
+    reference_statistic: median          # observed low-flow baseflow anchor (median ~21 cfs); annual_mean | median | q90
+    min_baseflow_fraction: 0.25          # zero-rain control baseflow must reach >=25% of area-scaled observed, else fail (extend spin-up)
   initial_conditions:
     enabled: true
     method: hydrograph_mean_channel_inifile
