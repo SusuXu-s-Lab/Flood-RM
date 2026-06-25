@@ -1,54 +1,104 @@
-# Marshfield coastal SFINCS configuration.
-
+# SFINCS paths and static inputs.
 paths:
   data_root: locations/marshfield/data
 
 static_sources:
   bbox:
     output: data/static/aoi/bbox.geojson
+  terrain:
+    raw: data/static/raw/topo/cudem_10_marshfield.tif
+    output: data/static/processed/cudem_region_setup.tif
+  landcover:
+    raw: data/static/raw/landcover/worldcover_bbox.tif
+    output: data/static/processed/worldcover_region_setup.tif
+  coastline:
+    output: data/static/processed/coastal_region.geojson
+    land_seed: [-70.76, 42.12]
+    ocean_seed: [-70.62, 42.1]
+  ssurgo:
+    hsg_output: data/static/soils/hsg_mfield.tif
+    ksat_output: data/static/soils/ksat_mmhr_mfield.tif
 
-# Coastal protective structures specific to Marshfield (MassGIS 2015 public layers).
+# SFINCS forcing source collection.
+collection:
+  cora:
+    output_path: data/sources/cora_waterlevel/cora_mfield_boundary_hourly_msl.csv
+    boundary_points_crs: EPSG:26919
+  era5_waves:
+    bbox_wgs84: [-71.0, 42.0, -70.0, 42.5]
+    output_path: data/sources/era5_waves/era5_mfield_offshore_hourly.nc
+  aorc_sst:
+    transposition_region:
+      id: east-atlantic-marshfield
+      geometry_file: data/sources/aorc_sst/transposition_regions/transposition_region_100km.geojson
+  nwm:
+    streamflow:
+      reason: Marshfield coastal SFINCS grid has no meaningful streamflow driver or gage record for this baseline; do not use nearby tiny NWM reaches as a compound-flow input.
+      selection_method: not_applicable_for_configured_coastal_no_streamflow
+      selection_source: Reviewed NWM v3.0 chrtout nearest features; retained as non-driver context only because there is no practical streamflow boundary for this location.
+    soil_moisture:
+      points_source: data/static/aoi/study_area.geojson
+
+# SFINCS model settings and structure layers.
 sfincs_structures:
   enabled: true
   source_root: data/static/structures/sources
   output_root: data/static/structures/processed
   figures_root: data/sfincs/figures/structures
   layers:
-  - name: weirs
-    component: weirs
-    source: weirs_marshfield_massgis_public_2015.geojson
-    dz: null
-  - name: thin_dams
-    component: thin_dams
-    source: thin_dams_marshfield_massgis_public_2015.geojson
+    - name: weirs
+      component: weirs
+      source: weirs_marshfield_massgis_public_2015.geojson
+      dz: null
+    - name: thin_dams
+      component: thin_dams
+      source: thin_dams_marshfield_massgis_public_2015.geojson
 
+# SFINCS hydrology and infiltration parameters.
 coastal_wave_coupling:
   hydrology:
     infiltration:
       enabled: true
       method: cn_with_recovery
       lulc: worldcover
-      hsg: data/static/soils/hsg_mfield.tif                          # per-location SSURGO hydrologic soil group
-      ksat: data/static/soils/ksat_mmhr_mfield.tif                   # per-location saturated conductivity
+      hsg: data/static/soils/hsg_mfield.tif
+      ksat: data/static/soils/ksat_mmhr_mfield.tif
       ksat_effective: data/static/soils/ksat_mmhr_mfield_effective.tif
-      ksat_scale_factor: 0.1
-      ksat_max_mmhr: 75.0
       effective: 0.5
       effective_source: scalar_until_nwm_soilsat_top_rerun
-      reclass_table: null
-      factor_ksat: 0.2777777777777778
-      block_size: 2000
-  runup_gauges:                       # site-specific overtopping transects (model-CRS coords)
-    crs: EPSG:26919
-    rugdepth: 0.05
-    transects:
-    - name: rg_green_harbor_weir
-      x0: 363600.0
-      y0: 4660350.0
-      x1: 364150.0
-      y1: 4660350.0
-    - name: rg_brant_rock_thin_dam
-      x0: 363900.0
-      y0: 4661150.0
-      x1: 364450.0
-      y1: 4661450.0
+
+# Native HydroMT-SFINCS recipes extracted by the loader.
+hydromt:
+  build:
+    setup_grid_from_region:
+      res: 60
+      crs: EPSG:26919
+      rotated: true
+    setup_dep:
+      datasets_dep:
+        - elevtn: cudem_elv
+    setup_mask_active:
+      zmin: -0.1
+      drop_area: 100
+    setup_mask_bounds:
+      btype: waterlevel
+      zmax: 2
+    setup_subgrid:
+      datasets_dep:
+        - elevtn: cudem_elv
+      datasets_rgh:
+        - lulc: worldcover
+      write_dep_tif: true
+      nr_subgrid_pixels: 6
+  update_forcing:
+    setup_config:
+      tref: 20000101 000000
+      tstart: 20000101 000000
+      tstop: 20000104 000000
+      dtout: 3600
+    setup_precip_forcing:
+      precip_fn: event_precip
+    setup_waterlevel_forcing:
+      timeseries: cora_waterlevel
+    write_forcing:
+    write_config:

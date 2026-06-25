@@ -9,6 +9,7 @@ import pandas as pd
 import yaml
 from scipy.signal import find_peaks
 
+from generated_artifact import write_generated_yaml
 from design_events.build_events.catalog import (
     attach_forcing_members,
     validate_event_catalog,
@@ -206,7 +207,7 @@ def write_handoff(catalog, config, paths):
         ),
         "events": events,
     }
-    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+    write_generated_yaml(manifest_path, manifest, source="the inland event-catalog build")
     return manifest_path
 
 
@@ -446,7 +447,7 @@ def _write_event_manifest(catalog, artifacts, config, paths, output_path, audit)
         "audit_passed": bool(audit["passed"]),
         "artifacts": {name: str(path) for name, path in artifacts.items()},
     }
-    output_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+    write_generated_yaml(output_path, manifest, source="the inland event-catalog build")
 
 
 def _with_missing_columns(frame, columns):

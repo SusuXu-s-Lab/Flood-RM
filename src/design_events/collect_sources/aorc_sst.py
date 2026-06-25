@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections import OrderedDict
 import json
 from pathlib import Path
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -414,6 +416,31 @@ def _event_id(location_name, duration_hours, row):
     return f"rainfall_{location_name}_{int(duration_hours)}h_rank{int(row['por_rank']):04d}"
 
 
+def _event_window_subset(year_datasets, opener, spec, bbox_wgs84, start, end):
+    subsets = []
+    for year in range(start.year, end.year + 1):
+        if year not in year_datasets:
+            year_datasets[year] = opener(year, spec)
+        else:
+            try:
+                year_datasets.move_to_end(year)
+            except AttributeError:
+                pass
+        ds = year_datasets[year]
+        year_start = max(start, pd.Timestamp(f"{year}-01-01"))
+        year_end = min(end, pd.Timestamp(f"{year}-12-31 23:00:00"))
+        subsets.append(_subset_precip(ds, spec, bbox_wgs84, year_start, year_end))
+    if len(subsets) == 1:
+        return subsets[0]
+    return xr.concat(subsets, dim="time")
+
+
+def _trim_year_dataset_cache(year_datasets, max_open_year_datasets: int) -> None:
+    while len(year_datasets) > max_open_year_datasets:
+        _, ds = year_datasets.popitem(last=False)
+        ds.close()
+
+
 def _write_rainfall_members(paths, spec, ranked, source_csv, duration_hours):
     output_csv = Path(paths["aorc_sst_rainfall_members_csv"])
     output_csv.parent.mkdir(parents=True, exist_ok=True)
@@ -470,20 +497,6 @@ def _write_rainfall_members(paths, spec, ranked, source_csv, duration_hours):
     )
     members.to_csv(output_csv, index=False)
     return members
-
-
-def _event_window_subset(year_datasets, opener, spec, bbox_wgs84, start, end):
-    subsets = []
-    for year in range(start.year, end.year + 1):
-        if year not in year_datasets:
-            year_datasets[year] = opener(year, spec)
-        ds = year_datasets[year]
-        year_start = max(start, pd.Timestamp(f"{year}-01-01"))
-        year_end = min(end, pd.Timestamp(f"{year}-12-31 23:00:00"))
-        subsets.append(_subset_precip(ds, spec, bbox_wgs84, year_start, year_end))
-    if len(subsets) == 1:
-        return subsets[0]
-    return xr.concat(subsets, dim="time")
 
 
 def collect_warmup(config: dict, paths: dict, *, force: bool = False, opener=None) -> dict:
@@ -619,45 +632,63 @@ def _compute_selected_event_windows(
         return [], ranked.copy()
     variable = spec.get("variable", "APCP_surface")
     written = []
-    year_datasets = {}
+    year_datasets = OrderedDict()
+    max_open_year_datasets = max(1, int(spec.get("max_open_year_datasets", 4)))
     centroid_lons = []
     centroid_lats = []
-    for _, row in iter_progress(
-        list(ranked.iterrows()),
-        total=len(ranked),
-        desc="AORC selected storm windows",
-        unit="storm",
-        dynamic_ncols=True,
-    ):
-        start = pd.Timestamp(row["storm_date"])
-        end = start + pd.to_timedelta(duration_hours - 1, unit="h")
-        path = None
-        if write_event_windows:
-            event_id = _event_id(location_name, duration_hours, row)
-            path = output_dir / f"{event_id}_{start:%Y%m%dT%H}.nc"
-            if skip_existing and _event_window_file_has_required_variables(
-                path,
-                spec,
-                require_transposition=_row_requires_field_transposition(row),
-            ):
-                centroid_lons.append(
-                    row.get("historical_centroid_lon", row.get("x", pd.NA))
-                )
-                centroid_lats.append(
-                    row.get("historical_centroid_lat", row.get("y", pd.NA))
-                )
+    try:
+        for _, row in iter_progress(
+            list(ranked.iterrows()),
+            total=len(ranked),
+            desc="AORC selected storm windows",
+            unit="storm",
+            dynamic_ncols=True,
+        ):
+            start = pd.Timestamp(row["storm_date"])
+            end = start + pd.to_timedelta(duration_hours - 1, unit="h")
+            path = None
+            requires_transposition = _row_requires_field_transposition(row)
+            if write_event_windows:
+                event_id = _event_id(location_name, duration_hours, row)
+                path = output_dir / f"{event_id}_{start:%Y%m%dT%H}.nc"
+                if skip_existing and _event_window_file_has_required_variables(
+                    path,
+                    spec,
+                    require_transposition=requires_transposition,
+                ):
+                    centroid_lons.append(
+                        row.get("historical_centroid_lon", row.get("x", pd.NA))
+                    )
+                    centroid_lats.append(
+                        row.get("historical_centroid_lat", row.get("y", pd.NA))
+                    )
+                    written.append(path)
+                    continue
+                if skip_existing and _promote_complete_event_window_tmp(
+                    path,
+                    spec,
+                    require_transposition=requires_transposition,
+                ):
+                    centroid_lons.append(
+                        row.get("historical_centroid_lon", row.get("x", pd.NA))
+                    )
+                    centroid_lats.append(
+                        row.get("historical_centroid_lat", row.get("y", pd.NA))
+                    )
+                    written.append(path)
+                    continue
+            subset = _event_window_subset(year_datasets, opener, spec, bbox_wgs84, start, end)
+            centroid_lon, centroid_lat = _centroid_from_precip_window(subset[variable])
+            centroid_lons.append(centroid_lon)
+            centroid_lats.append(centroid_lat)
+            if write_event_windows:
+                subset = _apply_field_transposition(subset, row, historical_centroid=(centroid_lon, centroid_lat))
+                _write_event_window_netcdf(subset, path)
                 written.append(path)
-                continue
-        subset = _event_window_subset(year_datasets, opener, spec, bbox_wgs84, start, end)
-        centroid_lon, centroid_lat = _centroid_from_precip_window(subset[variable])
-        centroid_lons.append(centroid_lon)
-        centroid_lats.append(centroid_lat)
-        if write_event_windows:
-            subset = _apply_field_transposition(subset, row, historical_centroid=(centroid_lon, centroid_lat))
-            _write_event_window_netcdf(subset, path)
-            written.append(path)
-    for ds in year_datasets.values():
-        ds.close()
+            _trim_year_dataset_cache(year_datasets, max_open_year_datasets)
+    finally:
+        for ds in year_datasets.values():
+            ds.close()
     ranked = ranked.copy()
     ranked["historical_centroid_lon"] = centroid_lons
     ranked["historical_centroid_lat"] = centroid_lats
@@ -668,12 +699,40 @@ def _compute_selected_event_windows(
     return written, ranked
 
 
+def _event_window_tmp_path(path: Path) -> Path:
+    return path.with_name(f".{path.name}.tmp")
+
+
+def _promote_complete_event_window_tmp(
+    path: Path,
+    spec: dict,
+    *,
+    require_transposition: bool = False,
+) -> bool:
+    tmp_path = _event_window_tmp_path(Path(path))
+    if not _event_window_file_has_required_variables(
+        tmp_path,
+        spec,
+        require_transposition=require_transposition,
+    ):
+        return False
+    tmp_path.replace(path)
+    return True
+
+
 def _write_event_window_netcdf(ds: xr.Dataset, path: Path) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_name(f".{path.name}.tmp")
+    tmp_path = _event_window_tmp_path(path)
     safe = _strip_netcdf_endian_encoding(ds)
-    safe.to_netcdf(tmp_path, engine="netcdf4")
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="endian-ness of dtype and endian kwarg do not match.*",
+            category=UserWarning,
+            module="xarray.backends.netCDF4_",
+        )
+        safe.to_netcdf(tmp_path, engine="netcdf4")
     tmp_path.replace(path)
 
 

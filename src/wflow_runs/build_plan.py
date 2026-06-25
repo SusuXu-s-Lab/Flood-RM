@@ -15,6 +15,7 @@ import yaml
 from shapely.geometry import Point
 from shapely.ops import unary_union
 
+from generated_artifact import write_generated_yaml
 from wflow_runs.coupled_handoff import (
     STREAM_BOUNDARY_HANDOFF_MODES,
     read_stream_boundary_handoff_location_artifacts,
@@ -124,6 +125,8 @@ def build_wflow_build_plan(config, paths) -> WflowBuildPlan:
         location_root,
         wflow.get("update_forcing_config", "wflow_update_forcing.yml"),
     )
+    _ensure_model_recipe_file(config, "wflow_build", build_config)
+    _ensure_model_recipe_file(config, "wflow_update_forcing", update_forcing_config)
 
     build_workflow = _read_workflow(build_config)
     update_workflow = _read_workflow(update_forcing_config)
@@ -202,7 +205,11 @@ def build_wflow_data_catalog(config, paths) -> Path:
         national_hydrography.get("reservoirs_output", "data/sources/national_hydrography/nhdplus_hr_wflow_reservoirs.gpkg"),
     )
     river_geometry_required = _wflow_build_uses_river_geometry(
-        _location_path(location_root, wflow.get("build_config", "wflow_build.yml"))
+        _ensure_model_recipe_file(
+            config,
+            "wflow_build",
+            _location_path(location_root, wflow.get("build_config", "wflow_build.yml")),
+        )
     )
     sources = config.get("static_sources", {})
     wflow_extent = sources.get("wflow_collection_extent", {})
@@ -313,7 +320,7 @@ def build_wflow_data_catalog(config, paths) -> Path:
         ),
     }
     catalog = _normalize_catalog_metadata(catalog)
-    catalog_path.write_text(yaml.safe_dump(catalog, sort_keys=False), encoding="utf-8")
+    write_generated_yaml(catalog_path, catalog, source="the Wflow data-catalog build")
     return catalog_path
 
 
@@ -1331,7 +1338,7 @@ def write_wflow_domain_set_manifest(plan: WflowDomainSetPlan, config, paths) -> 
             for submodel in plan.submodels
         ],
     }
-    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+    write_generated_yaml(manifest_path, manifest, source="the Wflow domain-set build")
     return manifest_path
 
 
@@ -3133,6 +3140,7 @@ def _configured_wflow_region(config, location_root: Path) -> dict | None:
         location_root,
         config.get("wflow", {}).get("build_config", "wflow_build.yml"),
     )
+    build_config = _ensure_model_recipe_file(config, "wflow_build", build_config)
     if not build_config.exists():
         return None
     workflow = _read_workflow(build_config)
@@ -3248,6 +3256,15 @@ def _read_workflow(path: Path) -> dict:
         raise FileNotFoundError(path)
     workflow = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     return _normalize_workflow(workflow)
+
+
+def _ensure_model_recipe_file(config: dict, key: str, path: Path) -> Path:
+    recipe = (config.get("_model_recipes") or {}).get(key)
+    if recipe is None:
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_generated_yaml(path, recipe, source=f"the {key} model YAML extraction")
+    return path
 
 
 def _normalize_workflow(workflow: dict) -> dict:

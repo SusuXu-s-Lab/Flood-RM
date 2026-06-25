@@ -44,6 +44,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
+from generated_artifact import write_generated_yaml
 from design_events.collect_sources.aorc_event_meteo import (
     aorc_wflow_temp_pet_variables,
     prepare_aorc_temp_pet_for_wflow,
@@ -1041,7 +1042,11 @@ def _write_per_event_data_catalog(data_catalog: Path, event_dir: Path, event_id:
 
     text = re.sub(r"(?m)^(?P<indent>\s*uri:\s*)(?P<path>\S.*)$", _reroot, text)
     out = event_dir / "_replay_data_catalog.yml"
-    out.write_text(text, encoding="utf-8")
+    notice = (
+        "# GENERATED FILE — do not edit by hand. "
+        "Overwritten when the Wflow event replay step runs.\n"
+    )
+    out.write_text(notice + text, encoding="utf-8")
     return out
 
 
@@ -1059,7 +1064,7 @@ def _write_per_event_update_config(update_cfg: Path, event_dir: Path, start: pd.
                 data["time.starttime"] = start.strftime("%Y-%m-%dT%H:%M:%S")
                 data["time.endtime"] = end.strftime("%Y-%m-%dT%H:%M:%S")
     out = event_dir / "_wflow_update_forcing.yml"
-    out.write_text(yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8")
+    write_generated_yaml(out, workflow, source="the Wflow event replay step")
     return out
 
 

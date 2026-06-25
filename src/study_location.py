@@ -505,7 +505,24 @@ _AORC_SST_DEFAULTS = {
     "check_every_n_hours": 6,
     "decluster_hours": 72,
     "transposition_stride_cells": 4,
+    "max_open_year_datasets": 4,
     "write_event_windows": True,
+}
+
+
+# SFINCS curve-number Infiltration Treatment constants shared by every Study
+# Location and both flood settings. These are unit/tuning constants, not
+# per-location choices, so they live here once instead of being copy-pasted into
+# each location's sfincs.yaml. Per-location infiltration keys (the soil/landcover
+# raster paths, `effective_source`, `review_required`) stay in sfincs.yaml and
+# are deep-merged on top of these and can be inspected with the resolved-config
+# script when a disposable merged view is useful.
+_INFILTRATION_CONSTANTS = {
+    "ksat_scale_factor": 0.1,
+    "ksat_max_mmhr": 75.0,
+    "factor_ksat": 0.2777777777777778,
+    "block_size": 2000,
+    "reclass_table": None,
 }
 
 
@@ -812,6 +829,7 @@ def _inland_methodology_defaults() -> dict:
                     "pairing": "inland_antecedent_moisture_pairing",
                     "lookback_hours": 24,
                 },
+                "infiltration": dict(_INFILTRATION_CONSTANTS),
             },
             "scenario_build": _deep_merge(
                 defaults["scenario_build"],
@@ -952,6 +970,7 @@ def _coastal_methodology_defaults() -> dict:
                         "source": "data/sources/nwm/soil_moisture.csv",
                         "lookback_hours": 24,
                     },
+                    "infiltration": dict(_INFILTRATION_CONSTANTS),
                 },
             },
             "scenario_build": _deep_merge(
@@ -977,9 +996,11 @@ class LocationDefinition:
     config: dict
     paths: dict
     grid: dict
+    smartds: dict
     data_sources: dict
     sfincs: dict
     wflow: dict
+    snapwave: dict
     model_recipes: dict
 
     def stage_order(self) -> tuple[str, ...]:
@@ -989,18 +1010,75 @@ class LocationDefinition:
         issues = []
         if not self.name:
             issues.append("project.name is required")
-        for key in ("grid", "sfincs"):
+        includes = self.config.get("includes", {})
+        if "grid" not in includes and "smartds" not in includes:
+            issues.append("includes.grid or includes.smartds is required")
+        for key in ("sfincs",):
             if key not in self.config.get("includes", {}):
                 issues.append(f"includes.{key} is required")
-        includes = self.config.get("includes", {})
+        if self.config.get("coastal_waves") and "snapwave" not in includes:
+            issues.append("includes.snapwave is required when coastal_waves is true")
+        if self.config.get("wflow", {}).get("enabled") and "wflow" not in includes:
+            issues.append("includes.wflow is required for Wflow-coupled Study Locations")
         for key in ("sfincs_build", "sfincs_update_forcing"):
-            if key not in includes:
-                issues.append(f"includes.{key} is required")
-        if "wflow_build" in includes or "wflow_update_forcing" in includes:
+            if key not in self.model_recipes:
+                issues.append(f"model_recipes.{key} is required")
+        if "wflow" in includes:
             for key in ("wflow_build", "wflow_update_forcing"):
-                if key not in includes:
-                    issues.append(f"includes.{key} is required for Wflow-coupled Study Locations")
+                if key not in self.model_recipes:
+                    issues.append(f"model_recipes.{key} is required for Wflow-coupled Study Locations")
         return issues
+
+    def write_resolved_config(self, out_path=None) -> Path:
+        """Write the fully merged Location Configuration to a readable YAML file.
+
+        This is the single inspectable view of every effective setting — the
+        location ``config.yaml``, its included detail files, and the methodology
+        defaults from this module — exactly as ``define_location`` merges them.
+        Stakeholders read it to see knobs that the per-location YAML overrides
+        silently inherit. It is a generated reference, not an input: edit
+        ``config.yaml`` or a detail file to change a value, then regenerate.
+        """
+        target = Path(out_path) if out_path is not None else self.root / RESOLVED_CONFIG_FILENAME
+        body = yaml.safe_dump(self.config, sort_keys=True, default_flow_style=False)
+        header = _RESOLVED_CONFIG_HEADER.format(
+            name=self.name,
+            flood_setting=self.config.get("flood_setting", "coastal"),
+            filename=RESOLVED_CONFIG_FILENAME,
+        )
+        target.write_text(header + body, encoding="utf-8")
+        return target
+
+
+RESOLVED_CONFIG_FILENAME = "config.resolved.yaml"
+
+_RESOLVED_CONFIG_HEADER = (
+    "# ==========================================================================\n"
+    "# GENERATED FILE — DO NOT EDIT BY HAND.\n"
+    "#\n"
+    "# Fully resolved Location Configuration for {name} (flood_setting={flood_setting}):\n"
+    "# config.yaml + included detail files + methodology defaults, exactly as\n"
+    "# define_location() merges them at runtime.\n"
+    "#\n"
+    "# Why this file exists: many effective settings live as methodology defaults\n"
+    "# in src/study_location.py and are otherwise invisible from this folder. This\n"
+    "# is the one place to read every knob a stakeholder might want to change.\n"
+    "#\n"
+    "# To change a value: edit config.yaml or the relevant included detail file\n"
+    "# (your override is deep-merged ON TOP of the defaults shown here), then\n"
+    "# regenerate with:\n"
+    "#     python tests/flood_rm/show_resolved_config.py {name}\n"
+    "# ==========================================================================\n"
+)
+
+
+def write_resolved_config(config_path, out_path=None) -> Path:
+    """Resolve a Location Configuration and write its readable merged view.
+
+    Thin wrapper over :meth:`LocationDefinition.write_resolved_config` so callers
+    can dump a location by config path without holding the definition object.
+    """
+    return define_location(config_path).write_resolved_config(out_path)
 
 
 def define_location(config_path) -> LocationDefinition:
@@ -1014,10 +1092,12 @@ def define_location(config_path) -> LocationDefinition:
 
     includes = base.get("includes") or {}
     data_sources = _load_location_detail(root, includes.get("data_sources"), required=False)
-    grid = _load_location_detail(root, includes.get("grid"))
+    grid = _load_location_detail(root, includes.get("grid"), required="smartds" not in includes)
+    smartds = _load_location_detail(root, includes.get("smartds"), required=False)
     sfincs = _load_location_detail(root, includes.get("sfincs"))
     wflow = _load_location_detail(root, includes.get("wflow"), required=False)
-    model_recipes = _load_model_recipe_includes(root, includes)
+    snapwave = _load_location_detail(root, includes.get("snapwave"), required=False)
+    model_recipes = _load_model_recipes(root, includes, sfincs=sfincs, wflow=wflow, snapwave=snapwave)
 
     config = _methodology_defaults(flood_setting)
     # Legacy `extends:` remains supported, but location configs no longer need
@@ -1028,13 +1108,16 @@ def define_location(config_path) -> LocationDefinition:
 
     config = _deep_merge(config, base)
     config = _deep_merge(config, data_sources)
+    config = _deep_merge(config, smartds)
     config = _deep_merge(config, grid)
     config = _deep_merge(config, sfincs)
     config = _deep_merge(config, wflow)
+    config = _deep_merge(config, snapwave)
 
-    _apply_model_recipe_paths(config)
+    _apply_model_recipe_paths(config, model_recipes)
     config.pop("notebooks", None)
     config.pop("extends", None)  # loader directive, not domain config
+    config["_model_recipes"] = model_recipes
 
     return LocationDefinition(
         name=name,
@@ -1043,9 +1126,11 @@ def define_location(config_path) -> LocationDefinition:
         config=config,
         paths=config.get("paths", {}),
         grid=config.get("grid", {}),
+        smartds=smartds,
         data_sources=data_sources,
         sfincs=sfincs,
         wflow=config.get("wflow", {}),
+        snapwave=snapwave,
         model_recipes=model_recipes,
     )
 
@@ -1119,14 +1204,49 @@ def _load_model_recipe_includes(root: Path, includes: dict) -> dict:
     return recipes
 
 
-def _apply_model_recipe_paths(config: dict) -> None:
+def _load_model_recipes(root: Path, includes: dict, *, sfincs: dict, wflow: dict, snapwave: dict) -> dict:
+    recipes = _load_model_recipe_includes(root, includes)
+    recipes.update(_hydromt_recipes_from_model_config("sfincs", sfincs))
+    recipes.update(_hydromt_recipes_from_model_config("wflow", wflow))
+    recipes.update(_hydromt_recipes_from_model_config("snapwave", snapwave))
+    return recipes
+
+
+def _hydromt_recipes_from_model_config(model_name: str, config: dict) -> dict:
+    hydromt = config.get("hydromt") or {}
+    recipes = {}
+    if not isinstance(hydromt, dict):
+        return recipes
+    for purpose, recipe in hydromt.items():
+        if isinstance(recipe, dict):
+            recipes[f"{model_name}_{purpose}"] = recipe
+    return recipes
+
+
+def _apply_model_recipe_paths(config: dict, model_recipes: dict) -> None:
     includes = config.get("includes") or {}
+    sfincs = config.setdefault("sfincs", {})
+    if "sfincs_build" in model_recipes:
+        sfincs.setdefault("build_config", "data/sfincs/config/sfincs_build.yml")
+    if "sfincs_update_forcing" in model_recipes:
+        sfincs.setdefault("update_forcing_config", "data/sfincs/config/sfincs_update_forcing.yml")
+    if "snapwave_build" in model_recipes:
+        sfincs.setdefault("snapwave_build_config", "data/sfincs/config/snapwave_build.yml")
+    if "snapwave_update_forcing" in model_recipes:
+        sfincs.setdefault("snapwave_update_forcing_config", "data/sfincs/config/snapwave_update_forcing.yml")
     if "wflow_build" in includes or "wflow_update_forcing" in includes:
         wflow = config.setdefault("wflow", {})
         if "wflow_build" in includes:
             wflow["build_config"] = includes["wflow_build"]
         if "wflow_update_forcing" in includes:
             wflow["update_forcing_config"] = includes["wflow_update_forcing"]
+    if "wflow_build" in model_recipes:
+        config.setdefault("wflow", {}).setdefault("build_config", "data/wflow/config/wflow_build.yml")
+    if "wflow_update_forcing" in model_recipes:
+        config.setdefault("wflow", {}).setdefault(
+            "update_forcing_config",
+            "data/wflow/config/wflow_update_forcing.yml",
+        )
 
 
 def _deep_merge(left: dict, right: dict) -> dict:

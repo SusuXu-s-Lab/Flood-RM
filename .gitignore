@@ -36,4 +36,7 @@ runs/*
 !runs/debug/
 !runs/debug/.gitkeep
 
+# unfinished
+locations/marshfield/02_flood/04/a_build_standard.ipynb
+locations/marshfield/02_flood/04/b_example_standard.ipynb
 locations/marshfield/02_flood/08_tide_gauges.ipynb

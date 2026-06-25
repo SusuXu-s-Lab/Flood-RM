@@ -5,6 +5,7 @@ project:
   model_crs: EPSG:32614
   reference_crs: EPSG:4326
 
+# User-facing location mode and driver selection.
 flood_setting: inland
 
 event_drivers:
@@ -14,95 +15,8 @@ event_drivers:
 
 coastal_waves: false
 
+# Human-authored detail files; model internals live outside this launch file.
 includes:
-  grid: grid.yaml
-  sfincs: domain.yaml
-  sfincs_build: sfincs_build.yml
-  sfincs_update_forcing: sfincs_update_forcing.yml
-  wflow_build: wflow_build.yml
-  wflow_update_forcing: wflow_update_forcing.yml
-
-static_sources:
-  ssurgo:
-    hsg_output: data/static/soils/hsg_austin.tif
-    ksat_output: data/static/soils/ksat_mmhr_austin.tif
-
-collection:
-  lcra_hydromet:
-    output: data/sources/lcra_hydromet/flow_sites.geojson
-    current_output: data/sources/lcra_hydromet/flow_sites_current.csv
-    search_geometry: data/static/aoi/wflow_nhdplus_watersheds.geojson
-    exclude_agencies:
-    - USGS
-    distinct_from_usgs_network: data/sources/usgs_streamgages/streamgage_network.geojson
-    distinct_distance_m: 150
-    status: supplemental_current_flow_discovery
-    promotion_note: Validate historical Hydromet records before using these sites in POT/design-event streamflow catalogs.
-  stream_geo_nldi:
-    stream_geo_table: data/sources/national_hydrography/stream_geo.parquet
-    raw_dir: data/sources/national_hydrography/stream_geo_raw
-    nldi_lookup_cache: data/sources/national_hydrography/nldi_stream_geo_comid_cache.csv
-  national_hydrography:
-    basemap_source_resolution_degrees: 0.000925925925925926
-    stream_geo_table: data/sources/national_hydrography/stream_geo.parquet
-    nldi_lookup_cache: data/sources/national_hydrography/nldi_stream_geo_comid_cache.csv
-    nhdplus_v2_flowlines: data/sources/national_hydrography/nhdplus_v2_flowlines.gpkg
-    reservoirs:
-      enabled: true
-      output: data/sources/national_hydrography/nhdplus_hr_wflow_reservoirs.gpkg
-      source_layer: USGS NHDPlus HR NHDWaterbody
-      operation: no_control
-      min_area_km2: 1.0
-      default_depth_m: 5.0
-      default_discharge_m3s: 0.01
-      conditions:
-        enabled: true
-        provider: twdb_water_data_for_texas
-        provider_label: TWDB Water Data for Texas
-        base_url: https://waterdatafortexas.org/reservoirs/individual
-        period_suffix: -1year
-        statistic: median
-        cache_dir: data/sources/twdb_reservoirs
-        summary_csv: data/sources/twdb_reservoirs/reservoir_condition_summary.csv
-        provenance_json: data/sources/twdb_reservoirs/reservoir_condition_provenance.json
-        request_timeout_seconds: 60
-        min_depth_m: 0.25
-        max_depth_m: 200.0
-        reservoir_slugs:
-          Lake Travis: travis
-          Lake Austin: austin
-          Lake Lyndon B Johnson: lyndon-b-johnson
-          Lake Marble Falls: marble-falls
-      review_note: Public NHDPlus waterbody geometry with TWDB source-backed no-control storage/area/depth where available; unmatched waterbodies and controlled operations require reviewed City/LCRA/GRanD storage, elevation, and release data.
-    stream_geo_join_method: attribute_transfer
-    stream_geo_join_max_distance_m: 2500
-    use_nldi_stream_geo_join: false
-    nldi_request_timeout_seconds: 10
-    nldi_max_workers: 4
-    nldi_progress_interval: 250
-  aorc_sst:
-    transposition_region:
-      id: austin-inland-review-required
-      geometry_file: data/sources/aorc_sst/transposition_regions/transposition_region.geojson
-    event_meteo:
-      enabled: true
-      source_variables:
-        temp: TMP_2maboveground
-        press_msl: PRES_surface
-        kin: DSWRF_surface
-  nwm:
-    streamflow:
-      reason: Austin production streamflow frequency should use HUC-selected active USGS streamgage records.
-
-wflow:
-  event_forcing:
-    temp_pet:
-      event_temp_pet: data/wflow/events/<event_id>/temp_pet.nc
-      pet_method: makkink
-      pressure_source: AORC surface pressure exposed as HydroMT press_msl; pressure correction disabled.
-
-event_catalog:
-  dependence:
-    driver_records:
-      rainfall:
-        path: data/sources/aorc_sst/austin/72hr-events/storm-stats.csv
+  smartds: smartds.yaml
+  sfincs: sfincs.yaml
+  wflow: wflow.yaml

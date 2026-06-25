@@ -1,4 +1,7 @@
+# Generated-grid inputs consumed by the grid and flood workflows.
 grid:
+  source_kind: generated_grid
+  source_note: Generated SHIFT/GDM/DiTTo grid, not a SMART-DS dataset.
   power_grid_root: data/power_grid
   power_extent: data/power_grid/power_extent.geojson
   shift_cache: data/power_grid/shift_cache
@@ -26,6 +29,7 @@ grid:
   critical_facilities:
     source: data/static/grid/critical_facilities.geojson
 
+# AOI is generated from the reviewed generated-grid Asset Registry.
 aoi:
   source: data/power_grid/asset_registry
   source_format: asset_registry

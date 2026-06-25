@@ -5,6 +5,8 @@ import os
 
 import yaml
 
+from generated_artifact import write_generated_yaml
+
 
 def build_static_data_catalog(config, paths):
     """Write a compact HydroMT data catalog for one location workspace."""
@@ -68,7 +70,7 @@ def build_static_data_catalog(config, paths):
             _relative_to_catalog(catalog_path, location_root / handoff),
             category="wflow_sfincs_handoff",
         )
-    catalog_path.write_text(yaml.safe_dump(catalog, sort_keys=False), encoding="utf-8")
+    write_generated_yaml(catalog_path, catalog, source="static intake (build_static_data_catalog)")
     return catalog_path
 
 

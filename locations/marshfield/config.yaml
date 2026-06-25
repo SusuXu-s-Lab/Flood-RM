@@ -5,6 +5,7 @@ project:
   model_crs: EPSG:26919
   reference_crs: EPSG:4326
 
+# User-facing location mode and driver selection.
 flood_setting: coastal
 
 event_drivers:
@@ -14,9 +15,7 @@ event_drivers:
 
 coastal_waves: true
 
-# Sea-level-rise scenario metadata for SFINCS boundary forcing.
-# NOAA/NASA Intermediate offsets use source_baseline_year 2000 for both
-# projection years; `base` keeps the observed 1979-2022 MSL record unshifted.
+# User-facing sea-level-rise scenarios for boundary forcing.
 scenarios:
   base:
     slr_offset_m: 0.0
@@ -46,10 +45,8 @@ scenarios:
     scenario_family: Intermediate
     projection_year: 2100
 
+# Human-authored detail files; model internals live outside this launch file.
 includes:
-  data_sources: data_sources.yaml
   grid: grid.yaml
   sfincs: sfincs.yaml
-  sfincs_build: sfincs_build.yml
-  sfincs_build_waves: sfincs_build_waves.yml
-  sfincs_update_forcing: sfincs_update_forcing.yml
+  snapwave: snapwave.yaml

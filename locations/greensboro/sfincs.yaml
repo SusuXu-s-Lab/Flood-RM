@@ -1,0 +1,100 @@
+# SFINCS paths and static inputs.
+paths:
+  data_root: locations/greensboro/data
+
+static_sources:
+  ssurgo:
+    hsg_output: data/static/soils/hsg_greensboro.tif
+    ksat_output: data/static/soils/ksat_mmhr_greensboro.tif
+
+# SFINCS model settings and domain selection.
+sfincs:
+  grid_resolution_m: 60
+
+sfincs_domain_set:
+  include_domain_ids:
+    - greensboro_rural
+
+# SFINCS forcing and parameters for Wflow-coupled inflow.
+inland_coupling:
+  discharge_forcing:
+    source: wflow_dynamic
+    handoff_location: sfincs_native_river_inflow
+    river_upa_km2: 10.0
+    river_len_m: 500.0
+    river_inflow_buffer_m: 200.0
+  amplification:
+    enabled: true
+    primary_reference_gage: "02094500"
+    k_band: [0.5, 2.0]
+  baseflow:
+    enabled: true
+    reference_gage: "02094500"
+    reference_statistic: median
+    min_baseflow_fraction: 0.25
+  initial_conditions:
+    enabled: true
+    method: hydrograph_mean_channel_inifile
+    source: wflow_dynamic_hydrographs
+    statistic: initial_window_source_mean
+    mean_window_hours: 1.0
+    reference_discharge_m3s: 5000.0
+    reference_depth_m: 1.5
+    min_depth_m: 0.1
+    max_depth_m: 2.5
+    river_buffer_cells: 2.0
+    fill_value: -9999.0
+    note: HydroMT-SFINCS writes sfincs.ini via initial_conditions.create; outside the river corridor SFINCS initializes at bed level.
+  infiltration:
+    enabled: true
+    method: cn_with_recovery
+    lulc: data/static/processed/landcover_region_setup.tif
+    hsg: data/static/soils/hsg_greensboro.tif
+    ksat: data/static/soils/ksat_mmhr_greensboro.tif
+    ksat_effective: data/static/soils/ksat_mmhr_greensboro_effective.tif
+    effective: 0.5
+    effective_source: scalar_until_event_nwm_soilsat_top_update
+    review_required: true
+
+# Event-catalog driver source used for SFINCS rainfall forcing.
+event_catalog:
+  dependence:
+    driver_records:
+      rainfall:
+        path: data/sources/aorc_sst/greensboro/72hr-events/storm-stats.csv
+
+# Native HydroMT-SFINCS recipes extracted by the loader.
+hydromt:
+  build:
+    setup_grid_from_region:
+      res: 60
+      crs: EPSG:32617
+      rotated: true
+    setup_dep:
+      datasets_dep:
+        - elevtn: dem_region
+    setup_mask_active:
+      zmin: -0.1
+      drop_area: 100
+    setup_mask_bounds:
+      btype: outflow
+      zmax: 2
+    setup_subgrid:
+      datasets_dep:
+        - elevtn: dem_region
+      datasets_rgh:
+        - lulc: landcover_region
+      write_dep_tif: true
+      nr_subgrid_pixels: 6
+  update_forcing:
+    setup_config:
+      tref: 20000101 000000
+      tstart: 20000101 000000
+      tstop: 20000104 000000
+      dtout: 3600
+    setup_precip_forcing:
+      precip_fn: event_precip
+    setup_discharge_forcing:
+      timeseries: wflow_discharge
+    write_forcing:
+    write_config:
