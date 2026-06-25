@@ -13,3 +13,10 @@ Remote/public data dependencies used by collection stages:
 - TWDB reservoir data: https://waterdatafortexas.org/reservoirs/individual
 - LCRA Hydromet: https://hydromet.lcra.org/
 - USACE National Structure Inventory: https://nsi.sec.usace.army.mil/
+- MassGIS/CZM Shoreline Stabilization Structures (Public Structures 2015 Update): https://www.mass.gov/info-details/massgis-data-layers — GIS baseline for Marshfield SFINCS Structure Layers (weirs/thin-dams) in locations/marshfield/02_flood/04/a_build_waves.ipynb
+
+Marshfield SFINCS structure design-grade crest-elevation evidence (design-grade elevations layered onto the MassGIS geometry):
+- Woods Hole Group, Marshfield Long-Term Coastal Resiliency Plan (2022)
+- USACE, Brant Rock & Fieldston Coastal Storm Damage Reduction (2016)
+- Town of Marshfield Multi-Hazard Mitigation Plan (2023)
+- Green Harbor River hydraulics / survey spot-elevations / sluiceway inspection reports (Town of Marshfield / Green Harbor)

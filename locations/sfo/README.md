@@ -11,3 +11,17 @@ When it becomes configured, follow the same pattern:
 - `wflow.yaml` - only if the location uses Wflow coupling.
 
 Do not check in `config.resolved.yaml`; generate merged views only when needed.
+
+## Pipeline Commands
+
+This is a partial location without a configured `config.yaml`. The pipeline
+manifest currently exposes only the available SMART-DS grid plot notebook:
+
+```bash
+uv run python scripts/run_pipeline.py sfo --stage grid --dry-run
+uv run python scripts/run_pipeline.py sfo --stage grid
+```
+
+`--stage flood` is empty until this location has flood configuration and flood
+notebooks. Executed notebook copies are written to
+`data/pipeline/executed_notebooks/`; logs are written to `data/pipeline/logs/`.

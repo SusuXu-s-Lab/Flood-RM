@@ -41,6 +41,17 @@ def build_static_data_catalog(config, paths):
             category="soils",
         ),
     }
+    if _uses_coastal_wave_catalog_aliases(config):
+        catalog["cudem_elv"] = _raster_entry(
+            _relative_to_catalog(catalog_path, dem_path),
+            crs=_raster_crs(dem_path, fallback_crs),
+            category="topography",
+        )
+        catalog["worldcover"] = _raster_entry(
+            _relative_to_catalog(catalog_path, landcover_path),
+            crs=_raster_crs(landcover_path, fallback_crs),
+            category="landuse",
+        )
     streamflow_records = (
         config.get("collection", {})
         .get("usgs_streamgages", {})
@@ -72,6 +83,10 @@ def build_static_data_catalog(config, paths):
         )
     write_generated_yaml(catalog_path, catalog, source="static intake (build_static_data_catalog)")
     return catalog_path
+
+
+def _uses_coastal_wave_catalog_aliases(config):
+    return bool(config.get("coastal_waves")) or config.get("flood_setting") == "coastal"
 
 
 def _raster_entry(uri, *, crs, category):

@@ -547,11 +547,8 @@ def collect_configured_coastal_ssurgo(
         if setup.ssurgo_attributes_output.exists()
         else fetch_ssurgo_mapunit_attributes(soil_mukeys, setup.ssurgo_attributes_output)
     )
-    landcover_template = (
-        runtime.paths["static_root"] / "worldcover_mfield_mesh.tif"
-        if (runtime.paths["static_root"] / "worldcover_mfield_mesh.tif").exists()
-        else setup.landcover_output
-    )
+    legacy_landcover_template = runtime.paths["static_root"] / "worldcover_mfield_mesh.tif"
+    landcover_template = setup.landcover_output if setup.landcover_output.exists() else legacy_landcover_template
     infiltration = write_ssurgo_infiltration_rasters(
         soils,
         attributes,
