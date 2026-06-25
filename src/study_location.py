@@ -1,19 +1,4 @@
-"""Study-location workspace, power-grid AOI extraction, and flood-config helpers.
-
-This module merges the former ``study_locations`` and ``study_area`` modules.
-It is organised into four sections; keep edits inside the matching section:
-
-  1. SHARED HELPERS   — path resolution and GeoJSON I/O used by both domains.
-  2. POWER GRID       — readers that turn grid asset data into (lon, lat) points.
-  3. STUDY AREA / AOI — concave-hull geometry built from grid coordinates and
-                        consumed by the flood pipeline as the area of interest.
-  4. FLOOD LOCATION   — workspace configuration, templates, and listing for the
-                        flood study location (event drivers, paths, etc.).
-
-The grid section produces points only. The AOI section is the single bridge
-between domains: it consumes grid points and writes the GeoJSON that the flood
-pipeline reads. The flood section never imports grid readers directly.
-"""
+"""Study-location workspace, power-grid AOI extraction, and flood-config helpers."""
 
 from __future__ import annotations
 
