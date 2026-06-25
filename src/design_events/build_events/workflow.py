@@ -146,6 +146,230 @@ def _pairing_from_collection(config):
     }
 
 
+def configure_coastal_dependence_policy(
+    config,
+    paths,
+    *,
+    coastal_latitude: float,
+    storm_centroid=None,
+    ntr_target_rate_per_year: float = 5.0,
+    ntr_declustering_hours: float = 120.0,
+    cooccurrence_pairing_window_hours: float = 72.0,
+    storm_radius_km: float = 350.0,
+    min_population_events: int = 20,
+) -> dict:
+    """Attach the reusable coastal NTR/rainfall dependence policy to config."""
+    event_cfg = config.setdefault("event_catalog", {})
+    location_root = Path(paths["location_root"])
+    location_name = str(paths.get("location_name") or config["project"]["name"])
+    duration_hours = int(config.get("collection", {}).get("aorc_sst", {}).get("storm_duration_hours", 72))
+    rainfall_stats = Path(paths["aorc_sst_root"]) / location_name / f"{duration_hours}hr-events" / "storm-stats.csv"
+
+    policy = _deep_merge_dict(
+        {
+            "method": "copula_joint",
+            "driver_vector": ["coastal_water_level", "rainfall"],
+            "primary_driver": "coastal_water_level",
+            "event_rate_per_year": float(ntr_target_rate_per_year),
+            "copula_seed": 0,
+            "pool_size": 100000,
+            "enforce_stress_budget": True,
+            "catalog_band_fractions": {
+                "mild": 0.05,
+                "common": 0.20,
+                "significant": 0.20,
+                "rare": 0.25,
+                "extreme": 0.30,
+            },
+            "cooccurrence": {
+                "target_rate_per_year": float(ntr_target_rate_per_year),
+                "condition_on": ["coastal_water_level", "rainfall"],
+                "decluster_window_hours": float(ntr_declustering_hours),
+                "pairing_window_hours": float(cooccurrence_pairing_window_hours),
+            },
+            "storm_stratification": {
+                "enabled": True,
+                "radius_km": float(storm_radius_km),
+                "days_before": 2,
+                "days_after": 1,
+                "cool_season_months": [10, 11, 12, 1, 2, 3, 4],
+                "min_population_events": int(min_population_events),
+            },
+            "marginals": {"coastal_water_level": {"kind": "pot"}, "rainfall": {"kind": "pot"}},
+            "driver_records": {
+                "coastal_water_level": {
+                    "path": _location_relative_path(paths["waterlevel_csv"], location_root),
+                    "time_column": "time",
+                    "value_column": "value",
+                    "transform": "ntr",
+                    "latitude": float(coastal_latitude),
+                },
+                "rainfall": {
+                    "path": _location_relative_path(rainfall_stats, location_root),
+                    "time_column": "storm_date",
+                    "value_column": "mean",
+                },
+                "soil_moisture": {
+                    "path": _location_relative_path(paths["nwm_soil_moisture_csv"], location_root),
+                    "time_column": "time",
+                    "value_column": "SOILSAT_TOP",
+                    "aggregate": "mean",
+                },
+            },
+            "member_libraries": {
+                "coastal_water_level": {
+                    "from": "records",
+                    "index_column": "coastal_peak_m",
+                    "decluster_window_hours": float(ntr_declustering_hours),
+                    "target_rate_per_year": float(ntr_target_rate_per_year),
+                },
+                "rainfall": {"from": "member_table"},
+            },
+        },
+        event_cfg.get("dependence", {}) or {},
+    )
+    policy["event_rate_per_year"] = float(ntr_target_rate_per_year)
+    policy["cooccurrence"].update(
+        {
+            "target_rate_per_year": float(ntr_target_rate_per_year),
+            "decluster_window_hours": float(ntr_declustering_hours),
+            "pairing_window_hours": float(cooccurrence_pairing_window_hours),
+        }
+    )
+    policy["storm_stratification"].update(
+        {"radius_km": float(storm_radius_km), "min_population_events": int(min_population_events)}
+    )
+    policy["driver_records"]["coastal_water_level"].update(
+        {
+            "path": _location_relative_path(paths["waterlevel_csv"], location_root),
+            "latitude": float(coastal_latitude),
+        }
+    )
+    policy["driver_records"]["rainfall"]["path"] = _location_relative_path(rainfall_stats, location_root)
+    policy["driver_records"]["soil_moisture"]["path"] = _location_relative_path(
+        paths["nwm_soil_moisture_csv"], location_root
+    )
+    policy["member_libraries"]["coastal_water_level"].update(
+        {
+            "decluster_window_hours": float(ntr_declustering_hours),
+            "target_rate_per_year": float(ntr_target_rate_per_year),
+        }
+    )
+    if storm_centroid is not None:
+        policy["storm_stratification"]["centroid"] = [float(value) for value in storm_centroid]
+
+    event_cfg["dependence"] = policy
+    return policy
+
+
+def configure_coastal_design_event_policy(
+    config,
+    *,
+    target_event_count: int = 500,
+    severity_band_fractions: dict | None = None,
+    benchmark_return_period_years=(10, 50, 100, 500),
+) -> dict:
+    """Attach compact coastal design-catalog defaults to config."""
+    severity_band_fractions = dict(
+        severity_band_fractions
+        or {"mild": 0.05, "common": 0.20, "significant": 0.20, "rare": 0.25, "extreme": 0.30}
+    )
+    severity_bands = [
+        {"severity_band": "mild", "rp_min_years": 0.0, "rp_max_years": 2.0},
+        {"severity_band": "common", "rp_min_years": 2.0, "rp_max_years": 10.0},
+        {"severity_band": "significant", "rp_min_years": 10.0, "rp_max_years": 50.0},
+        {"severity_band": "rare", "rp_min_years": 50.0, "rp_max_years": 100.0},
+        {"severity_band": "extreme", "rp_min_years": 100.0, "rp_max_years": 500.0},
+        {"severity_band": "beyond_design", "rp_min_years": 500.0, "rp_max_years": None},
+    ]
+    event_cfg = config.setdefault("event_catalog", {})
+    dependence = event_cfg.setdefault("dependence", {})
+    dependence.update(
+        {
+            "method": "copula_joint",
+            "pool_size": 100000,
+            "catalog_band_fractions": severity_band_fractions,
+        }
+    )
+    config["events"] = _deep_merge_dict(config.get("events", {}) or {}, {"target_event_count": int(target_event_count)})
+    config["sampling"] = _deep_merge_dict(
+        {
+            "spacing": "log",
+            "return_period_min_years": 1.5,
+            "return_period_max_years": 500.0,
+            "hybrid_splice_quantile": 0.95,
+            "candidate_pool_count": 100000,
+            "tail_sample_fraction": 0.05,
+            "severity_bands": severity_bands,
+        },
+        config.get("sampling", {}) or {},
+    )
+    resilience = _deep_merge_dict(
+        {
+            "compound_pairing": {
+                "enabled": True,
+                "strategy": "operationally_severe_plausible_dependence",
+                "seed": 0,
+                "seasonal_window_days": 45,
+                "real_event_count": 12,
+                "real_event_window_hours": 72,
+                "soil_moisture_lead_time_hours": 24,
+                "role_fractions": {
+                    "high_rainfall_cooccurrence": 0.4,
+                    "rainfall_before_coastal": 0.25,
+                    "rainfall_after_coastal": 0.25,
+                    "wet_soil_high_rainfall": 0.1,
+                },
+            }
+        },
+        config.get("resilience_stress_training", {}) or {},
+    )
+    resilience.update(
+        {
+            "target_event_count": int(target_event_count),
+            "severity_band_fractions": severity_band_fractions,
+            "benchmark_return_period_years": list(benchmark_return_period_years),
+        }
+    )
+    config["resilience_stress_training"] = resilience
+    config["design_events"] = _deep_merge_dict(
+        {
+            "pre_event_baseline_hours": 24,
+            "event_threshold_fraction": 0.1,
+            "event_threshold_min_m": 0.05,
+            "min_event_hours": 12,
+            "max_event_hours": 168,
+            "tide_resolving_half_window_hours": 72,
+            "tail_morph_max_factor": 1.3,
+            "tail_morph_trigger_quantile": 0.95,
+        },
+        config.get("design_events", {}) or {},
+    )
+    config["template_assignment"] = _deep_merge_dict(
+        {
+            "random_seed": 0,
+            "nearest_pool_size": 75,
+            "kernel_sigma_scale": 0.5,
+            "kernel_sigma_min_m": 0.03,
+            "kernel_sigma_max_m": 0.2,
+            "reuse_penalty_lambda": 1.0,
+            "dominant_peak_ratio_max": 0.9,
+        },
+        config.get("template_assignment", {}) or {},
+    )
+    return resilience
+
+
+def _deep_merge_dict(base: dict, override: dict) -> dict:
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_dict(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 # Notebook runtime helpers
 
 @dataclass(frozen=True)
@@ -186,7 +410,7 @@ def load_runtime(location_root) -> EventCatalogNotebookRuntime:
         grid_config=runtime_config,
         data_sources=runtime_config,
         sfincs_config=runtime_config,
-        wflow_config={"wflow": runtime_config["wflow"]},
+        wflow_config={"wflow": runtime_config.get("wflow", {})},
         runtime_paths=runtime_paths,
     )
 

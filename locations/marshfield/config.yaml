@@ -14,6 +14,38 @@ event_drivers:
 
 coastal_waves: true
 
+# Sea-level-rise scenario metadata for SFINCS boundary forcing.
+# NOAA/NASA Intermediate offsets use source_baseline_year 2000 for both
+# projection years; `base` keeps the observed 1979-2022 MSL record unshifted.
+scenarios:
+  base:
+    slr_offset_m: 0.0
+    description: Observed MSL record 1979-2022. Baseline reference.
+  noaa_int_2050:
+    # Projection year: 2050, relative to the NOAA 2022 source baseline year 2000.
+    slr_offset_m: 0.3
+    description: NOAA 2022 Tech Report, Intermediate scenario, 2050.
+    source: NOAA/NASA Interagency Sea Level Rise Scenario Tool, 2022 Technical Report data
+    source_url: https://sealevel.nasa.gov/data_tools/18/
+    source_dataset: "Global and Regional Sea Level Rise Scenarios for the United States: Updated Mean Projections and Extreme Water Level Probabilities Along U.S. Coastlines"
+    source_location_basis: regional/local relative sea-level scenario applicable to Massachusetts South Shore; not a Boston tide-gauge detrend
+    source_baseline_year: 2000
+    source_accessed: '2026-05-01'
+    scenario_family: Intermediate
+    projection_year: 2050
+  noaa_int_2100:
+    # Projection year: 2100, relative to the NOAA 2022 source baseline year 2000.
+    slr_offset_m: 1.1
+    description: NOAA 2022 Tech Report, Intermediate scenario, 2100.
+    source: NOAA/NASA Interagency Sea Level Rise Scenario Tool, 2022 Technical Report data
+    source_url: https://sealevel.nasa.gov/data_tools/18/
+    source_dataset: "Global and Regional Sea Level Rise Scenarios for the United States: Updated Mean Projections and Extreme Water Level Probabilities Along U.S. Coastlines"
+    source_location_basis: regional/local relative sea-level scenario applicable to Massachusetts South Shore; not a Boston tide-gauge detrend
+    source_baseline_year: 2000
+    source_accessed: '2026-05-01'
+    scenario_family: Intermediate
+    projection_year: 2100
+
 includes:
   data_sources: data_sources.yaml
   grid: grid.yaml

@@ -23,7 +23,7 @@ cluster
 docs
 
 # data
-artifacts/credentials/
+artifacts/credentials/earthdatahub-api-key.txt
 locations/marshfield/data
 locations/austin/data
 locations/greensboro/data

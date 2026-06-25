@@ -9,7 +9,7 @@ import xarray as xr
 
 from design_events.collect_sources.aorc_event_meteo import aorc_wflow_temp_pet_variables, prepare_aorc_temp_pet_for_wflow
 from design_events.utils import iter_progress
-from design_events.utils import source_artifact_covers, write_source_artifact
+from design_events.utils import read_source_artifact, source_artifact_covers, write_source_artifact
 
 
 def _repo_path(paths, value):
@@ -592,7 +592,17 @@ def _warmup_file_covers(path: Path, variable: str, start: pd.Timestamp, end: pd.
     return tmin <= start and tmax >= end
 
 
-def _compute_selected_event_windows(opener, ranked, spec, bbox_wgs84, output_dir, duration_hours, location_name):
+def _compute_selected_event_windows(
+    opener,
+    ranked,
+    spec,
+    bbox_wgs84,
+    output_dir,
+    duration_hours,
+    location_name,
+    *,
+    skip_existing=True,
+):
     if ranked.empty:
         ranked = ranked.copy()
         ranked["x"] = pd.Series(dtype="Float64")
@@ -625,7 +635,7 @@ def _compute_selected_event_windows(opener, ranked, spec, bbox_wgs84, output_dir
         if write_event_windows:
             event_id = _event_id(location_name, duration_hours, row)
             path = output_dir / f"{event_id}_{start:%Y%m%dT%H}.nc"
-            if _event_window_file_has_required_variables(
+            if skip_existing and _event_window_file_has_required_variables(
                 path,
                 spec,
                 require_transposition=_row_requires_field_transposition(row),
@@ -644,7 +654,7 @@ def _compute_selected_event_windows(opener, ranked, spec, bbox_wgs84, output_dir
         centroid_lats.append(centroid_lat)
         if write_event_windows:
             subset = _apply_field_transposition(subset, row, historical_centroid=(centroid_lon, centroid_lat))
-            subset.to_netcdf(path)
+            _write_event_window_netcdf(subset, path)
             written.append(path)
     for ds in year_datasets.values():
         ds.close()
@@ -656,6 +666,25 @@ def _compute_selected_event_windows(opener, ranked, spec, bbox_wgs84, output_dir
     if "y" not in ranked:
         ranked["y"] = centroid_lats
     return written, ranked
+
+
+def _write_event_window_netcdf(ds: xr.Dataset, path: Path) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f".{path.name}.tmp")
+    safe = _strip_netcdf_endian_encoding(ds)
+    safe.to_netcdf(tmp_path, engine="netcdf4")
+    tmp_path.replace(path)
+
+
+def _strip_netcdf_endian_encoding(ds: xr.Dataset) -> xr.Dataset:
+    out = ds.copy()
+    for name in out.variables:
+        encoding = dict(out[name].encoding)
+        if "endian" in encoding:
+            encoding.pop("endian", None)
+            out[name].encoding = encoding
+    return out
 
 
 def _event_window_file_has_required_variables(
@@ -803,6 +832,47 @@ def _ensure_transposition_targets(paths, spec, ranked):
     return ranked
 
 
+def _aorc_sst_artifact_covers_settings(
+    paths,
+    start,
+    end,
+    *,
+    duration_hours,
+    check_every_n_hours,
+    min_threshold,
+    decluster_hours,
+    top_n,
+):
+    if not source_artifact_covers(paths, "aorc_sst", "rainfall_catalog", start, end):
+        return False
+    manifest = read_source_artifact(paths, "aorc_sst", "rainfall_catalog") or {}
+    metadata = manifest.get("metadata", {})
+    return (
+        _metadata_int(metadata, "duration_hours") == int(duration_hours)
+        and _metadata_int(metadata, "check_every_n_hours") == int(check_every_n_hours)
+        and _metadata_float(metadata, "min_precip_threshold") == float(min_threshold)
+        and _metadata_int(metadata, "decluster_hours") == int(decluster_hours)
+        and _metadata_optional_int(metadata, "top_n_events_safety_cap", fallback_key="top_n_events") == top_n
+    )
+
+
+def _metadata_int(metadata, key):
+    value = metadata.get(key)
+    return int(value) if value is not None else None
+
+
+def _metadata_float(metadata, key):
+    value = metadata.get(key)
+    return float(value) if value is not None else None
+
+
+def _metadata_optional_int(metadata, key, *, fallback_key=None):
+    value = metadata.get(key)
+    if value is None and fallback_key is not None:
+        value = metadata.get(fallback_key)
+    return int(value) if value is not None else None
+
+
 def collect_aorc_sst(settings, skip_existing=False, opener=None):
     paths = settings["paths"]
     spec = settings.get("aorc_sst", {})
@@ -821,6 +891,7 @@ def collect_aorc_sst(settings, skip_existing=False, opener=None):
     ranked_csv = collection_dir / "ranked-storms.csv"
     stats_csv = collection_dir / "storm-stats.csv"
     yearly_stats_dir = _yearly_stats_dir(collection_dir)
+    defer_event_windows = bool(spec.get("defer_event_windows", False))
     if (
         skip_existing
         and ranked_csv.exists()
@@ -831,7 +902,16 @@ def collect_aorc_sst(settings, skip_existing=False, opener=None):
             spec,
             require_transposition_metadata=True,
         )
-        and source_artifact_covers(paths, "aorc_sst", "rainfall_catalog", start, end)
+        and _aorc_sst_artifact_covers_settings(
+            paths,
+            start,
+            end,
+            duration_hours=duration_hours,
+            check_every_n_hours=check_every_n_hours,
+            min_threshold=min_threshold,
+            decluster_hours=decluster_hours,
+            top_n=top_n,
+        )
     ):
         print(f"AORC SST: reusing complete rainfall catalog {ranked_csv}")
         ranked = pd.read_csv(ranked_csv, parse_dates=["storm_date"])
@@ -881,6 +961,79 @@ def collect_aorc_sst(settings, skip_existing=False, opener=None):
     )
     collection_dir.mkdir(parents=True, exist_ok=True)
     stats.to_csv(stats_csv, index=False)
+    if defer_event_windows:
+        event_windows = []
+    else:
+        event_windows, ranked = _compute_selected_event_windows(
+            opener,
+            ranked,
+            spec,
+            bbox_wgs84,
+            event_window_dir,
+            duration_hours,
+            paths["location_name"],
+            skip_existing=skip_existing,
+        )
+    ranked = _ensure_transposition_targets(paths, spec, ranked)
+    ranked.to_csv(ranked_csv, index=False)
+    members = _write_rainfall_members(paths, spec, ranked, ranked_csv, duration_hours)
+    artifact_json = write_source_artifact(
+        paths,
+        source="aorc_sst",
+        kind="rainfall_catalog",
+        start=start,
+        end=end,
+        artifacts={
+            "storm_stats_csv": stats_csv,
+            "ranked_storms_csv": ranked_csv,
+            "rainfall_members_csv": paths["aorc_sst_rainfall_members_csv"],
+            "event_windows_dir": event_window_dir,
+        },
+        metadata={
+            "backend": "direct_aorc_sst",
+            "bbox_wgs84": list(bbox_wgs84),
+            "duration_hours": duration_hours,
+            "check_every_n_hours": check_every_n_hours,
+            "selection": "threshold_driven_pot",
+            "min_precip_threshold": min_threshold,
+            "decluster_hours": decluster_hours,
+            "top_n_events_safety_cap": top_n,
+            "potential_method": "moving_footprint_max_mean",
+            "event_windows_deferred": defer_event_windows,
+        },
+        status="pending_event_windows" if defer_event_windows else "complete",
+    )
+    return {
+        "ranked_rows": int(len(ranked)),
+        "storm_stats_rows": int(len(stats)),
+        "rainfall_member_rows": int(len(members)),
+        "event_window_count": len(event_windows),
+        "ranked_storms_csv": ranked_csv,
+        "storm_stats_csv": stats_csv,
+        "source_artifact_json": artifact_json,
+    }
+
+
+def collect_aorc_sst_event_windows(settings, skip_existing=True, opener=None):
+    paths = settings["paths"]
+    spec = {**settings.get("aorc_sst", {}), "write_event_windows": True}
+    opener = opener or _open_aorc_year
+    start = pd.Timestamp(settings["start"])
+    end = _normalize_end(settings["end"])
+    duration_hours = int(spec.get("storm_duration_hours", spec.get("storms", {}).get("storm_duration_hours", 72)))
+    check_every_n_hours = int(spec.get("check_every_n_hours", spec.get("storms", {}).get("check_every_n_hours", 1)))
+    top_n_setting = spec.get("top_n_events", spec.get("storms", {}).get("top_n_events"))
+    top_n = int(top_n_setting) if top_n_setting is not None else None
+    min_threshold = float(spec.get("min_precip_threshold", spec.get("storms", {}).get("min_precip_threshold", 2.5)))
+    decluster_hours = int(spec.get("decluster_hours", duration_hours))
+    bbox_wgs84 = _bbox_from_spec(paths, spec)
+    collection_dir = _collection_dir(paths, duration_hours)
+    event_window_dir = collection_dir / "event_windows"
+    ranked_csv = collection_dir / "ranked-storms.csv"
+    stats_csv = collection_dir / "storm-stats.csv"
+    if not ranked_csv.exists():
+        raise FileNotFoundError(f"AORC SST ranked storm catalog is missing: {ranked_csv}")
+    ranked = pd.read_csv(ranked_csv, parse_dates=["storm_date"])
     event_windows, ranked = _compute_selected_event_windows(
         opener,
         ranked,
@@ -889,6 +1042,7 @@ def collect_aorc_sst(settings, skip_existing=False, opener=None):
         event_window_dir,
         duration_hours,
         paths["location_name"],
+        skip_existing=skip_existing,
     )
     ranked = _ensure_transposition_targets(paths, spec, ranked)
     ranked.to_csv(ranked_csv, index=False)
@@ -915,15 +1069,15 @@ def collect_aorc_sst(settings, skip_existing=False, opener=None):
             "decluster_hours": decluster_hours,
             "top_n_events_safety_cap": top_n,
             "potential_method": "moving_footprint_max_mean",
+            "event_windows_deferred": False,
         },
     )
     return {
         "ranked_rows": int(len(ranked)),
-        "storm_stats_rows": int(len(stats)),
         "rainfall_member_rows": int(len(members)),
         "event_window_count": len(event_windows),
         "ranked_storms_csv": ranked_csv,
-        "storm_stats_csv": stats_csv,
+        "event_windows_dir": event_window_dir,
         "source_artifact_json": artifact_json,
     }
 

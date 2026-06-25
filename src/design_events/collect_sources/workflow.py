@@ -1285,6 +1285,7 @@ def aorc_sst_params(
     storm_duration_hours=None,
     check_every_n_hours=None,
     top_n_events=None,
+    defer_event_windows=None,
 ) -> pd.Series:
     """Apply notebook-facing AORC SST overrides into ``config`` and summarize them.
 
@@ -1302,6 +1303,7 @@ def aorc_sst_params(
         "storm_duration_hours": storm_duration_hours,
         "check_every_n_hours": check_every_n_hours,
         "top_n_events": top_n_events,
+        "defer_event_windows": defer_event_windows,
     }
     for key, value in overrides.items():
         if value is not None:
@@ -1319,10 +1321,41 @@ def aorc_sst_params(
             "decluster_hours": aorc_sst.get("decluster_hours"),
             "check_every_n_hours": aorc_sst.get("check_every_n_hours"),
             "top_n_events_safety_cap": aorc_sst.get("top_n_events"),
+            "defer_event_windows": bool(aorc_sst.get("defer_event_windows", False)),
             "rainfall_members": str(paths["aorc_sst_rainfall_members_csv"]),
             "rainfall_members_exists": paths["aorc_sst_rainfall_members_csv"].exists(),
         },
         name="aorc_sst",
+    )
+
+
+def collect_aorc_sst_event_windows(
+    config: dict,
+    paths: dict,
+    collection_plan,
+    *,
+    skip_existing=True,
+) -> pd.Series:
+    from design_events.collect_sources.aorc_sst import collect_aorc_sst_event_windows as _collect_event_windows
+
+    if not collection_plan.has("aorc_sst"):
+        raise KeyError("aorc_sst is not configured in the source collection plan")
+    result = _collect_event_windows(
+        collection_plan.settings_for("aorc_sst"),
+        skip_existing=skip_existing,
+    )
+    return pd.Series(
+        {
+            "source": "aorc_sst_event_windows",
+            "status": "collected",
+            "ranked_rows": result["ranked_rows"],
+            "rainfall_member_rows": result["rainfall_member_rows"],
+            "event_window_count": result["event_window_count"],
+            "ranked_storms_csv": str(result["ranked_storms_csv"]),
+            "event_windows_dir": str(result["event_windows_dir"]),
+            "source_artifact_json": str(result["source_artifact_json"]),
+        },
+        name="aorc_sst_event_windows",
     )
 
 
