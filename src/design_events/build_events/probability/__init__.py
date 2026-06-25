@@ -33,6 +33,10 @@ from design_events.build_events.probability.realization import (
     select_analog_realization,
 )
 
+build_inland_catalog = build_inland_design_catalog
+build_joint_catalog = build_joint_design_catalog
+build_tail = build_historical_tail_catalog
+
 __all__ = [
     "AndExceedanceLabels",
     "DriverDependenceModel",
@@ -54,4 +58,7 @@ __all__ = [
     "sample_tail_enriched_catalog",
     "select_analog_realization",
     "select_most_likely_design_events",
+    "build_inland_catalog",
+    "build_joint_catalog",
+    "build_tail",
 ]

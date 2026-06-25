@@ -12,7 +12,6 @@ from study_location import (
     default_location_config_path,
     find_repo_root,
     load_location_config,
-    load_yaml_document,
     resolve_repo_path,
     resolve_study_location,
 )
@@ -30,10 +29,6 @@ project_config_path = default_config_path()
 
 def resolve_path(path):
     return resolve_repo_path(path, repo_root)
-
-
-def load_yaml(path):
-    return load_yaml_document(path, repo_root)
 
 
 def load_config(path=None):

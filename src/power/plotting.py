@@ -1621,3 +1621,8 @@ def write_sfincs_domains(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(payload) + "\n")
     return domains
+
+
+plot_switches = build_switch_line_overlay
+block_overview = build_location_block_overview
+block_detail = build_ocean_bluff_block_detail

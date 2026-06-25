@@ -550,15 +550,6 @@ def _resolve_manifest_path(run_root: Path, value) -> Path | None:
     return run_root / path
 
 
-def _dataset_time_index(data_array) -> pd.DatetimeIndex | None:
-    if "time" not in data_array.coords:
-        return None
-    try:
-        return pd.DatetimeIndex(pd.to_datetime(data_array["time"].values))
-    except Exception:
-        return None
-
-
 def _plot_missing_panel(ax, title: str, message: str) -> None:
     ax.set_title(title)
     _axis_message(ax, message)
@@ -2038,3 +2029,13 @@ def plot_runup_overtopping(
     display(pd.DataFrame(summary_rows))
     print(f"Saved runup/structure QA figure → {out_path}")
     return out_path
+
+
+plot_forcing = plot_inland_coupled_forcing_qa
+plot_diagnostics = plot_inland_coupled_postrun_diagnostics
+plot_animation = plot_inland_flood_animation
+plot_standard_forcing = plot_forcing_qa_standard
+plot_wave_forcing = plot_forcing_qa_waves
+plot_standard_diagnostics = plot_postrun_diagnostics
+plot_standard_animation = plot_flood_animation
+plot_runup = plot_runup_overtopping

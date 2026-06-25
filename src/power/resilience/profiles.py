@@ -923,3 +923,6 @@ def _stable_building_id(index: pd.Index, token: str) -> str:
     labels.sort()
     digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
     return labels[int(digest[:12], 16) % len(labels)]
+
+
+load_inputs = build_location_load_profile_inputs

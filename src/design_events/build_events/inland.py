@@ -678,3 +678,6 @@ def _streamflow_records_path(config, location_root):
     if isinstance(value, dict):
         value = value.get("output", "data/sources/usgs_streamgages/streamflow_records.csv")
     return _location_path(location_root, value)
+
+
+write_handoff = write_wflow_sfincs_handoff_manifest

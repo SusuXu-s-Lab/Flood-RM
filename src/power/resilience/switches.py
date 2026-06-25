@@ -635,13 +635,6 @@ def homogenize_feeder_exposure(
     )
 
 
-def _edge_satisfies_candidate_policy(
-    feeder: RootedFeeder, edge: SsapEdge, policy: SsapCandidatePolicy
-) -> bool:
-    metrics = _single_switch_metrics(feeder)
-    return _edge_satisfies_candidate_metrics(edge, metrics[edge], policy)
-
-
 def select_policy_candidate_edges(
     feeder: RootedFeeder,
     candidate_edges: Iterable[SsapEdge],
@@ -2051,3 +2044,10 @@ def _loads_by_bus(buses: pd.DataFrame) -> dict[str, float]:
         str(row.bus): float(row.load_kw or 0.0)
         for row in buses.itertuples(index=False)
     }
+
+
+switch_inputs = build_ssap_components
+solve_switches = solve_ssap_per_feeder
+write_switches = assemble_switch_artifact
+derive_fuses = derive_lateral_fuses
+build_blocks = build_switch_bounded_load_blocks

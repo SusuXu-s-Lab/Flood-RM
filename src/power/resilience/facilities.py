@@ -81,11 +81,6 @@ def write_critical_facilities_artifact(
     pd.DataFrame(facilities.drop(columns=["geometry"], errors="ignore")).to_parquet(output_path, index=False)
 
 
-def empty_critical_facilities_gdf() -> gpd.GeoDataFrame:
-    frame = pd.DataFrame(columns=CRITICAL_FACILITY_COLUMNS)
-    return gpd.GeoDataFrame(frame, geometry=[], crs="EPSG:4326")
-
-
 def load_bus_electrical_metadata(loads: pd.DataFrame) -> dict[str, dict[str, object]]:
     metadata: dict[str, dict[str, object]] = {}
     for bus, group in loads.groupby("bus"):

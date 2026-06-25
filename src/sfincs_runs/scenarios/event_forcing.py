@@ -735,3 +735,10 @@ def _resolve_catalog_path(value, *, paths):
         return path
     location_root = Path(paths.get("location_root", "."))
     return location_root / path
+
+
+build_event = build_single_use_event
+hydrology_inputs = resolve_event_hydrology_inputs
+stage_run = stage_event_run
+stage_precip = stage_event_precipitation
+run_model = run_sfincs_model

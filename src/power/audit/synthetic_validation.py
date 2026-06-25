@@ -44,10 +44,6 @@ class RegionConfig:
     smart_ds_subregions: tuple[str, ...]
     artifact_root: Path
 
-    @property
-    def smart_ds_manifest_path(self) -> Path:
-        return self.artifact_root / "smart_ds" / "manifest.json"
-
 
 _sfo_subregions = tuple(
     [f"P{i}R" for i in range(1, 6)] + [f"P{i}U" for i in range(1, 36)]
@@ -152,16 +148,6 @@ def smart_ds_models(
         )
         for sub in cfg.smart_ds_subregions
     )
-
-
-def get_smart_ds_urls(
-    region_id,
-    year=2016,
-    scenario="base_timeseries",
-    model_format="opendss",
-) -> list[str]:
-    """Public OEDI download URLs for every subregion's Master.dss."""
-    return [model.master_dss_url for model in smart_ds_models(region_id, year, scenario, model_format)]
 
 
 @dataclass(frozen=True)
@@ -1945,3 +1931,9 @@ def plot_validation_region_report_card(report: dict[str, Any], output_path: Path
     fig.savefig(output_path, dpi=180)
     plt.close(fig)
     return output_path
+
+
+run_stats = run_statistical_validation
+run_ops = run_operational_validation
+audit_summary = build_audit_summary
+plot_audit = plot_validation_region_report_card

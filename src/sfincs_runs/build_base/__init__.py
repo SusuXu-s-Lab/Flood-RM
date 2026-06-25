@@ -55,6 +55,11 @@ from sfincs_runs.build_base.structures import (
     prepare_structure_layers,
 )
 
+build_domains = build_inland_sfincs_domain_set
+create_handoffs = create_native_sfincs_river_handoff_locations
+set_observations = set_sfincs_observation_points_from_gages
+validate_physics = validate_built_sfincs_native_physics
+
 __all__ = [
     "BaselineBuildPlan",
     "RegionSetup",
@@ -103,4 +108,8 @@ __all__ = [
     "write_inland_sfincs_handoff_locations",
     "validate_built_sfincs_native_physics",
     "worldcover_tile_urls",
+    "build_domains",
+    "create_handoffs",
+    "set_observations",
+    "validate_physics",
 ]

@@ -402,3 +402,7 @@ def build_joint_design_catalog(
         or config.get("infiltration", {}).get("treatment", "none")
     )
     return JointCatalogResult(catalog=catalog, budget_report=budget_report, model=model, population_report=population_report)
+
+
+build_joint_catalog = build_joint_design_catalog
+build_tail = build_historical_tail_catalog

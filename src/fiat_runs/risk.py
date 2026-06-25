@@ -97,3 +97,6 @@ def ead_audit(damage_df: pd.DataFrame, weights: pd.DataFrame, total_rate: float,
         "ead_origins": list(EAD_ORIGINS),
         "ead_by_scenario": table.to_dict("records"),
     }
+
+
+exceedance = damage_exceedance_curve

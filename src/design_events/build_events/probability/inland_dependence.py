@@ -241,3 +241,6 @@ def _band_budget_report(catalog, band_fractions):
         got = int(counts.get(band, 0))
         rows.append({"severity_band": band, "target": target, "selected": got, "met": got >= target})
     return pd.DataFrame(rows)
+
+
+build_inland_catalog = build_inland_design_catalog

@@ -930,42 +930,6 @@ def refresh_wflow_hydrography_basemap(
     )
 
 
-def refresh_wflow_hydrography_sources(
-    runtime: CollectSourcesNotebookRuntime,
-    *,
-    force: bool = True,
-) -> dict:
-    """Refresh the Wflow HydroMT basemap and river-geometry source bundle."""
-    from design_events.collect_sources.national_hydrography import refresh_wflow_river_geometry_sources
-    from design_events.collect_sources.stream_geo_nldi import collect_stream_geo_nldi
-
-    plan = build_source_collection_plan(runtime.runtime_config, runtime.runtime_paths)
-    if not plan.has("national_hydrography"):
-        raise KeyError("collection.national_hydrography is not configured for this location")
-
-    stream_geo_result = None
-    if plan.has("stream_geo_nldi"):
-        stream_geo_result = collect_stream_geo_nldi(
-            plan.settings_for("stream_geo_nldi"),
-            skip_existing=True,
-            smoke=False,
-        )
-    hydrography_result = refresh_wflow_river_geometry_sources(
-        plan.settings_for("national_hydrography"),
-        skip_existing=not force,
-    )
-    return {
-        "status": hydrography_result.get("status", "collected"),
-        "stream_geo_status": (stream_geo_result or {}).get("status", "not_configured"),
-        "stream_geo_table": (stream_geo_result or {}).get("stream_geo_table", ""),
-        "hydromt_basemap": hydrography_result.get("hydromt_basemap"),
-        "river_geometry": hydrography_result.get("river_geometry"),
-        "catchments": hydrography_result.get("catchments"),
-        "wflow_soil_parameters": hydrography_result.get("wflow_soil_parameters"),
-        "source_artifact_json": hydrography_result.get("source_artifact_json"),
-    }
-
-
 def source_collection_readiness(runtime: CollectSourcesNotebookRuntime) -> pd.DataFrame:
     collection = runtime.collection
     usgs_streamgages = runtime.usgs_streamgages
@@ -1257,10 +1221,10 @@ def source_collection_plan_with_reuse_table(
     plan,
     paths: dict,
     *,
-    source_skip_existing: bool = True,
+    rerun: bool = False,
 ) -> pd.DataFrame:
     plan_table = pd.DataFrame(plan.summary_rows())
-    will_reuse = [_will_reuse_source(step, paths, source_skip_existing=source_skip_existing) for step in plan.steps]
+    will_reuse = [_will_reuse_source(step, paths, rerun=rerun) for step in plan.steps]
     plan_table["will_reuse_existing"] = will_reuse
     plan_table["action"] = plan_table["will_reuse_existing"].map(
         {True: "reuse complete artifact", False: "collect or repair"}
@@ -1645,8 +1609,8 @@ def plot_usgs_streamgage_network(runtime: CollectSourcesNotebookRuntime):
     return qa.figure, qa.artifact_summary, qa.gage_domain_summary
 
 
-def _will_reuse_source(step, paths: dict, *, source_skip_existing: bool) -> bool:
-    if not source_skip_existing:
+def _will_reuse_source(step, paths: dict, *, rerun: bool) -> bool:
+    if rerun:
         return False
     if step.name == "national_hydrography":
         manifest = paths["source_artifacts_root"] / "national_hydrography_wflow_sources.json"
@@ -1920,3 +1884,26 @@ def _streamflow_record_site_numbers(streamflow_records_path: Path) -> set[str]:
     return set(
         pd.read_csv(streamflow_records_path, dtype={"site_no": str}, usecols=["site_no"])["site_no"].astype(str)
     )
+
+
+# Short notebook-facing API. Implementation names stay descriptive inside this
+# module; notebooks can read as compact workflow steps.
+load_runtime = load_collect_sources_notebook_runtime
+summary = source_collection_runtime_summary
+source_records = source_record_location_table
+plan = build_source_collection_plan
+plan_table = source_collection_plan_with_reuse_table
+discover_gages = usgs_streamgage_discovery_summary
+gage_readiness = streamgage_source_readiness
+review_summary = streamgage_review_summary
+review_sources = streamgage_review_source_table
+stream_sources = stream_geo_nldi_source_summary
+soil_sources = nwm_soil_moisture_source_summary
+reservoir_sources = reservoir_condition_source_summary
+readiness = source_collection_readiness
+prepare = prepare_collection_prerequisites
+write_gage_network = build_or_write_reviewed_streamgage_network
+collect_gage_records = collect_or_reuse_reviewed_streamflow_records
+overview = collected_data_overview
+review_layers = streamgage_review_area_layer_specs
+plot_review = plot_streamgage_review_regions

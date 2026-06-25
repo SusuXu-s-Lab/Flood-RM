@@ -511,3 +511,15 @@ def _try_basemap(ax, *, crs: str, style: str) -> None:
         ctx.add_basemap(ax, crs=crs, source=providers.get(style, providers["osm"]), attribution_size=7)
     except Exception as exc:
         ax.text(0.01, 0.01, f"Basemap unavailable: {exc}", transform=ax.transAxes, fontsize=8)
+
+
+load_transects = load_runup_transects
+runup_candidates = candidate_points_from_runup_transects
+risk_candidates = candidate_points_from_building_risk
+sample_candidates = sample_sfincs_at_candidates
+response_table = candidate_event_response_table
+score_candidates = score_sensor_candidates
+select_sensors = greedy_sensor_selection
+mark_selected = mark_selected_candidates
+plot_network = plot_selected_sensor_network
+plot_response = plot_candidate_damage_response

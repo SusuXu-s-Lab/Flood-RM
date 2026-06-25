@@ -1052,3 +1052,7 @@ def _clean_missing(value: Any) -> Any:
     except (TypeError, ValueError):
         pass
     return value
+
+
+build_inventory = build_layer_1_der_inventory
+size_der = run_layer_2_reopt_sizing

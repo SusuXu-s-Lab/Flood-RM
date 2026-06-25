@@ -296,3 +296,6 @@ def _write_netcdf_replace(dataset, path):
         tmp_path.replace(path)
     finally:
         tmp_path.unlink(missing_ok=True)
+
+
+write_handoff = write_joint_catalog_sfincs_handoff

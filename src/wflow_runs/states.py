@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import shutil
 import tomllib
@@ -320,6 +321,11 @@ def validate_wflow_reservoir_states(model_root, *, required: bool = True, raise_
     return report
 
 
+plan_warmup = plan_wflow_baseline_warmup_state
+prepare_instates = prepare_wflow_cold_instates
+validate_instates = validate_wflow_instates
+
+
 def resolve_wflow_base_root(wflow: dict, location_root) -> Path:
     base_root = Path(wflow.get("base_model_root", "data/wflow/base"))
     if not base_root.is_absolute():
@@ -336,6 +342,7 @@ def _wflow_reservoirs_enabled(config: dict) -> bool:
 
 
 def _default_wflow_model_cls():
+    os.environ.pop("DEBUG", None)
     from hydromt_wflow import WflowSbmModel
 
     return WflowSbmModel

@@ -46,6 +46,9 @@ def validate_river_geometry_readiness(
     return report
 
 
+validate_geometry = validate_river_geometry_readiness
+
+
 def _append_numeric_geometry_check(rows: list[dict], rivers, column: str, *, require_variable: bool) -> None:
     if column not in rivers:
         rows.append({"check": column, "status": "failed", "message": f"missing {column}"})

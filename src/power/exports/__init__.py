@@ -16,6 +16,9 @@ from power.exports.restoration import run_dynagrid_smoke
 from power.exports.restoration import run_powermodels_onm_smoke
 from power.exports.restoration import slice_annual_profile_to_event_window
 
+control_registry = build_control_sandbox_registry
+export_base = export_stage_a1
+
 __all__ = [
     "DEFAULT_OUTPUT_DIR",
     "DEFAULT_REGISTRY_DIR",
@@ -32,4 +35,6 @@ __all__ = [
     "run_dynagrid_smoke",
     "run_powermodels_onm_smoke",
     "slice_annual_profile_to_event_window",
+    "control_registry",
+    "export_base",
 ]

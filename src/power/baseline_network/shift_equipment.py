@@ -224,3 +224,6 @@ class ShiftExampleEdgeEquipmentMapper(EdgeEquipmentMapper):
 
             node_equipment[node.name] = node_map
         return node_equipment
+
+
+equipment_catalog = build_shift_example_equipment_catalog

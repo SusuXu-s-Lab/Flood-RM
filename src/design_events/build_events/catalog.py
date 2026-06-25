@@ -388,15 +388,6 @@ def attach_forcing_members(catalog, members, forcing, policy=None):
     return out
 
 
-def _resolve_member_path(paths, value):
-    path = Path(value)
-    if path.is_absolute():
-        return path
-    if path.parts and path.parts[0] in {"data", "02_flood", "01_grid"} and paths.get("location_root") is not None:
-        return Path(paths["location_root"]) / path
-    return paths["repo_root"] / path
-
-
 def _attach_configured_forcing(catalog, plan):
     out = catalog
     for forcing in plan.forcings:

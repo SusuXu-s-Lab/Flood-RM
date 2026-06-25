@@ -212,3 +212,8 @@ def _polygon_parts(geometry: BaseGeometry) -> list[Polygon]:
         "parcel fetch geometry must be Polygon or MultiPolygon, "
         f"got {geometry.geom_type!r}"
     )
+
+
+source_area = resolve_grid_source_area
+source_anchors = resolve_grid_source_anchors
+fetch_parcels = fetch_building_parcels_in_geometry

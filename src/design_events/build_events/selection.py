@@ -936,3 +936,6 @@ def _format_benchmarks(values):
     for value in sorted(set(values)):
         out.append(str(int(value)) if float(value).is_integer() else str(value))
     return ";".join(out)
+
+
+select_training = select_resilience_stress_training_set

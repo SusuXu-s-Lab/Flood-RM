@@ -972,9 +972,11 @@ def _required_event_value(row: pd.Series, key: str):
 def _catalog_rainfall_start(row: pd.Series):
     reference = row.get("event_reference_time")
     offset = row.get("rainfall_start_offset_hours")
-    if reference is None or offset is None or pd.isna(reference) or pd.isna(offset):
+    if reference is not None and offset is not None and not pd.isna(reference) and not pd.isna(offset):
+        return pd.Timestamp(reference) + pd.Timedelta(hours=float(offset))
+    if reference is None or pd.isna(reference):
         return None
-    return pd.Timestamp(reference) + pd.Timedelta(hours=float(offset))
+    return pd.Timestamp(reference)
 
 
 def _positive_float(value, *, default: float) -> float:
@@ -985,49 +987,6 @@ def _positive_float(value, *, default: float) -> float:
     if not (np.isfinite(out) and out > 0):
         return float(default)
     return out
-
-
-def _write_neutral_temp_pet(
-    out_path: Path,
-    precip_path: Path,
-    *,
-    temp_c: float = 15.0,
-    press_msl_hpa: float = 1013.25,
-) -> Path:
-    import xarray as xr
-
-    if not Path(precip_path).exists():
-        raise FileNotFoundError(f"precip.nc must be written before temp_pet.nc: {precip_path}")
-    with xr.open_dataset(precip_path) as precip_ds:
-        template = precip_ds["precip"].transpose("time", "y", "x")
-        coords = {dim: template.coords[dim].values for dim in ("time", "y", "x")}
-        shape = template.shape
-
-    def filled(value: float):
-        return np.full(shape, float(value), dtype=np.float32)
-
-    ds = xr.Dataset(
-        {
-            "temp": (("time", "y", "x"), filled(temp_c)),
-            "press_msl": (("time", "y", "x"), filled(press_msl_hpa)),
-            "kin": (("time", "y", "x"), filled(0.0)),
-            "kout": (("time", "y", "x"), filled(0.0)),
-        },
-        coords=coords,
-        attrs={
-            "crs": "EPSG:4326",
-            "source": "neutral short-event Wflow PET companion for scaled AORC rainfall replay",
-        },
-    )
-    ds["temp"].attrs.update(units="degree C")
-    ds["press_msl"].attrs.update(units="hPa")
-    ds["kin"].attrs.update(units="W m-2")
-    ds["kout"].attrs.update(units="W m-2")
-
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    ds.to_netcdf(out_path)
-    return out_path
 
 
 def _write_json(path: Path, payload: dict) -> Path:
@@ -1173,3 +1132,6 @@ def _run(command_parts, *, cwd) -> None:
         raise RuntimeError(
             f"executable not found for replay step: {shlex.join([str(p) for p in command_parts])}"
         ) from exc
+
+
+build_meteo = build_event_meteo_forcing

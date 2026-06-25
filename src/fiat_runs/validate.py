@@ -50,3 +50,6 @@ def run_historical_validation(model_root, rasterizer, storage_root, catalog_csv,
         "missing_sfincs_runs": missing,
         "damages": pd.DataFrame(rows),
     }
+
+
+validate_history = run_historical_validation

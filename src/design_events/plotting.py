@@ -1955,3 +1955,10 @@ def plot_realization_scaling(catalog, driver, *, ax=None):
     if fig is not None:
         fig.tight_layout()
     return fig
+
+
+# Short notebook-facing plot names.
+plot_rainfall = plot_rainfall_member_distribution
+plot_return_periods = plot_streamflow_return_period_distribution
+plot_tail_budget = plot_joint_tail_budget
+plot_scaling = plot_realization_scaling

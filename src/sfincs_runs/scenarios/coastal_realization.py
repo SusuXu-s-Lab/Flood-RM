@@ -74,3 +74,6 @@ def build_coastal_event_timeseries(
         "scale_factor": float(scale),
         "msl_offset_m": float(msl_offset_m),
     }
+
+
+build_timeseries = build_coastal_event_timeseries

@@ -237,15 +237,4 @@ def power_grid_root(config_path=None) -> Path:
     return definition.root / path
 
 
-def power_grid_path(key: str, config_path=None, default=None) -> Path:
-    definition = define_location(config_path or default_location_config())
-    value = definition.grid.get(key, default)
-    if value is None:
-        raise KeyError(f"grid path is not configured: {key}")
-    path = Path(value)
-    if path.is_absolute():
-        return path
-    return definition.root / path
-
-
 POWER_GRID = power_grid_root()

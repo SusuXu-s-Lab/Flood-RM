@@ -209,7 +209,28 @@ def static_input_settings_from_env(environ=None) -> dict[str, bool]:
     }
 
 
-def load_region_setup_notebook_runtime(
+def load_runtime(
+    location_root,
+    *,
+    static_input_settings: dict | None = None,
+    wflow_domain_review_required: bool | None = False,
+) -> RegionSetupNotebookRuntime | CoastalRegionSetupRuntime:
+    """Load the region-setup notebook runtime for a Location Workspace."""
+    location_root = Path(location_root).resolve()
+    config = define_location(location_root / "config.yaml").config
+    if config.get("flood_setting") == "coastal":
+        return _load_coastal_runtime(
+            location_root,
+            static_input_settings=static_input_settings,
+        )
+    return _load_inland_runtime(
+        location_root,
+        static_input_settings=static_input_settings,
+        wflow_domain_review_required=wflow_domain_review_required,
+    )
+
+
+def _load_inland_runtime(
     location_root,
     *,
     static_input_settings: dict | None = None,
@@ -293,7 +314,7 @@ def region_source_record_locations(runtime: RegionSetupNotebookRuntime) -> pd.Da
     return _location_record_table(runtime.location_root, records)
 
 
-def load_coastal_region_setup_runtime(
+def _load_coastal_runtime(
     location_root,
     *,
     static_input_settings: dict | None = None,
@@ -327,7 +348,14 @@ def load_coastal_region_setup_runtime(
     )
 
 
-def build_configured_coastal_region_domain(runtime: CoastalRegionSetupRuntime) -> CoastalRegionDomain:
+def build_domains(runtime: RegionSetupNotebookRuntime | CoastalRegionSetupRuntime):
+    """Build the configured region domains for inland or coastal notebooks."""
+    if isinstance(runtime, CoastalRegionSetupRuntime):
+        return _build_coastal_domains(runtime)
+    return _build_inland_domains(runtime)
+
+
+def _build_coastal_domains(runtime: CoastalRegionSetupRuntime) -> CoastalRegionDomain:
     """Build/read the AOI and read the configured SFINCS bbox from Region config."""
     aoi_result = build_study_area(runtime.config, runtime.repo_root)
     study_area_wgs = gpd.read_file(aoi_result.output_path).to_crs("EPSG:4326")
@@ -356,7 +384,19 @@ def build_configured_coastal_region_domain(runtime: CoastalRegionSetupRuntime) -
     return CoastalRegionDomain(aoi_result, study_area_wgs, bbox_gdf, bbox_wgs84, summary)
 
 
-def collect_required_coastal_static_data(
+def collect_static(
+    runtime: RegionSetupNotebookRuntime | CoastalRegionSetupRuntime,
+    domains=None,
+):
+    """Collect required static data for inland or coastal notebooks."""
+    if isinstance(runtime, CoastalRegionSetupRuntime):
+        if domains is None:
+            raise TypeError("collect_static(runtime, domains) requires coastal domains")
+        return _collect_coastal_static(runtime, domains)
+    return _collect_inland_static(runtime)
+
+
+def _collect_coastal_static(
     runtime: CoastalRegionSetupRuntime,
     domain: CoastalRegionDomain,
 ) -> CoastalStaticDataCollection:
@@ -559,7 +599,20 @@ def plot_configured_coastal_region(runtime: CoastalRegionSetupRuntime, domain: C
     return fig
 
 
-def plot_collected_coastal_static_data(
+def plot_static(
+    runtime: RegionSetupNotebookRuntime | CoastalRegionSetupRuntime,
+    static_data=None,
+    domains=None,
+):
+    """Plot collected static data QA for inland or coastal notebooks."""
+    if isinstance(runtime, CoastalRegionSetupRuntime):
+        if static_data is None or domains is None:
+            raise TypeError("plot_static(runtime, static_data, domains) requires coastal static data and domains")
+        return _plot_coastal_static(runtime, static_data, domains)
+    return _plot_inland_static(runtime)
+
+
+def _plot_coastal_static(
     runtime: CoastalRegionSetupRuntime,
     static_data: CoastalStaticDataCollection,
     domain: CoastalRegionDomain,
@@ -614,7 +667,7 @@ def build_smart_ds_evaluation_footprint(runtime: RegionSetupNotebookRuntime) -> 
     )
 
 
-def build_selected_inland_region_domains(runtime: RegionSetupNotebookRuntime) -> InlandRegionDomains:
+def _build_inland_domains(runtime: RegionSetupNotebookRuntime) -> InlandRegionDomains:
     """Write the selected SFINCS coverage and its encompassing Wflow HUC watershed."""
     footprint = build_smart_ds_evaluation_footprint(runtime)
     sfincs_coverage = write_selected_sfincs_coverage(runtime, footprint.study_area_wgs)
@@ -764,7 +817,7 @@ def write_wflow_collection_boundary(
     return boundary
 
 
-def collect_required_inland_static_data(
+def _collect_inland_static(
     runtime: RegionSetupNotebookRuntime,
 ) -> RequiredStaticDataCollection:
     """Collect required static data for Wflow first, then SFINCS."""
@@ -830,7 +883,14 @@ def plot_selected_inland_region(runtime: RegionSetupNotebookRuntime, domains: In
     return fig
 
 
-def plot_collected_inland_static_data(runtime: RegionSetupNotebookRuntime):
+def plot_domains(runtime: RegionSetupNotebookRuntime | CoastalRegionSetupRuntime, domains):
+    """Plot the configured flood domains for inland or coastal setup notebooks."""
+    if isinstance(runtime, CoastalRegionSetupRuntime):
+        return plot_configured_coastal_region(runtime, domains)
+    return plot_selected_inland_region(runtime, domains)
+
+
+def _plot_inland_static(runtime: RegionSetupNotebookRuntime):
     """Plot Wflow and SFINCS DEM, landcover, HSG, and Ksat rasters when present."""
     import matplotlib.pyplot as plt
     from matplotlib.colors import BoundaryNorm, ListedColormap, LogNorm

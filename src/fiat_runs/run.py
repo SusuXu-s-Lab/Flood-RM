@@ -110,3 +110,6 @@ def run_fiat_event(model_root, hazard_tif, out_dir, *, event_id=None, srs="EPSG:
         "n_assets_damaged": int((total > 0).sum()),
         "output_gpkg": str(Path(out_dir) / "spatial.gpkg"),
     }
+
+
+run_event = run_fiat_event

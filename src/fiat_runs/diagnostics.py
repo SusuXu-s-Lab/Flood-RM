@@ -478,3 +478,12 @@ def plot_building_risk(
     ax.set_xlabel("x")
     ax.set_ylabel("y")
     return ax
+
+
+event_damage = load_event_damage
+damage_summary = event_damage_summary
+damage_by_depth = damage_by_depth_band
+damage_by_use = damage_by_occupancy
+top_assets = top_damaged_assets
+building_risk = aggregate_building_risk
+plot_risk = plot_building_risk

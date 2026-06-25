@@ -300,3 +300,22 @@ from design_events.build_events.selection import (
     assign_severity_bands,
     select_resilience_stress_training_set,
 )
+from design_events.build_events.probability import (
+    build_historical_tail_catalog,
+    build_inland_design_catalog,
+    build_joint_design_catalog,
+)
+from sfincs_runs.scenarios import build_coastal_event_timeseries, write_joint_catalog_sfincs_handoff
+
+
+# Short notebook-facing API.
+load_runtime = load_event_catalog_notebook_runtime
+plan = build_event_catalog_plan
+build_catalog = build_inland_design_catalog
+build_inland_catalog = build_inland_design_catalog
+build_joint_catalog = build_joint_design_catalog
+build_tail = build_historical_tail_catalog
+select_training = select_resilience_stress_training_set
+write_handoff = write_wflow_sfincs_handoff_manifest
+write_joint_handoff = write_joint_catalog_sfincs_handoff
+build_timeseries = build_coastal_event_timeseries

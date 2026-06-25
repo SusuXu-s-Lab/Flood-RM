@@ -13,7 +13,6 @@ from study_location import (
     default_location_config_path,
     find_repo_root,
     load_location_config,
-    load_yaml_document,
     resolve_repo_path,
     resolve_study_location,
 )
@@ -31,10 +30,6 @@ project_config_path = default_config_path()
 
 def resolve_path(path):
     return resolve_repo_path(path, repo_root)
-
-
-def load_yaml(path):
-    return load_yaml_document(path, repo_root)
 
 
 def load_config(path=None):
@@ -458,10 +453,6 @@ def check_rainfall_catalog(config, paths):
     }
 
 
-def check_rainfall_catalog_smoke(config, paths):
-    return check_rainfall_catalog(config, paths)
-
-
 def _source_manifest_complete(paths, filename):
     manifest = _source_manifest(paths, filename)
     return manifest is not None and manifest.get("status") == "complete"
@@ -613,10 +604,6 @@ def check_wave_forcing(config, paths):
     }
 
 
-def check_wave_forcing_smoke(config, paths):
-    return check_wave_forcing(config, paths)
-
-
 def check_source_acquisition(config, paths):
     collection = config.get("collection", {})
     rainfall_backend = "aorc_sst" if "aorc_sst" in collection else "not_configured"
@@ -659,10 +646,6 @@ def check_source_acquisition(config, paths):
             "nwm_manifest_complete": _source_manifest_complete(paths, "nwm_retrospective_hydrologic_state.json"),
         },
     }
-
-
-def check_acquisition_dry_run(config, paths):
-    return check_source_acquisition(config, paths)
 
 
 def write_data_acquisition_readiness(config, paths):

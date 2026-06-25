@@ -22,6 +22,14 @@ from sfincs_runs.scenarios.inland_initial_conditions import (
 )
 from sfincs_runs.scenarios.joint_handoff import write_joint_catalog_sfincs_handoff
 
+audit_forcing = audit_forcing_manifest
+build_timeseries = build_coastal_event_timeseries
+handoff_readiness = dynamic_handoff_readiness_table
+init_hydrographs = configure_hydrograph_initial_conditions
+plan_example = plan_inland_coupled_example
+stage_scenarios = stage_inland_coupled_scenarios
+write_handoff = write_joint_catalog_sfincs_handoff
+
 __all__ = [
     "ForcingAuditIssue",
     "ForcingManifestAudit",
@@ -38,4 +46,11 @@ __all__ = [
     "stage_inland_coupled_scenarios",
     "stage_inland_coupled_scenario_forcing",
     "write_joint_catalog_sfincs_handoff",
+    "audit_forcing",
+    "build_timeseries",
+    "handoff_readiness",
+    "init_hydrographs",
+    "plan_example",
+    "stage_scenarios",
+    "write_handoff",
 ]

@@ -243,3 +243,9 @@ def plan_wflow_streamflow_realization(config: dict, location_root, event_id: str
         event_model_root=None,
         raise_on_error=False,
     )
+
+
+plan_handoff = plan_dynamic_wflow_handoff
+plan_streamflow = plan_wflow_streamflow_realization
+prepare_handoff = prepare_dynamic_wflow_handoff
+require_handoff = require_accepted_dynamic_handoff

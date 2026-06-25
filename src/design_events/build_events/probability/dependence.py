@@ -73,9 +73,6 @@ class DriverDependenceModel:
     def dim(self):
         return len(self.marginals)
 
-    def vine_json(self):
-        return self.vine.to_json()
-
 
 def fit_driver_dependence(
     paired_observations,

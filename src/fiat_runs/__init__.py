@@ -23,6 +23,12 @@ from .config import fiat_paths, load_runtime
 from .hazard import WaterLevelRasterizer
 from .run import read_fiat_damages, run_fiat_event
 
+env_ready = fiat_env_available
+build_model = build_fiat_model
+apply_ground = apply_dem_ground_elevation
+model_ready = fiat_model_is_built
+run_event = run_fiat_event
+
 __all__ = [
     "load_runtime",
     "fiat_paths",
@@ -40,4 +46,9 @@ __all__ = [
     "risk_native",
     "diagnostics",
     "validate",
+    "env_ready",
+    "build_model",
+    "apply_ground",
+    "model_ready",
+    "run_event",
 ]

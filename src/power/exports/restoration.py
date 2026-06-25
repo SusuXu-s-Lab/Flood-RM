@@ -670,12 +670,6 @@ def _switches_text_without_disable_commands_from_text(switches_text: str) -> str
     return "\n".join(rows) + "\n"
 
 
-def _switches_text_without_disable_commands(switches_path: Path) -> str:
-    return _switches_text_without_disable_commands_from_text(
-        switches_path.read_text(encoding="utf-8")
-    )
-
-
 def _safe_dss_name(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_]+", "_", value).strip("_").lower()
 

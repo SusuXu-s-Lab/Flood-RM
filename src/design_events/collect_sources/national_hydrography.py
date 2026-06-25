@@ -737,31 +737,6 @@ def _hydromt_basemap_ready(hydrography_nc: Path, target_resolution_degrees: floa
     return hydromt_basemap_readiness(hydrography_nc, target_resolution_degrees)["status"] == "ready"
 
 
-def _hydromt_basemap_resolution_matches(hydrography_nc: Path, target_resolution_degrees: float) -> bool:
-    """Backward-compatible alias for older tests/callers."""
-    return _hydromt_basemap_ready(hydrography_nc, target_resolution_degrees)
-
-
-def _legacy_hydromt_basemap_resolution_matches(hydrography_nc: Path, target_resolution_degrees: float) -> bool:
-    ds = None
-    try:
-        ds = xr.open_dataset(hydrography_nc)
-        for coord in ("x", "longitude", "lon"):
-            if coord in ds.coords and ds[coord].size > 1:
-                values = ds[coord].values
-                resolution = float(abs(values[1] - values[0]))
-                return abs(resolution - float(target_resolution_degrees)) <= max(
-                    1.0e-9,
-                    float(target_resolution_degrees) * 0.01,
-                )
-        return False
-    except Exception:
-        return False
-    finally:
-        if ds is not None:
-            ds.close()
-
-
 def _coordinate_resolution_degrees(data_array, coord: str) -> float:
     values = data_array[coord].values
     if len(values) < 2:

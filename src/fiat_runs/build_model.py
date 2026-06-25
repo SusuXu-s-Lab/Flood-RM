@@ -126,3 +126,8 @@ def apply_dem_ground_elevation(config: dict, paths: dict) -> dict:
         "structures_grounded": n_filled,
         "ground_ft_median": float(np.nanmedian(ground_ft)),
     }
+
+
+model_ready = fiat_model_is_built
+build_model = build_fiat_model
+apply_ground = apply_dem_ground_elevation

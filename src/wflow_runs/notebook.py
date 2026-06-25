@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 import importlib.util
 import os
@@ -12,6 +13,8 @@ import sys
 import pandas as pd
 import yaml
 
+from design_events.utils import load_runtime as load_design_runtime
+from sfincs_runs.config import load_runtime as load_sfincs_runtime
 from study_location import define_location
 from wflow_runs.build_plan import (
     build_wflow_build_plan,
@@ -30,6 +33,127 @@ class WflowNotebookContext:
     sfincs_config: dict
     wflow_config: dict
     runtime_config: dict
+
+
+@dataclass(frozen=True)
+class WflowCoupledNotebookRuntime:
+    location_root: Path
+    location_name: str
+    repo_root: Path
+    config: dict
+    paths: dict
+    design_paths: dict
+    runtime_config: dict
+    sfincs_config: dict
+    wflow_config: dict
+    sfincs_scenarios_root: Path
+    scenario_catalog_path: Path
+    probability_catalog_path: Path
+    readiness_path: Path
+    blocked_path: Path
+    accepted_path: Path
+    joint_worklist_path: Path
+    incompatible_path: Path
+    events_root: Path
+    wflow_base_root: Path
+    wflow_handoff_manifest: Path
+
+    def resolve_location_path(self, value) -> Path:
+        return resolve_location_path(self.location_root, value)
+
+    def ensure_parent(self, value) -> Path:
+        path = self.resolve_location_path(value)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+
+@dataclass(frozen=True)
+class WflowCalibrationNotebookRuntime(WflowCoupledNotebookRuntime):
+    streamflow_records_path: Path
+    event_streamflow_iv_root: Path
+    audit_plots_dir: Path
+
+
+def load_wflow_coupled_runtime(
+    location_root,
+    *,
+    wflow_domain_review_required: bool | None = None,
+) -> WflowCoupledNotebookRuntime:
+    """Load derived paths for Wflow-coupled Flood Notebook Workflow stages.
+
+    Generated artifact paths stay derived from the Location Workspace convention
+    instead of being repeated in notebook cells or location YAML.
+    """
+    location_root = Path(location_root).resolve()
+    repo_root = location_root.parents[1]
+    config, paths = load_sfincs_runtime(location_root / "config.yaml")
+    _, design_paths = load_design_runtime(location_root / "config.yaml")
+    config = deepcopy(config)
+    if wflow_domain_review_required is not None:
+        config["wflow"]["domain_set"]["review_required"] = bool(wflow_domain_review_required)
+    config.setdefault("scenario_run", {})
+
+    location_name = location_root.name
+    sfincs_scenarios_root = location_root / "data/sfincs/scenarios"
+    wflow = config.get("wflow", {})
+    return WflowCoupledNotebookRuntime(
+        location_root=location_root,
+        location_name=location_name,
+        repo_root=repo_root,
+        config=config,
+        paths=paths,
+        design_paths=design_paths,
+        runtime_config=config,
+        sfincs_config=config,
+        wflow_config={"wflow": wflow},
+        sfincs_scenarios_root=sfincs_scenarios_root,
+        scenario_catalog_path=location_root / "data/event_catalog/catalog/scenario_catalog.csv",
+        probability_catalog_path=location_root / "data/event_catalog/catalog/probability_catalog.csv",
+        readiness_path=sfincs_scenarios_root / f"{location_name}_dynamic_handoff_readiness.csv",
+        blocked_path=sfincs_scenarios_root / f"{location_name}_blocked_dynamic_handoffs.csv",
+        accepted_path=sfincs_scenarios_root / f"{location_name}_accepted_dynamic_handoffs.csv",
+        joint_worklist_path=sfincs_scenarios_root / f"{location_name}_joint_wflow_sfincs_worklist.csv",
+        incompatible_path=sfincs_scenarios_root / f"{location_name}_incompatible_dynamic_handoffs.csv",
+        events_root=resolve_location_path(location_root, wflow.get("events_root", "data/wflow/events")),
+        wflow_base_root=resolve_location_path(location_root, wflow.get("base_model_root", "data/wflow/base")),
+        wflow_handoff_manifest=resolve_location_path(
+            location_root,
+            wflow.get("handoff", {}).get("manifest", "data/wflow/domain_set_handoff.yaml"),
+        ),
+    )
+
+
+def load_wflow_calibration_runtime(
+    location_root,
+    *,
+    create_audit_dirs: bool = True,
+) -> WflowCalibrationNotebookRuntime:
+    """Load derived paths for the Wflow Readiness calibration notebook.
+
+    When ``create_audit_dirs`` is true, the helper creates the calibration plot
+    output directory used by the notebook.
+    """
+    base = load_wflow_coupled_runtime(location_root, wflow_domain_review_required=False)
+    streamflow_records_path = base.location_root / "data/sources/usgs_streamgages/streamflow_records.csv"
+    event_streamflow_iv_root = base.location_root / "data/sources/usgs_streamgages/event_streamflow_iv"
+    audit_plots_dir = base.location_root / "data/wflow/audit/plots"
+    if create_audit_dirs:
+        audit_plots_dir.mkdir(parents=True, exist_ok=True)
+    return WflowCalibrationNotebookRuntime(
+        **base.__dict__,
+        streamflow_records_path=streamflow_records_path,
+        event_streamflow_iv_root=event_streamflow_iv_root,
+        audit_plots_dir=audit_plots_dir,
+    )
+
+
+def load_runtime(location_root, *, workflow: str = "coupled", **kwargs):
+    """Load the Wflow notebook runtime for a named workflow."""
+    if workflow == "coupled":
+        return load_wflow_coupled_runtime(location_root, **kwargs)
+    if workflow == "calibration":
+        return load_wflow_calibration_runtime(location_root, **kwargs)
+    raise ValueError("workflow must be 'coupled' or 'calibration'")
 
 
 def load_wflow_notebook_context(location_name: str | None = None, *, start: Path | None = None) -> WflowNotebookContext:
@@ -144,6 +268,10 @@ def wflow_subbasin_review_table(domain_plan) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+domain_summary = wflow_domain_set_summary
+subbasins = wflow_subbasin_review_table
 
 
 def wflow_event_replay_plan(config: dict, location_root: Path, event_id: str | None) -> pd.Series:
@@ -402,3 +530,89 @@ def _hydromt_subprocess_env(location_root: Path | None = None) -> dict[str, str]
     existing_path = env.get("PATH", "")
     env["PATH"] = os.pathsep.join([*(str(path) for path in venv_dirs), existing_path])
     return env
+
+
+# Compact notebook-facing workflow verbs. These wrappers import lazily so the
+# Wflow facade does not create circular imports with replay/handoff modules.
+def collect_warmup(*args, **kwargs):
+    from design_events.collect_sources.aorc_sst import collect_aorc_wflow_baseline_warmup
+
+    return collect_aorc_wflow_baseline_warmup(*args, **kwargs)
+
+
+def handoff_readiness(*args, **kwargs):
+    from sfincs_runs.scenarios import dynamic_handoff_readiness_table
+
+    return dynamic_handoff_readiness_table(*args, **kwargs)
+
+
+def plan_example(*args, **kwargs):
+    from sfincs_runs.scenarios import plan_inland_coupled_example
+
+    return plan_inland_coupled_example(*args, **kwargs)
+
+
+def validate_staticmaps(*args, **kwargs):
+    from wflow_runs.build_plan import validate_wflow_staticmaps_physics
+
+    return validate_wflow_staticmaps_physics(*args, **kwargs)
+
+
+def plan_handoff(*args, **kwargs):
+    from wflow_runs.dynamic_handoff import plan_dynamic_wflow_handoff
+
+    return plan_dynamic_wflow_handoff(*args, **kwargs)
+
+
+def plan_streamflow(*args, **kwargs):
+    from wflow_runs.dynamic_handoff import plan_wflow_streamflow_realization
+
+    return plan_wflow_streamflow_realization(*args, **kwargs)
+
+
+def prepare_handoff(*args, **kwargs):
+    from wflow_runs.dynamic_handoff import prepare_dynamic_wflow_handoff
+
+    return prepare_dynamic_wflow_handoff(*args, **kwargs)
+
+
+def require_handoff(*args, **kwargs):
+    from wflow_runs.dynamic_handoff import require_accepted_dynamic_handoff
+
+    return require_accepted_dynamic_handoff(*args, **kwargs)
+
+
+def run_handoffs(*args, **kwargs):
+    from wflow_runs.dynamic_handoff_batch import run_dynamic_handoff_batch
+
+    return run_dynamic_handoff_batch(*args, **kwargs)
+
+
+def build_meteo(*args, **kwargs):
+    from wflow_runs.replay import build_event_meteo_forcing
+
+    return build_event_meteo_forcing(*args, **kwargs)
+
+
+def validate_geometry(*args, **kwargs):
+    from wflow_runs.river_geometry import validate_river_geometry_readiness
+
+    return validate_river_geometry_readiness(*args, **kwargs)
+
+
+def plan_warmup(*args, **kwargs):
+    from wflow_runs.states import plan_wflow_baseline_warmup_state
+
+    return plan_wflow_baseline_warmup_state(*args, **kwargs)
+
+
+def prepare_instates(*args, **kwargs):
+    from wflow_runs.states import prepare_wflow_cold_instates
+
+    return prepare_wflow_cold_instates(*args, **kwargs)
+
+
+def validate_instates(*args, **kwargs):
+    from wflow_runs.states import validate_wflow_instates
+
+    return validate_wflow_instates(*args, **kwargs)

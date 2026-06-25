@@ -700,6 +700,7 @@ def plan_wflow_domain_set_from_boundary_handoff_watersheds(config, paths) -> Wfl
         )
 
     submodels = []
+    gages_by_domain = _accepted_streamgages_by_sfincs_domain(accepted_gages, boxes, project_name)
     for domain_id, group in crossings.groupby("sfincs_domain_id", sort=True):
         group = group.sort_values("uparea_km2", ascending=False).reset_index(drop=True)
         handoff_points = [
@@ -712,20 +713,27 @@ def plan_wflow_domain_set_from_boundary_handoff_watersheds(config, paths) -> Wfl
             }
             for _, row in group.iterrows()
         ]
-        region = _hydromt_boundary_handoff_subbasin_region(handoff_points, min_uparea_km2=min_uparea_km2)
+        domain_gages = gages_by_domain.get(str(domain_id), [])
+        reference_points = _reference_gage_region_points(config, domain_gages)
+        handoff_region = _hydromt_boundary_handoff_subbasin_region(handoff_points, min_uparea_km2=min_uparea_km2)
+        region = _hydromt_boundary_handoff_subbasin_region(
+            handoff_points,
+            min_uparea_km2=min_uparea_km2,
+            extra_points=reference_points,
+        )
         submodels.append(
             {
                 "wflow_submodel_id": str(domain_id),
                 "region_kind": "subbasin",
                 "region": region,
-                "outlet_region": deepcopy(region),
+                "outlet_region": handoff_region,
                 "subbasin_geometry": None,
                 "sfincs_domain_ids": [str(domain_id)],
                 "sfincs_handoff_ids": [point["sfincs_handoff_id"] for point in handoff_points],
                 "handoff_points": handoff_points,
-                "gauge_site_nos": (),
-                "frequency_basis": (),
-                "role_counts": {},
+                "gauge_site_nos": _sorted_values(gage.get("site_no") for gage in domain_gages),
+                "frequency_basis": _sorted_values(gage.get("frequency_basis") for gage in domain_gages),
+                "role_counts": _role_counts(domain_gages),
                 "watershed_source": "hydromt_subbasin_boundary_handoff_points",
             }
         )
@@ -769,13 +777,19 @@ def _boundary_handoff_submodels_from_source_artifacts(
     for domain_id in sorted(points_by_domain):
         handoff_points = points_by_domain[domain_id]
         domain_gages = gages_by_domain.get(str(domain_id), [])
-        region = _hydromt_boundary_handoff_subbasin_region(handoff_points, min_uparea_km2=min_uparea_km2)
+        reference_points = _reference_gage_region_points(config, domain_gages)
+        handoff_region = _hydromt_boundary_handoff_subbasin_region(handoff_points, min_uparea_km2=min_uparea_km2)
+        region = _hydromt_boundary_handoff_subbasin_region(
+            handoff_points,
+            min_uparea_km2=min_uparea_km2,
+            extra_points=reference_points,
+        )
         submodels.append(
             {
                 "wflow_submodel_id": str(domain_id),
                 "region_kind": "subbasin",
                 "region": region,
-                "outlet_region": deepcopy(region),
+                "outlet_region": handoff_region,
                 "subbasin_geometry": None,
                 "sfincs_domain_ids": [str(domain_id)],
                 "sfincs_handoff_ids": [point["sfincs_handoff_id"] for point in handoff_points],
@@ -870,7 +884,12 @@ def _source_artifact_handoff_points_by_domain(
     return points_by_domain
 
 
-def _hydromt_boundary_handoff_subbasin_region(handoff_points: list[dict], *, min_uparea_km2: float | None) -> dict:
+def _hydromt_boundary_handoff_subbasin_region(
+    handoff_points: list[dict],
+    *,
+    min_uparea_km2: float | None,
+    extra_points: list[dict] | None = None,
+) -> dict:
     """Return a HydroMT hydrographic subbasin region for one SFINCS domain.
 
     HydroMT accepts a single outlet as ``{"subbasin": [x, y]}`` and multiple
@@ -879,12 +898,46 @@ def _hydromt_boundary_handoff_subbasin_region(handoff_points: list[dict], *, min
     """
     if not handoff_points:
         raise ValueError("Boundary-handoff Wflow region requires at least one handoff point")
-    lons = [float(point["lon"]) for point in handoff_points]
-    lats = [float(point["lat"]) for point in handoff_points]
-    region = {"subbasin": [lons[0], lats[0]] if len(handoff_points) == 1 else [lons, lats]}
+    points = list(handoff_points) + list(extra_points or [])
+    lons = [float(point["lon"]) for point in points]
+    lats = [float(point["lat"]) for point in points]
+    region = {"subbasin": [lons[0], lats[0]] if len(points) == 1 else [lons, lats]}
     if min_uparea_km2 is not None and float(min_uparea_km2) > 0:
         region["uparea"] = float(min_uparea_km2)
     return region
+
+
+def _reference_gage_region_points(config: dict, gages: list[dict]) -> list[dict]:
+    """Return configured reference gages that should be inside the Wflow build region."""
+    wanted = _configured_reference_gage_site_nos(config)
+    if not wanted:
+        return []
+    points = []
+    seen: set[str] = set()
+    for gage in gages:
+        site_no = str(gage.get("site_no") or "").zfill(8)
+        if site_no not in wanted or site_no in seen:
+            continue
+        lon = gage.get("longitude")
+        lat = gage.get("latitude")
+        if lon is None or lat is None or pd.isna(lon) or pd.isna(lat):
+            continue
+        points.append({"site_no": site_no, "lon": float(lon), "lat": float(lat)})
+        seen.add(site_no)
+    return points
+
+
+def _configured_reference_gage_site_nos(config: dict) -> set[str]:
+    inland = config.get("inland_coupling", {}) or {}
+    candidates = [
+        ((inland.get("amplification", {}) or {}).get("primary_reference_gage")),
+        ((inland.get("baseflow", {}) or {}).get("reference_gage")),
+    ]
+    return {
+        str(value).strip().zfill(8)
+        for value in candidates
+        if value is not None and not pd.isna(value) and str(value).strip()
+    }
 
 
 def _coverage_domain_id(row, project_name: str, index: int, count: int) -> str:
@@ -1952,7 +2005,12 @@ def build_wflow_submodel(
     selected_id = str(submodel["wflow_submodel_id"])
     model_root = build_plan.base_model_root / selected_id
     apply_repairs = _legacy_wflow_repairs_enabled(config)
-    if _is_built_wflow_model(model_root) and not force and _sfincs_gauge_layer_matches(model_root, submodel):
+    if (
+        _is_built_wflow_model(model_root)
+        and not force
+        and _sfincs_gauge_layer_matches(model_root, submodel)
+        and _observation_gauge_layer_matches(model_root, submodel, config)
+    ):
         _assert_wflow_reservoir_staticmaps_current(config, model_root, selected_id)
         normalize_wflow_staticmaps_nodata(model_root)
         if apply_repairs:
@@ -3042,58 +3100,32 @@ def _sfincs_gauge_layer_matches(model_root: Path, submodel: dict) -> bool:
     return actual == expected
 
 
-def _coverage_target_specs(config) -> list[tuple[str, str]]:
-    """Return (name, relative_path) for the SMART-DS regions the Wflow domain
-    set must cover: the evaluation footprint and the power network extent."""
-    specs = []
-    footprint = (config.get("smart_ds_evaluation_footprint") or {}).get("output")
-    if footprint:
-        specs.append(("evaluation_footprint", str(footprint)))
-    power_extent = (config.get("grid") or {}).get("power_extent")
-    if power_extent:
-        specs.append(("power_extent", str(power_extent)))
-    return specs
-
-
-def _resolve_coverage_targets(location_root: Path, config) -> list[tuple[str, object]]:
-    """Load available coverage-target geometries in EPSG:4326."""
-    targets = []
-    for name, relative_path in _coverage_target_specs(config):
-        path = _location_path(location_root, relative_path)
-        if not path.exists():
-            continue
-        gdf = gpd.read_file(path).to_crs("EPSG:4326")
-        if gdf.empty:
-            continue
-        targets.append((name, gdf.geometry.union_all()))
-    return targets
+def _observation_gauge_layer_matches(model_root: Path, submodel: dict, config: dict) -> bool:
+    submodel_sites = {str(value).zfill(8) for value in submodel.get("gauge_site_nos", ()) if value}
+    reference_sites = _configured_reference_gage_site_nos(config) & submodel_sites
+    expected = reference_sites or submodel_sites
+    if not expected:
+        return True
+    gauges_path = model_root / "staticgeoms" / "gauges_usgs.geojson"
+    if not gauges_path.exists():
+        return False
+    try:
+        gauges = gpd.read_file(gauges_path)
+    except Exception:
+        return False
+    if "site_no" in gauges:
+        actual = {str(value).zfill(8) for value in gauges["site_no"].dropna().astype(str)}
+    elif "name" in gauges:
+        actual = {str(value).zfill(8) for value in gauges["name"].dropna().astype(str)}
+    else:
+        return False
+    return expected <= actual
 
 
 def _equal_area_km2(geometry) -> float:
     if geometry is None or geometry.is_empty:
         return 0.0
     return float(gpd.GeoSeries([geometry], crs="EPSG:4326").to_crs("EPSG:5070").area.iloc[0]) / 1.0e6
-
-
-def _coverage_metrics(domain_union, targets: list[tuple[str, object]]) -> dict:
-    metrics = {}
-    for name, geometry in targets:
-        uncovered = geometry if domain_union is None else geometry.difference(domain_union)
-        uncovered_km2 = _equal_area_km2(uncovered)
-        metrics[name] = {
-            "uncovered_km2": uncovered_km2,
-            "covered": uncovered.is_empty or uncovered_km2 < 1.0e-3,
-        }
-    return metrics
-
-
-def _submodel_subbasin_geometry_file(location_root: Path, config, submodel_id: str) -> Path:
-    wflow = config.get("wflow", {})
-    output_path = _location_path(
-        location_root,
-        wflow.get("domain_set", {}).get("subbasin_fabric", "data/wflow/domain_set_subbasins.gpkg"),
-    )
-    return _subbasin_fabric_directory(output_path) / f"{submodel_id}.geojson"
 
 
 def _configured_wflow_region(config, location_root: Path) -> dict | None:
@@ -3122,13 +3154,6 @@ def _hydromt_subbasin_region(outlet_xy: list[float], outlet: dict, subbasin_geom
     if uparea is not None:
         region["uparea"] = uparea
     return region
-
-
-def _subbasin_geometry_bounds(path: Path | None) -> list[float] | None:
-    if path is None or not path.exists():
-        return None
-    bounds = gpd.read_file(path).to_crs("EPSG:4326").total_bounds
-    return [float(value) for value in bounds]
 
 
 def _reviewed_drainage_area_km2(gage: dict) -> float | None:
@@ -3371,14 +3396,6 @@ def _relative_to_location(path: Path, location_root: Path) -> str:
         return path.as_posix()
 
 
-def _relative_to_catalog_root(catalog_path: Path, target_path: Path) -> str:
-    catalog_root = catalog_path.parent.parent
-    try:
-        return target_path.relative_to(catalog_root).as_posix()
-    except ValueError:
-        return target_path.as_posix()
-
-
 def _absolute_location_path(location_root: Path, value) -> str:
     path = Path(value)
     if path.is_absolute():
@@ -3441,3 +3458,6 @@ def _write_netcdf_atomically(ds: xr.Dataset, output_path: Path, *, encoding: dic
     temp_path.unlink(missing_ok=True)
     ds.to_netcdf(temp_path, encoding=encoding or {})
     temp_path.replace(output_path)
+
+
+validate_staticmaps = validate_wflow_staticmaps_physics

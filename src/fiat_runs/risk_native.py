@@ -75,3 +75,7 @@ def run_native_rp_risk(model_root, rasterizer, storage_root, rp_events, out_dir,
         "ead": float(pd.to_numeric(gdf[col], errors="coerce").fillna(0).sum()),
         "ead_column": col,
     }
+
+
+select_rp = select_rp_representatives
+run_rp_risk = run_native_rp_risk

@@ -1612,3 +1612,7 @@ def build_control_sandbox_registry(
         encoding="utf-8",
     )
     return outputs
+
+
+control_registry = build_control_sandbox_registry
+export_base = export_stage_a1

@@ -63,12 +63,6 @@ def resolve_repo_path(path, repo_root=None) -> Path:
     return (root / path).resolve()
 
 
-def load_yaml_document(path, repo_root=None) -> dict:
-    path = resolve_repo_path(path, repo_root=repo_root)
-    with path.open(encoding="utf-8") as stream:
-        return yaml.safe_load(stream) or {}
-
-
 def load_location_config(path=None, repo_root=None) -> dict:
     root = Path(repo_root) if repo_root is not None else find_repo_root()
     config_path = default_location_config_path(root) if path is None else resolve_repo_path(path, root)

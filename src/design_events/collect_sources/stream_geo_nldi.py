@@ -151,11 +151,6 @@ def read_stream_geo_download(path: Path) -> pd.DataFrame:
     raise ValueError(f"Unsupported STREAM-geo download format: {path}")
 
 
-def nldi_comid_probe(lon: float, lat: float, *, timeout_seconds=30) -> str | None:
-    """Notebook-facing single-point NLDI COMID lookup helper."""
-    return fetch_nldi_comid(float(lon), float(lat), timeout_seconds=timeout_seconds)
-
-
 def _write_manifest(paths, table_path, raw_dir, manifest, status, rows, spec, *, raw_file, smoke):
     write_source_artifact(
         paths,

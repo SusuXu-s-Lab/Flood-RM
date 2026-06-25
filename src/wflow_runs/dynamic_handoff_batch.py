@@ -150,6 +150,9 @@ def run_dynamic_handoff_batch(
     return pd.DataFrame(rows)
 
 
+run_handoffs = run_dynamic_handoff_batch
+
+
 def _parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Batch prepare dynamic Wflow-to-SFINCS handoffs.")
     parser.add_argument("--config", required=True, help="Location config.yaml")
