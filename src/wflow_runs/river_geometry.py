@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 
-def validate_river_geometry_readiness(
+def validate_geometry(
     river_geometry,
     *,
     require_stream_geo: bool = True,
@@ -46,7 +46,6 @@ def validate_river_geometry_readiness(
     return report
 
 
-validate_geometry = validate_river_geometry_readiness
 
 
 def _append_numeric_geometry_check(rows: list[dict], rivers, column: str, *, require_variable: bool) -> None:

@@ -50,7 +50,7 @@ DEFAULT_SMART_DS_COMPAT_DIR = POWER_GRID / "augmented"
 DEFAULT_FIGURE_PATH = POWER_GRID / "figures" / "switch_line_overlay.png"
 
 
-def build_switch_line_overlay(
+def plot_switches(
     *,
     registry_dir: Path = DEFAULT_REGISTRY_DIR,
     smart_ds_compat_dir: Path = DEFAULT_SMART_DS_COMPAT_DIR,
@@ -213,7 +213,7 @@ BLOCK_PALETTE = (
 )
 
 
-def build_location_block_overview(
+def block_overview(
     *,
     registry_dir: Path,
     smart_ds_compat_dir: Path,
@@ -328,7 +328,7 @@ def build_location_block_overview(
     }
 
 
-def build_ocean_bluff_block_detail(
+def block_detail(
     *,
     registry_dir: Path,
     smart_ds_compat_dir: Path,
@@ -1621,8 +1621,3 @@ def write_sfincs_domains(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(payload) + "\n")
     return domains
-
-
-plot_switches = build_switch_line_overlay
-block_overview = build_location_block_overview
-block_detail = build_ocean_bluff_block_detail

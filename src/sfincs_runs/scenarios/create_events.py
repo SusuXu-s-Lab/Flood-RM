@@ -258,7 +258,7 @@ def build_scenarios(args, *, config=None, runtime_paths=None, sf_model=None):
     if args.include_waves:
         _validate_snapwave_source_windows(df, paths=runtime_paths)
 
-    # 2. Set up clean output folder. stage_event_run hardlinks static base files
+    # 2. Set up clean output folder. stage_run hardlinks static base files
     # where possible, so a 500-event batch does not duplicate the quadtree grid.
     if args.resume and args.force:
         raise ValueError("--resume and --force are mutually exclusive.")
@@ -291,7 +291,7 @@ def build_scenarios(args, *, config=None, runtime_paths=None, sf_model=None):
             )
             continue
 
-        staged = event_forcing.stage_event_run(
+        staged = event_forcing.stage_run(
             args.base_dir,
             root,
             forcing,
@@ -304,7 +304,7 @@ def build_scenarios(args, *, config=None, runtime_paths=None, sf_model=None):
         )
         if args.include_precip:
             precip_model = sf_model if sf_model is not None else _build_precip_model(args.base_dir)
-            event_forcing.stage_event_precipitation(
+            event_forcing.stage_precip(
                 precip_model,
                 staged.run_root,
                 forcing,

@@ -92,7 +92,7 @@ def read_fiat_damages(out_dir) -> gpd.GeoDataFrame:
     return gpd.read_file(gpkg)
 
 
-def run_fiat_event(model_root, hazard_tif, out_dir, *, event_id=None, srs="EPSG:4326") -> dict:
+def run_event(model_root, hazard_tif, out_dir, *, event_id=None, srs="EPSG:4326") -> dict:
     """Run FIAT for a single event; return total + per-asset damage summary."""
     out_dir = Path(out_dir)
     settings_path = out_dir / "settings.toml"
@@ -110,6 +110,3 @@ def run_fiat_event(model_root, hazard_tif, out_dir, *, event_id=None, srs="EPSG:
         "n_assets_damaged": int((total > 0).sum()),
         "output_gpkg": str(Path(out_dir) / "spatial.gpkg"),
     }
-
-
-run_event = run_fiat_event

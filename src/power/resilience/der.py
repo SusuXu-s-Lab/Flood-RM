@@ -274,7 +274,7 @@ def _assigned_critical_load_by_facility(
     return assignments
 
 
-def build_layer_1_der_inventory(
+def build_inventory(
     facility_rows: Iterable[Mapping[str, Any]],
     *,
     sandbox_id: str,
@@ -903,7 +903,7 @@ def _round_up_to_step(value: float, step: float) -> float:
     return math.ceil(value / step) * step
 
 
-def run_layer_2_reopt_sizing(
+def size_der(
     *,
     smart_ds_compat_dir: Path,
     reopt_client: Any,
@@ -965,7 +965,7 @@ def run_layer_2_offline_reopt_surrogate_sizing(
     as `offline_reopt_surrogate.v0.1` via the parsed REopt-like response.
     """
 
-    return run_layer_2_reopt_sizing(
+    return size_der(
         smart_ds_compat_dir=smart_ds_compat_dir,
         reopt_client=OfflineReoptSurrogateClient(
             reserve_margin=reserve_margin,
@@ -1052,7 +1052,3 @@ def _clean_missing(value: Any) -> Any:
     except (TypeError, ValueError):
         pass
     return value
-
-
-build_inventory = build_layer_1_der_inventory
-size_der = run_layer_2_reopt_sizing

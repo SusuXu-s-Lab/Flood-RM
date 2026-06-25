@@ -18,8 +18,8 @@ from wflow_runs.replay import (
     resolve_event_window,
     run_zero_rain_control,
 )
-from wflow_runs.build_plan import validate_wflow_reservoir_staticmaps, validate_wflow_staticmaps_physics, write_wflow_reservoir_readiness
-from wflow_runs.states import plan_wflow_warmup_state, validate_warmup_forcing, validate_wflow_instates, write_cold_state_workflow
+from wflow_runs.build_plan import validate_wflow_reservoir_staticmaps, validate_staticmaps, write_wflow_reservoir_readiness
+from wflow_runs.states import plan_wflow_warmup_state, validate_warmup_forcing, validate_instates, write_cold_state_workflow
 from wflow_runs.streamflow_realization import validate_wflow_streamflow_realization
 from wflow_runs.notebook import resolve_location_path
 
@@ -37,7 +37,7 @@ def dynamic_handoff_paths(config: dict, location_root, event_id: str) -> dict[st
     }
 
 
-def plan_dynamic_wflow_handoff(config: dict, location_root, event_id: str, *, catalog_path=None) -> pd.Series:
+def plan_handoff(config: dict, location_root, event_id: str, *, catalog_path=None) -> pd.Series:
     location_root = Path(location_root)
     reference_time = _event_reference_time(location_root, event_id, catalog_path)
     start, end = resolve_event_window(reference_time)
@@ -64,7 +64,7 @@ def plan_dynamic_wflow_handoff(config: dict, location_root, event_id: str, *, ca
     )
 
 
-def prepare_dynamic_wflow_handoff(
+def prepare_handoff(
     config: dict,
     location_root,
     event_id: str,
@@ -83,7 +83,7 @@ def prepare_dynamic_wflow_handoff(
     if execute:
         _validate_dynamic_wflow_base_staticmaps(config, location_root)
         validate_warmup_forcing(config, location_root, event_id, reference_time=reference_time, raise_on_error=True)
-        validate_wflow_instates(config, location_root, raise_on_error=True)
+        validate_instates(config, location_root, raise_on_error=True)
 
     replay_report = replay_inland_domain_set(
         config,
@@ -141,7 +141,7 @@ def prepare_dynamic_wflow_handoff(
     return replay_report
 
 
-def require_accepted_dynamic_handoff(config: dict, location_root, event_id: str) -> pd.Series:
+def require_handoff(config: dict, location_root, event_id: str) -> pd.Series:
     paths = dynamic_handoff_paths(config, location_root, event_id)
     if not paths["acceptance"].exists():
         discharge_note = (
@@ -203,7 +203,7 @@ def _validate_dynamic_wflow_base_staticmaps(config: dict, location_root: Path) -
     rows = []
     for submodel in _domain_set_submodels(config, location_root):
         submodel_id = str(submodel["wflow_submodel_id"])
-        report = validate_wflow_staticmaps_physics(base_root / submodel_id, raise_on_error=False)
+        report = validate_staticmaps(base_root / submodel_id, raise_on_error=False)
         report.insert(0, "submodel_id", submodel_id)
         rows.append(report)
         if _reservoirs_enabled(config):
@@ -233,7 +233,7 @@ def _reservoirs_enabled(config: dict) -> bool:
     )
 
 
-def plan_wflow_streamflow_realization(config: dict, location_root, event_id: str, *, catalog_path=None) -> pd.DataFrame:
+def plan_streamflow(config: dict, location_root, event_id: str, *, catalog_path=None) -> pd.DataFrame:
     """Notebook-facing readiness report for event streamflow consumed by Wflow."""
     return validate_wflow_streamflow_realization(
         config,
@@ -243,9 +243,3 @@ def plan_wflow_streamflow_realization(config: dict, location_root, event_id: str
         event_model_root=None,
         raise_on_error=False,
     )
-
-
-plan_handoff = plan_dynamic_wflow_handoff
-plan_streamflow = plan_wflow_streamflow_realization
-prepare_handoff = prepare_dynamic_wflow_handoff
-require_handoff = require_accepted_dynamic_handoff

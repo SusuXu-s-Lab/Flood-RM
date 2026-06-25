@@ -12,10 +12,10 @@ import pandas as pd
 from sfincs_runs.config import load_runtime
 from wflow_runs.dynamic_handoff import (
     dynamic_handoff_paths,
-    prepare_dynamic_wflow_handoff,
-    require_accepted_dynamic_handoff,
+    prepare_handoff,
+    require_handoff,
 )
-from wflow_runs.replay import build_event_meteo_forcing
+from wflow_runs.replay import build_meteo
 
 
 def dynamic_handoff_batch_worklist(
@@ -34,10 +34,10 @@ def dynamic_handoff_batch_worklist(
     ``status="accepted"`` selects already-ready events, and ``status="all"``
     selects every requested catalog event including incompatible diagnostics.
     """
-    from sfincs_runs.scenarios import dynamic_handoff_readiness_table
+    from sfincs_runs.scenarios import handoff_readiness
 
     location_root = Path(location_root)
-    readiness = dynamic_handoff_readiness_table(
+    readiness = handoff_readiness(
         config,
         location_root,
         catalog_path=catalog_path,
@@ -56,7 +56,7 @@ def dynamic_handoff_batch_worklist(
     return out.reset_index(drop=True)
 
 
-def run_dynamic_handoff_batch(
+def run_handoffs(
     config: dict,
     location_root,
     *,
@@ -90,7 +90,7 @@ def run_dynamic_handoff_batch(
         t0 = time.time()
         if paths["acceptance"].exists() and not force:
             try:
-                accepted = require_accepted_dynamic_handoff(config, location_root, event_id)
+                accepted = require_handoff(config, location_root, event_id)
                 rows.append(
                     {
                         "event_id": event_id,
@@ -106,14 +106,14 @@ def run_dynamic_handoff_batch(
                 pass
         try:
             if execute:
-                build_event_meteo_forcing(
+                build_meteo(
                     config,
                     location_root,
                     event_id,
                     catalog_path=catalog_path,
                     overwrite=overwrite_meteo,
                 )
-            report = prepare_dynamic_wflow_handoff(
+            report = prepare_handoff(
                 config,
                 location_root,
                 event_id,
@@ -122,7 +122,7 @@ def run_dynamic_handoff_batch(
             )
             status_value = "accepted" if execute else "planned"
             if execute:
-                require_accepted_dynamic_handoff(config, location_root, event_id)
+                require_handoff(config, location_root, event_id)
             rows.append(
                 {
                     "event_id": event_id,
@@ -150,7 +150,6 @@ def run_dynamic_handoff_batch(
     return pd.DataFrame(rows)
 
 
-run_handoffs = run_dynamic_handoff_batch
 
 
 def _parse_args(argv=None):
@@ -179,7 +178,7 @@ def main(argv=None) -> int:
     catalog_path = Path(args.catalog_path)
     if not catalog_path.is_absolute():
         catalog_path = location_root / catalog_path
-    report = run_dynamic_handoff_batch(
+    report = run_handoffs(
         config,
         location_root,
         catalog_path=catalog_path,

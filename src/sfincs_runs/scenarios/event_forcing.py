@@ -179,7 +179,7 @@ def load_event_forcing(
     )
 
 
-def build_single_use_event(
+def build_event(
     config,
     paths,
     *,
@@ -213,7 +213,7 @@ def build_single_use_event(
     )
 
 
-def stage_event_run(
+def stage_run(
     base_model_root,
     run_stage_root,
     forcing: EventForcing,
@@ -312,7 +312,7 @@ def stage_event_run(
     return StagedEventRun(run_root=event_root, manifest=manifest)
 
 
-def resolve_event_hydrology_inputs(forcing: EventForcing, *, paths, config):
+def hydrology_inputs(forcing: EventForcing, *, paths, config):
     catalog = forcing.catalog
     rainfall_member_id = _required_catalog_value(catalog, "rainfall_member_id")
     rainfall_member_time = pd.Timestamp(_required_catalog_value(catalog, "rainfall_member_time"))
@@ -351,9 +351,9 @@ def resolve_event_hydrology_inputs(forcing: EventForcing, *, paths, config):
     }
 
 
-def stage_event_precipitation(sf, run_root, forcing: EventForcing, *, paths, config):
+def stage_precip(sf, run_root, forcing: EventForcing, *, paths, config):
     run_start, run_stop = _staged_run_window(Path(run_root), forcing)
-    hydrology = resolve_event_hydrology_inputs(forcing, paths=paths, config=config)
+    hydrology = hydrology_inputs(forcing, paths=paths, config=config)
     hydrology_cfg = (config.get("coastal_wave_coupling") or {}).get("hydrology") or {}
     precip_cfg = hydrology_cfg.get("precipitation") or {}
     window_alignment = str(precip_cfg.get("window_alignment", "wettest"))
@@ -609,7 +609,7 @@ def build_sfincs_runner(
     raise RuntimeError(f"No SFINCS runner found. Set {sfincs_bin_env} or install docker/sfincs.")
 
 
-def run_sfincs_model(run_root, *, runner=None, require_map=True, config=None):
+def run_model(run_root, *, runner=None, require_map=True, config=None):
     run_root = Path(run_root)
     runner = runner or build_sfincs_runner(run_root, config=config)
     log_path = run_root / "sfincs_log.txt"
@@ -735,10 +735,3 @@ def _resolve_catalog_path(value, *, paths):
         return path
     location_root = Path(paths.get("location_root", "."))
     return location_root / path
-
-
-build_event = build_single_use_event
-hydrology_inputs = resolve_event_hydrology_inputs
-stage_run = stage_event_run
-stage_precip = stage_event_precipitation
-run_model = run_sfincs_model

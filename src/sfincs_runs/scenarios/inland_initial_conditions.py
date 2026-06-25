@@ -72,7 +72,7 @@ def derive_hydrograph_initial_depth(discharge, config: dict) -> dict:
     }
 
 
-def configure_hydrograph_initial_conditions(sf, discharge, config: dict, *, run_dir=None) -> dict:
+def init_hydrographs(sf, discharge, config: dict, *, run_dir=None) -> dict:
     """Stage native HydroMT-SFINCS initial conditions from Wflow handoff hydrographs.
 
     The preferred inland path writes a spatial ``sfincs.ini`` through

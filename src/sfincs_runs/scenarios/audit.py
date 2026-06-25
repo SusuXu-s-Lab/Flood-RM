@@ -37,7 +37,7 @@ class ForcingManifestAudit:
         raise KeyError(code)
 
 
-def audit_forcing_manifest(
+def audit_forcing(
     run_root,
     *,
     ksat_cap_mmhr=360.0,

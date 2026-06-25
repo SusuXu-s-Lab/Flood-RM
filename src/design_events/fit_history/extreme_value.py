@@ -129,7 +129,7 @@ def return_values(params, dist_name, rps=rps_default, extremes_rate=1.0):
 
 def bootstrap_return_values(values, ev_type, rps, extremes_rate, *,
                             distribution=None, criterium="AIC",
-                            n_replicates=1000, confidence_level=0.95, seed=42):
+                            n_replicates=1000, confidence_level=0.95, seed=0):
     rng = np.random.default_rng(int(seed))
     values = np.asarray(values, dtype=float)
     values = values[np.isfinite(values)]

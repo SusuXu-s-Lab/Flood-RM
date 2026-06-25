@@ -483,8 +483,12 @@ _AORC_SST_DEFAULTS = {
     "start_date": "1979-02-01",
     "end_date": "2022-12-31",
     "storm_duration_hours": 72,
+    # Threshold-driven POT: keep every independent storm above min_precip_threshold
+    # (footprint-mean mm over the storm window). Member count is data-driven; set the
+    # threshold per location from its rainfall POT diagnostics. top_n_events is an
+    # optional safety cap only (None = keep all exceedances).
     "min_precip_threshold": 2.5,
-    "top_n_events": 440,
+    "top_n_events": None,
     "check_every_n_hours": 6,
     "decluster_hours": 72,
     "transposition_stride_cells": 4,
@@ -705,7 +709,7 @@ def _inland_methodology_defaults() -> dict:
                         "strategy": "inland_rainfall_pairing_priority",
                         "same_storm_when_available": True,
                         "fallback_strategy": "seasonal_window_permutation",
-                        "seed": 42,
+                        "seed": 0,
                         "window_days": 45,
                     },
                     "streamflow": {
@@ -735,7 +739,7 @@ def _inland_methodology_defaults() -> dict:
                 "bootstrap": {
                     "n_replicates": 1000,
                     "confidence_level": 0.95,
-                    "seed": 42,
+                    "seed": 0,
                 },
             },
             "sampling": {

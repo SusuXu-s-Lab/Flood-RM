@@ -5,7 +5,7 @@ import pandas as pd
 from pathlib import Path
 
 from design_events.build_events.selection import assign_severity_bands
-from design_events.build_events.workflow import build_event_catalog_plan
+from design_events.build_events.workflow import plan
 
 
 catalog_columns = [
@@ -280,7 +280,7 @@ def _seasonal_assignment_indices(catalog, members, policy):
     if event_times.isna().any() or member_times.isna().all():
         raise ValueError("seasonal pairing requires parseable event and member times")
 
-    rng = np.random.default_rng(int(policy.get("seed", 42)))
+    rng = np.random.default_rng(int(policy.get("seed", 0)))
     window_days = int(policy.get("window_days", 45))
     member_doy = member_times.dt.dayofyear.to_numpy(dtype=float)
     assigned = []
@@ -456,7 +456,7 @@ def _soil_moisture_value_column(frame):
 
 
 def build_event_catalog(config, paths):
-    plan = build_event_catalog_plan(config, paths)
+    plan = plan(config, paths)
     summary = pd.read_csv(plan.event_summary_csv)
     scenario = paths.get("scenario", {})
     coastal_analog_id = _summary_values(summary, "template_id", pd.NA)

@@ -23,7 +23,7 @@ base; this module is the domain-set generalisation that also produces the merged
 Prerequisites:
   - per-event meteo forcing ``events/<event>/precip.nc`` and ``temp_pet.nc``
     (the ``event_precip`` / ``event_temp_pet`` data-catalog contract; use
-    ``build_event_meteo_forcing`` to stage it from the Event Catalog rainfall member),
+    ``build_meteo`` to stage it from the Event Catalog rainfall member),
   - built Wflow submodels (``wflow_sbm.toml`` + ``staticmaps.nc``),
   - a Wflow engine for ``execute=True`` (env ``WFLOW_BIN``, or ``wflow.run.command`` in config).
 """
@@ -93,7 +93,7 @@ def resolve_event_window(
     return start, end
 
 
-def build_event_meteo_forcing(
+def build_meteo(
     config: dict,
     location_root,
     event_id: str,
@@ -1002,7 +1002,7 @@ def _require_event_forcing(event_dir: Path) -> None:
         raise FileNotFoundError(
             "per-event Wflow forcing is not built (the event_precip/event_temp_pet contract): "
             + ", ".join(str(event_dir / name) for name in missing)
-            + ". Run build_event_meteo_forcing before replaying."
+            + ". Run build_meteo before replaying."
         )
 
 
@@ -1132,6 +1132,3 @@ def _run(command_parts, *, cwd) -> None:
         raise RuntimeError(
             f"executable not found for replay step: {shlex.join([str(p) for p in command_parts])}"
         ) from exc
-
-
-build_meteo = build_event_meteo_forcing

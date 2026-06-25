@@ -38,11 +38,11 @@ def fiat_model_inputs(config: dict, paths: dict) -> dict:
     }
 
 
-def fiat_model_is_built(paths: dict) -> bool:
+def model_ready(paths: dict) -> bool:
     return (Path(paths["fiat_model_root"]) / "settings.toml").exists()
 
 
-def build_fiat_model(config: dict, paths: dict, *, force: bool = False) -> dict:
+def build_model(config: dict, paths: dict, *, force: bool = False) -> dict:
     """Build (or reuse) the FIAT model. Returns the build receipt dict.
 
     Raises FileNotFoundError if the SFINCS region/DEM inputs are missing.
@@ -54,7 +54,7 @@ def build_fiat_model(config: dict, paths: dict, *, force: bool = False) -> dict:
             raise FileNotFoundError(f"FIAT build input '{key}' missing: {inputs[key]}")
 
     receipt_path = model_root / "fiat_build_receipt.json"
-    if fiat_model_is_built(paths) and not force:
+    if model_ready(paths) and not force:
         if receipt_path.exists():
             return json.loads(receipt_path.read_text(encoding="utf-8"))
         return {"model_root": str(model_root), "reused": True}
@@ -85,12 +85,12 @@ def build_fiat_model(config: dict, paths: dict, *, force: bool = False) -> dict:
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     # Always couple ground elevation to the SFINCS DEM right after a build so the model
     # on disk is never left with NSI's (mismatched-datum) ground elevation.
-    receipt["ground_coupling"] = apply_dem_ground_elevation(config, paths)
+    receipt["ground_coupling"] = apply_ground(config, paths)
     receipt_path.write_text(json.dumps(receipt, indent=2, default=str), encoding="utf-8")
     return receipt
 
 
-def apply_dem_ground_elevation(config: dict, paths: dict) -> dict:
+def apply_ground(config: dict, paths: dict) -> dict:
     """Overwrite exposure ground elevation with the SFINCS subgrid DEM (offline coupling).
 
     FIAT computes inundation as ``water_level - ground_elevation - ground_floor_height``.
@@ -126,8 +126,3 @@ def apply_dem_ground_elevation(config: dict, paths: dict) -> dict:
         "structures_grounded": n_filled,
         "ground_ft_median": float(np.nanmedian(ground_ft)),
     }
-
-
-model_ready = fiat_model_is_built
-build_model = build_fiat_model
-apply_ground = apply_dem_ground_elevation

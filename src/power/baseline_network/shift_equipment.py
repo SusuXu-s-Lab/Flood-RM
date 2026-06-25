@@ -32,7 +32,7 @@ from infrasys.quantities import Resistance
 from shift import EdgeEquipmentMapper
 
 
-def build_shift_example_equipment_catalog(prefix: str = "example") -> DistributionSystem:
+def equipment_catalog(prefix: str = "example") -> DistributionSystem:
     """Build a local equipment catalog compatible with current SHIFT/GDM objects."""
     catalog = DistributionSystem(name=f"{prefix}_equipment_catalog")
 
@@ -224,6 +224,3 @@ class ShiftExampleEdgeEquipmentMapper(EdgeEquipmentMapper):
 
             node_equipment[node.name] = node_map
         return node_equipment
-
-
-equipment_catalog = build_shift_example_equipment_catalog

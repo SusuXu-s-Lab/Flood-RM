@@ -11,36 +11,31 @@ project env.
 
 from __future__ import annotations
 
-from ._env import FIAT_CONDA_ENV, fiat_env_available, run_in_fiat_env
+from ._env import FIAT_CONDA_ENV, env_ready, run_in_fiat_env
 from .build_model import (
-    apply_dem_ground_elevation,
-    build_fiat_model,
+    apply_ground,
+    build_model,
     fiat_model_inputs,
-    fiat_model_is_built,
+    model_ready,
 )
 from . import diagnostics, risk, risk_native, validate
 from .config import fiat_paths, load_runtime
 from .hazard import WaterLevelRasterizer
-from .run import read_fiat_damages, run_fiat_event
+from .run import read_fiat_damages, run_event
 
-env_ready = fiat_env_available
-build_model = build_fiat_model
-apply_ground = apply_dem_ground_elevation
-model_ready = fiat_model_is_built
-run_event = run_fiat_event
 
 __all__ = [
     "load_runtime",
     "fiat_paths",
-    "fiat_env_available",
+    "env_ready",
     "run_in_fiat_env",
     "FIAT_CONDA_ENV",
-    "build_fiat_model",
-    "apply_dem_ground_elevation",
+    "build_model",
+    "apply_ground",
     "fiat_model_inputs",
-    "fiat_model_is_built",
+    "model_ready",
     "WaterLevelRasterizer",
-    "run_fiat_event",
+    "run_event",
     "read_fiat_damages",
     "risk",
     "risk_native",

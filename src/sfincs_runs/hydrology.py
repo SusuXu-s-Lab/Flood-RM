@@ -398,7 +398,7 @@ def setup_hydromt_infiltration(sf, config, paths, *, datadir=None):
     }
 
 
-def validate_built_sfincs_native_physics(
+def validate_physics(
     model_root: str | Path,
     config: dict | None = None,
     *,

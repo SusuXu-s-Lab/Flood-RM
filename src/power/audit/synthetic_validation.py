@@ -1687,7 +1687,7 @@ def _infer_smart_ds_compat_dir(registry_dir: Path) -> Path:
     return candidates[0]
 
 
-def run_statistical_validation(
+def run_stats(
     *,
     registry_dir: Path = DEFAULT_REGISTRY_DIR,
     smart_ds_reference_dir: Path | None = None,
@@ -1711,7 +1711,7 @@ def run_statistical_validation(
     )
     write_synthetic_validation_report(report, Path(output_dir))
     write_validation_compliance_gate(build_validation_compliance_gate(report), Path(output_dir))
-    plot_validation_region_report_card(report, Path(output_dir) / "validation_region_report_card.png")
+    plot_audit(report, Path(output_dir) / "validation_region_report_card.png")
     return _metric_status_table(report)
 
 
@@ -1730,7 +1730,7 @@ def _operational_report_status(report: dict[str, Any] | None) -> str:
     return "pass" if all(bool(item.get("passed")) for item in criteria.values()) else "check"
 
 
-def run_operational_validation(
+def run_ops(
     *,
     opendss_root: Path,
     registry_dir: Path = DEFAULT_REGISTRY_DIR,
@@ -1796,7 +1796,7 @@ def _statistical_status(stat_results: dict[str, dict[str, Any]]) -> str:
     return "pass"
 
 
-def build_audit_summary(
+def audit_summary(
     *,
     block_report: dict[str, Any],
     stage_a1: dict[str, Any],
@@ -1843,7 +1843,7 @@ def build_audit_summary(
     }
 
 
-def plot_validation_region_report_card(report: dict[str, Any], output_path: Path) -> Path:
+def plot_audit(report: dict[str, Any], output_path: Path) -> Path:
     """Plot Marshfield metric ranges against validation regions."""
 
     mpl_config_dir = Path(os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib"))
@@ -1931,9 +1931,3 @@ def plot_validation_region_report_card(report: dict[str, Any], output_path: Path
     fig.savefig(output_path, dpi=180)
     plt.close(fig)
     return output_path
-
-
-run_stats = run_statistical_validation
-run_ops = run_operational_validation
-audit_summary = build_audit_summary
-plot_audit = plot_validation_region_report_card

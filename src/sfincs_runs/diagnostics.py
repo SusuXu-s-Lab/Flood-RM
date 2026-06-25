@@ -8,13 +8,13 @@ cells can stay to one-liners (import + call + optional display).
 
 Public API
 ----------
-plot_forcing_qa_standard      Pre-run 6-panel QA for surge + rain builds
-plot_forcing_qa_waves         Pre-run 6-panel QA for surge + rain + SnapWave builds
-plot_flood_animation          Static peak-depth summary + flood/ocean mp4 (coastal)
-plot_inland_flood_animation   Static peak-depth summary + flood/discharge mp4 (inland)
-plot_postrun_diagnostics      3-panel post-run check (soil frac / his.nc zs / precip)
+plot_standard_forcing      Pre-run 6-panel QA for surge + rain builds
+plot_wave_forcing         Pre-run 6-panel QA for surge + rain + SnapWave builds
+plot_standard_animation          Static peak-depth summary + flood/ocean mp4 (coastal)
+plot_animation   Static peak-depth summary + flood/discharge mp4 (inland)
+plot_standard_diagnostics      3-panel post-run check (soil frac / his.nc zs / precip)
 plot_precip_animation         Spatiotemporal AORC precip mp4
-plot_runup_overtopping        Runup gauge map + per-gauge crest overtopping screen
+plot_runup        Runup gauge map + per-gauge crest overtopping screen
 """
 from __future__ import annotations
 
@@ -633,7 +633,7 @@ def _plot_discharge_timeseries(ax, data, *, variable: str) -> None:
     ax.grid(True, alpha=0.25)
 
 
-def plot_inland_coupled_forcing_qa(
+def plot_forcing(
     *,
     forcing_manifest,
     out_dir=None,
@@ -746,7 +746,7 @@ def plot_inland_coupled_forcing_qa(
     return out_path
 
 
-def plot_inland_coupled_postrun_diagnostics(
+def plot_diagnostics(
     *,
     run_root,
     event_label=None,
@@ -853,10 +853,10 @@ def _sfincs_source_labels(src_path: Path, count: int) -> list[str]:
     return labels[:count]
 
 
-# ─── plot_forcing_qa_standard ─────────────────────────────────────────────────
+# ─── plot_standard_forcing ─────────────────────────────────────────────────
 
 
-def plot_forcing_qa_standard(
+def plot_standard_forcing(
     *,
     run_root: Path,
     out_dir: Path,
@@ -983,10 +983,10 @@ def plot_forcing_qa_standard(
     return out_path
 
 
-# ─── plot_forcing_qa_waves ────────────────────────────────────────────────────
+# ─── plot_wave_forcing ────────────────────────────────────────────────────
 
 
-def plot_forcing_qa_waves(
+def plot_wave_forcing(
     *,
     run_root: Path,
     out_dir: Path,
@@ -1141,10 +1141,10 @@ def plot_forcing_qa_waves(
     return out_path
 
 
-# ─── plot_flood_animation ─────────────────────────────────────────────────────
+# ─── plot_standard_animation ─────────────────────────────────────────────────────
 
 
-def plot_flood_animation(
+def plot_standard_animation(
     *,
     run_root: Path,
     out_dir: Path,
@@ -1329,7 +1329,7 @@ def _grid_cell_area_m2(x: np.ndarray, y: np.ndarray, fallback: float = 100.0) ->
     return area if np.isfinite(area) and area > 0 else fallback * fallback
 
 
-def plot_inland_flood_animation(
+def plot_animation(
     *,
     run_root: Path,
     out_dir: Path,
@@ -1342,7 +1342,7 @@ def plot_inland_flood_animation(
     bmap_zoom: int = 12,
 ) -> Path:
     """
-    Inland (fluvial/pluvial) counterpart to ``plot_flood_animation``.
+    Inland (fluvial/pluvial) counterpart to ``plot_standard_animation``.
 
     Static peak-depth summary (shown inline) + flood/discharge mp4 (saved).
 
@@ -1506,10 +1506,10 @@ def plot_inland_flood_animation(
     return out_mp4
 
 
-# ─── plot_postrun_diagnostics ─────────────────────────────────────────────────
+# ─── plot_standard_diagnostics ─────────────────────────────────────────────────
 
 
-def plot_postrun_diagnostics(
+def plot_standard_diagnostics(
     *,
     run_root: Path,
     event_label: str,
@@ -1768,10 +1768,10 @@ def plot_precip_animation(
     return out_precip_mp4
 
 
-# ─── plot_runup_overtopping ───────────────────────────────────────────────────
+# ─── plot_runup ───────────────────────────────────────────────────
 
 
-def plot_runup_overtopping(
+def plot_runup(
     *,
     run_root: Path,
     out_dir: Path,
@@ -2029,13 +2029,3 @@ def plot_runup_overtopping(
     display(pd.DataFrame(summary_rows))
     print(f"Saved runup/structure QA figure → {out_path}")
     return out_path
-
-
-plot_forcing = plot_inland_coupled_forcing_qa
-plot_diagnostics = plot_inland_coupled_postrun_diagnostics
-plot_animation = plot_inland_flood_animation
-plot_standard_forcing = plot_forcing_qa_standard
-plot_wave_forcing = plot_forcing_qa_waves
-plot_standard_diagnostics = plot_postrun_diagnostics
-plot_standard_animation = plot_flood_animation
-plot_runup = plot_runup_overtopping

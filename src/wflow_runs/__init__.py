@@ -13,7 +13,7 @@ from wflow_runs.build_plan import (
     repair_wflow_staticmaps_nodata,
     validate_wflow_reservoir_outlets,
     validate_wflow_reservoir_staticmaps,
-    validate_wflow_staticmaps_physics,
+    validate_staticmaps,
     write_wflow_reservoir_readiness,
     plan_wflow_us_source_strategy,
     plan_wflow_domain_set,
@@ -30,7 +30,7 @@ from wflow_runs.build_plan import (
 )
 from wflow_runs.visualize import animate_wflow_output, plot_wflow_basemap, plot_wflow_ldd_components
 from wflow_runs.replay import (
-    build_event_meteo_forcing,
+    build_meteo,
     build_discharge_geodataset,
     merge_submodel_discharge,
     read_submodel_gauge_discharge,
@@ -39,27 +39,27 @@ from wflow_runs.replay import (
     run_zero_rain_control,
     write_event_streamflow_handoff_discharge,
 )
-from wflow_runs.river_geometry import validate_river_geometry_readiness
+from wflow_runs.river_geometry import validate_geometry
 from wflow_runs.states import (
     configure_wflow_state_paths,
-    plan_wflow_baseline_warmup_state,
+    plan_warmup,
     plan_wflow_warmup_state,
-    prepare_wflow_cold_instates,
+    prepare_instates,
     prepare_wflow_event_instate,
     promote_outstate_to_instate,
     shared_baseline_warmup_settings,
     validate_warmup_forcing,
     validate_wflow_reservoir_states,
-    validate_wflow_instates,
+    validate_instates,
     warmup_window,
     write_cold_state_workflow,
 )
 from wflow_runs.dynamic_handoff import (
     dynamic_handoff_paths,
-    plan_wflow_streamflow_realization,
-    plan_dynamic_wflow_handoff,
-    prepare_dynamic_wflow_handoff,
-    require_accepted_dynamic_handoff,
+    plan_streamflow,
+    plan_handoff,
+    prepare_handoff,
+    require_handoff,
 )
 from wflow_runs.streamflow_realization import (
     prepare_wflow_streamflow_realization_for_event_model,
@@ -67,16 +67,6 @@ from wflow_runs.streamflow_realization import (
     wflow_streamflow_gage_overlap,
 )
 
-build_meteo = build_event_meteo_forcing
-plan_handoff = plan_dynamic_wflow_handoff
-plan_streamflow = plan_wflow_streamflow_realization
-plan_warmup = plan_wflow_baseline_warmup_state
-prepare_handoff = prepare_dynamic_wflow_handoff
-prepare_instates = prepare_wflow_cold_instates
-require_handoff = require_accepted_dynamic_handoff
-validate_geometry = validate_river_geometry_readiness
-validate_instates = validate_wflow_instates
-validate_staticmaps = validate_wflow_staticmaps_physics
 
 __all__ = [
     "WflowBuildPlan",
@@ -93,7 +83,7 @@ __all__ = [
     "repair_wflow_staticmaps_nodata",
     "validate_wflow_reservoir_outlets",
     "validate_wflow_reservoir_staticmaps",
-    "validate_wflow_staticmaps_physics",
+    "validate_staticmaps",
     "write_wflow_reservoir_readiness",
     "plan_wflow_us_source_strategy",
     "plan_wflow_domain_set",
@@ -111,31 +101,31 @@ __all__ = [
     "plot_wflow_ldd_components",
     "animate_wflow_output",
     "resolve_event_window",
-    "build_event_meteo_forcing",
+    "build_meteo",
     "build_discharge_geodataset",
     "read_submodel_gauge_discharge",
     "merge_submodel_discharge",
     "replay_inland_domain_set",
     "run_zero_rain_control",
     "write_event_streamflow_handoff_discharge",
-    "validate_river_geometry_readiness",
+    "validate_geometry",
     "warmup_window",
     "write_cold_state_workflow",
     "configure_wflow_state_paths",
-    "prepare_wflow_cold_instates",
+    "prepare_instates",
     "promote_outstate_to_instate",
     "prepare_wflow_event_instate",
-    "plan_wflow_baseline_warmup_state",
+    "plan_warmup",
     "plan_wflow_warmup_state",
     "shared_baseline_warmup_settings",
     "validate_warmup_forcing",
     "validate_wflow_reservoir_states",
-    "validate_wflow_instates",
+    "validate_instates",
     "dynamic_handoff_paths",
-    "plan_wflow_streamflow_realization",
-    "plan_dynamic_wflow_handoff",
-    "prepare_dynamic_wflow_handoff",
-    "require_accepted_dynamic_handoff",
+    "plan_streamflow",
+    "plan_handoff",
+    "prepare_handoff",
+    "require_handoff",
     "prepare_wflow_streamflow_realization_for_event_model",
     "validate_wflow_streamflow_realization",
     "wflow_streamflow_gage_overlap",

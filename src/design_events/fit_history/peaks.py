@@ -375,7 +375,7 @@ def _bootstrap_settings(config, marginal):
         "criterium": str(extremes.get("selection_criterion", "AIC")),
         "n_replicates": int(bootstrap_cfg.get("n_replicates", 1000)),
         "confidence_level": float(bootstrap_cfg.get("confidence_level", 0.95)),
-        "seed": int(bootstrap_cfg.get("seed", 42)),
+        "seed": int(bootstrap_cfg.get("seed", 0)),
     }
 
 def build_catalog(config, paths):

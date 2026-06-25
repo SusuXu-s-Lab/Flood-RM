@@ -476,7 +476,7 @@ def _build_static_grid_manifest(
     }
 
 
-def export_stage_a1(registry_dir: Path, output_dir: Path, *, debug_csv: bool) -> dict[str, Any]:
+def export_base(registry_dir: Path, output_dir: Path, *, debug_csv: bool) -> dict[str, Any]:
     assets = build_assets(registry_dir)
     control_units = build_control_units(registry_dir, assets)
 
@@ -1482,7 +1482,7 @@ def _transformer_in_kept_buses(row: dict[str, str], kept_buses: set[str]) -> boo
     return bool(windings) and all(bus in kept_buses for bus in windings)
 
 
-def build_control_sandbox_registry(
+def control_registry(
     raw_registry_dir: Path | str,
     output_dir: Path | str,
     *,
@@ -1612,7 +1612,3 @@ def build_control_sandbox_registry(
         encoding="utf-8",
     )
     return outputs
-
-
-control_registry = build_control_sandbox_registry
-export_base = export_stage_a1

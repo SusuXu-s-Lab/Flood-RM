@@ -17,7 +17,7 @@ DEFAULT_DEPTH_BINS_FT = [-999.0, -5.0, -2.0, 0.0, 0.5, 1.0, 2.0, 4.0, 8.0, 999.0
 DEFAULT_DEPTH_LEVELS_FT = [0.1, 0.5, 1.0, 2.0, 4.0, 6.0, 8.0, 12.0]
 
 
-def load_event_damage(
+def event_damage(
     risk_root,
     event_id: str,
     *,
@@ -52,7 +52,7 @@ def load_event_damage(
     return gdf
 
 
-def event_damage_summary(gdf: gpd.GeoDataFrame) -> dict:
+def damage_summary(gdf: gpd.GeoDataFrame) -> dict:
     """Small audit record for one FIAT event damage table."""
     damaged = gdf[gdf["total_damage"] > 0].copy()
     total = float(damaged["total_damage"].sum())
@@ -80,7 +80,7 @@ def event_damage_summary(gdf: gpd.GeoDataFrame) -> dict:
     }
 
 
-def damage_by_depth_band(gdf: gpd.GeoDataFrame, bins=DEFAULT_DEPTH_BINS_FT) -> pd.DataFrame:
+def damage_by_depth(gdf: gpd.GeoDataFrame, bins=DEFAULT_DEPTH_BINS_FT) -> pd.DataFrame:
     """Damage grouped by FIAT reported inundation-depth bands."""
     damaged = gdf[gdf["total_damage"] > 0].copy()
     damaged["depth_band_ft"] = pd.cut(damaged["inun_depth"], bins=bins, right=True)
@@ -94,7 +94,7 @@ def damage_by_depth_band(gdf: gpd.GeoDataFrame, bins=DEFAULT_DEPTH_BINS_FT) -> p
     return out
 
 
-def damage_by_occupancy(gdf: gpd.GeoDataFrame) -> pd.DataFrame:
+def damage_by_use(gdf: gpd.GeoDataFrame) -> pd.DataFrame:
     """Damage grouped by enriched NSI primary occupancy class."""
     damaged = gdf[gdf["total_damage"] > 0].copy()
     if "primary_object_type" not in damaged:
@@ -110,7 +110,7 @@ def damage_by_occupancy(gdf: gpd.GeoDataFrame) -> pd.DataFrame:
     return out
 
 
-def top_damaged_assets(gdf: gpd.GeoDataFrame, n: int = 15) -> pd.DataFrame:
+def top_assets(gdf: gpd.GeoDataFrame, n: int = 15) -> pd.DataFrame:
     """Top damaged assets with the columns most useful for audit."""
     cols = [
         "object_id",
@@ -284,7 +284,7 @@ def _numeric_column(frame: pd.DataFrame, column: str) -> pd.Series:
     return pd.to_numeric(frame[column], errors="coerce")
 
 
-def aggregate_building_risk_frames(
+def building_risk_frames(
     event_assets: list[gpd.GeoDataFrame],
     outcomes: pd.DataFrame,
     *,
@@ -355,7 +355,7 @@ def aggregate_building_risk_frames(
     return out
 
 
-def aggregate_building_risk(
+def building_risk(
     risk_root,
     outcomes: pd.DataFrame,
     *,
@@ -378,7 +378,7 @@ def aggregate_building_risk(
             gdf["inun_depth"] = np.nan
         event_assets.append(gdf)
     exposure = pd.read_csv(exposure_csv) if exposure_csv is not None and Path(exposure_csv).exists() else None
-    return aggregate_building_risk_frames(event_assets, outcomes, exposure=exposure)
+    return building_risk_frames(event_assets, outcomes, exposure=exposure)
 
 
 def top_neighborhoods(
@@ -429,7 +429,7 @@ def plot_building_exposure(buildings: gpd.GeoDataFrame, *, ax=None, basemap_styl
     return ax
 
 
-def plot_building_risk(
+def plot_risk(
     building_risk: gpd.GeoDataFrame,
     *,
     metric: str = "annual_damage",
@@ -478,12 +478,3 @@ def plot_building_risk(
     ax.set_xlabel("x")
     ax.set_ylabel("y")
     return ax
-
-
-event_damage = load_event_damage
-damage_summary = event_damage_summary
-damage_by_depth = damage_by_depth_band
-damage_by_use = damage_by_occupancy
-top_assets = top_damaged_assets
-building_risk = aggregate_building_risk
-plot_risk = plot_building_risk

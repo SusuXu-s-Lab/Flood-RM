@@ -38,7 +38,7 @@ from sfincs_runs.build_base.static_intake import (
 from sfincs_runs.config import build_paths as build_sfincs_paths
 from study_location import build_study_area, define_location, preserve_disconnected_subregions
 from wflow_runs.build_plan import write_wflow_crossing_gauge_locations, write_wflow_domain_set_manifest
-from wflow_runs.notebook import exists_table, prepare_wflow_subbasin_fabric, wflow_domain_set_summary, wflow_subbasin_review_table
+from wflow_runs.notebook import exists_table, prepare_wflow_subbasin_fabric, domain_summary, subbasins
 
 
 @dataclass(frozen=True)
@@ -580,7 +580,7 @@ def collect_configured_coastal_ssurgo(
     )
 
 
-def plot_configured_coastal_region(runtime: CoastalRegionSetupRuntime, domain: CoastalRegionDomain):
+def plot_domains(runtime: CoastalRegionSetupRuntime, domain: CoastalRegionDomain):
     import matplotlib.pyplot as plt
 
     coastal_region = (
@@ -846,7 +846,7 @@ def _collect_inland_static(
     )
 
 
-def plot_selected_inland_region(runtime: RegionSetupNotebookRuntime, domains: InlandRegionDomains):
+def plot_domains(runtime: RegionSetupNotebookRuntime, domains: InlandRegionDomains):
     """Plot the selected SMART-DS/SFINCS footprint inside the Wflow HUC watershed."""
     import matplotlib.pyplot as plt
 
@@ -886,8 +886,8 @@ def plot_selected_inland_region(runtime: RegionSetupNotebookRuntime, domains: In
 def plot_domains(runtime: RegionSetupNotebookRuntime | CoastalRegionSetupRuntime, domains):
     """Plot the configured flood domains for inland or coastal setup notebooks."""
     if isinstance(runtime, CoastalRegionSetupRuntime):
-        return plot_configured_coastal_region(runtime, domains)
-    return plot_selected_inland_region(runtime, domains)
+        return plot_domains(runtime, domains)
+    return plot_domains(runtime, domains)
 
 
 def _plot_inland_static(runtime: RegionSetupNotebookRuntime):
@@ -1266,8 +1266,8 @@ def build_sfincs_coverage_and_wflow_preflight(
         location_root, wflow_extent_config.get("boundary", "data/static/aoi/wflow_collection_region.geojson")
     )
 
-    _, wflow_domain_plan, wflow_domain_summary = wflow_domain_set_summary(runtime_config, location_root)
-    wflow_subbasin_review = wflow_subbasin_review_table(wflow_domain_plan)
+    _, wflow_domain_plan, wflow_domain_summary = domain_summary(runtime_config, location_root)
+    wflow_subbasin_review = subbasins(wflow_domain_plan)
     wflow_domain_manifest, wflow_crossing_gauge_summaries, fabric_inputs, fabric_summary, wflow_domain_plan = (
         _write_wflow_domain_artifacts(
             runtime_config=runtime_config,

@@ -35,7 +35,7 @@ def conda_executable() -> str:
     )
 
 
-def fiat_env_available() -> bool:
+def env_ready() -> bool:
     """Return True if the conda FIAT env imports hydromt_fiat and fiat cleanly."""
     try:
         run_in_fiat_env(
@@ -55,6 +55,3 @@ def run_in_fiat_env(args, *, check: bool = True, **kwargs) -> subprocess.Complet
     """
     cmd = [conda_executable(), "run", "-n", FIAT_CONDA_ENV, *args]
     return subprocess.run(cmd, check=check, text=True, **kwargs)
-
-
-env_ready = fiat_env_available

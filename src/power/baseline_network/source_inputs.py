@@ -40,7 +40,7 @@ class SourceAnchorReviewRequired(RuntimeError):
         )
 
 
-def resolve_grid_source_area(
+def source_area(
     config: dict[str, Any],
     *,
     geocode_place: Callable[[str], Any] | None = None,
@@ -72,7 +72,7 @@ def resolve_grid_source_area(
     )
 
 
-def resolve_grid_source_anchors(
+def source_anchors(
     config: dict[str, Any],
     *,
     location_root: Path,
@@ -94,7 +94,7 @@ def resolve_grid_source_anchors(
     raise SourceAnchorReviewRequired(candidate_path=candidate_path, reviewed_path=reviewed_path)
 
 
-def fetch_building_parcels_in_geometry(geometry: BaseGeometry):
+def fetch_parcels(geometry: BaseGeometry):
     """Fetch OSM building parcels while preserving Shapely lon/lat order."""
     frames = []
     for polygon in _polygon_parts(geometry):
@@ -212,8 +212,3 @@ def _polygon_parts(geometry: BaseGeometry) -> list[Polygon]:
         "parcel fetch geometry must be Polygon or MultiPolygon, "
         f"got {geometry.geom_type!r}"
     )
-
-
-source_area = resolve_grid_source_area
-source_anchors = resolve_grid_source_anchors
-fetch_parcels = fetch_building_parcels_in_geometry

@@ -108,7 +108,7 @@ class SsapGlobalMarginalSelection:
     marginal_benefit_floor: float
 
 
-def solve_ssap_per_feeder(
+def solve_switches(
     feeder: RootedFeeder,
     *,
     k_switches: int,
@@ -384,7 +384,7 @@ def solve_rpop_ready_ssap(
     policy = policy or SsapCandidatePolicy()
     candidate_edges = tuple(feeder.edges) if eligible_edges is None else tuple(eligible_edges)
     switchable_edges = select_policy_candidate_edges(feeder, candidate_edges, policy)
-    return solve_ssap_per_feeder(
+    return solve_switches(
         feeder,
         k_switches=k_switches,
         algorithm=algorithm,
@@ -413,7 +413,7 @@ def solve_rpop_ready_ssap_frontier(
     points: list[SsapFrontierPoint] = []
     previous_objective: float | None = None
     for k_switches in range(feasible_max + 1):
-        solution = solve_ssap_per_feeder(
+        solution = solve_switches(
             feeder,
             k_switches=k_switches,
             algorithm=algorithm,
@@ -1056,7 +1056,7 @@ def physical_lines_only(lines: pd.DataFrame) -> pd.DataFrame:
     return lines[lines["line_class"].fillna("line").eq("line")].copy()
 
 
-def derive_lateral_fuses(lines: pd.DataFrame) -> pd.DataFrame:
+def derive_fuses(lines: pd.DataFrame) -> pd.DataFrame:
     """Derive Fuse Proxy rows where lower-phase laterals leave a higher-phase bus."""
     max_phases_at_bus: dict[str, int] = defaultdict(int)
     for row in lines.itertuples(index=False):
@@ -1109,7 +1109,7 @@ def physical_switch_candidate_edges(
     )
 
 
-def build_ssap_components(
+def switch_inputs(
     buses: pd.DataFrame,
     physical_lines: pd.DataFrame,
     sources: pd.DataFrame,
@@ -1226,7 +1226,7 @@ def _transformer_bridge_rows(
     return rows
 
 
-def assemble_switch_artifact(
+def write_switches(
     selection: SsapGlobalMarginalSelection,
     frontiers: dict[str, tuple[SsapFrontierPoint, ...]],
     component_meta: list[ComponentMeta],
@@ -1748,7 +1748,7 @@ def inject_block_ids_into_onm_settings(
     return onm_settings
 
 
-def build_switch_bounded_load_blocks(
+def build_blocks(
     *,
     buses: pd.DataFrame,
     lines: pd.DataFrame,
@@ -2044,10 +2044,3 @@ def _loads_by_bus(buses: pd.DataFrame) -> dict[str, float]:
         str(row.bus): float(row.load_kw or 0.0)
         for row in buses.itertuples(index=False)
     }
-
-
-switch_inputs = build_ssap_components
-solve_switches = solve_ssap_per_feeder
-write_switches = assemble_switch_artifact
-derive_fuses = derive_lateral_fuses
-build_blocks = build_switch_bounded_load_blocks

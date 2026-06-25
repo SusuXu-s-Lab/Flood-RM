@@ -168,7 +168,7 @@ def build_inland_event_artifacts(config, paths) -> InlandEventArtifacts:
     )
 
 
-def write_wflow_sfincs_handoff_manifest(catalog, config, paths):
+def write_handoff(catalog, config, paths):
     location_root = _location_root(paths)
     handoff = config.get("wflow", {}).get("handoff", {})
     manifest_path = _location_path(location_root, handoff.get("manifest", "data/wflow/domain_set_handoff.yaml"))
@@ -678,6 +678,3 @@ def _streamflow_records_path(config, location_root):
     if isinstance(value, dict):
         value = value.get("output", "data/sources/usgs_streamgages/streamflow_records.csv")
     return _location_path(location_root, value)
-
-
-write_handoff = write_wflow_sfincs_handoff_manifest

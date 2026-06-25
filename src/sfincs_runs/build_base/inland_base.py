@@ -13,7 +13,7 @@ from scipy import ndimage
 from shapely.geometry import GeometryCollection, LineString, MultiPoint, Point
 from shapely.ops import nearest_points, unary_union
 
-from sfincs_runs.hydrology import setup_hydromt_infiltration, validate_built_sfincs_native_physics
+from sfincs_runs.hydrology import setup_hydromt_infiltration, validate_physics
 from wflow_runs.coupled_handoff import (
     LEGACY_BOUNDARY_HANDOFF_MODES,
     STREAM_BOUNDARY_HANDOFF_MODES,
@@ -448,7 +448,7 @@ def _deduplicate_handoff_source_locations(handoff: gpd.GeoDataFrame) -> gpd.GeoD
     return deduped.drop(columns=["_source_location_key"]).reset_index(drop=True)
 
 
-def create_native_sfincs_river_handoff_locations(
+def create_handoffs(
     model,
     config,
     paths,
@@ -597,7 +597,7 @@ def build_inland_sfincs_base(config, paths, *, model_cls=None, force=False):
     return _build_inland_sfincs_base_plan(config, paths, plan, model_cls=model_cls, force=force)
 
 
-def build_inland_sfincs_domain_set(config, paths, *, model_cls=None, force=False):
+def build_domains(config, paths, *, model_cls=None, force=False):
     """Build all SFINCS base models listed in the inland domain-set manifest."""
     location_root = _location_root(paths)
     manifest_path = _location_path(
@@ -625,7 +625,7 @@ def build_inland_sfincs_domain_set(config, paths, *, model_cls=None, force=False
                 domain_model_cls = model_cls
             model = domain_model_cls(root=str(domain_plan.base_model_root), mode="r+", write_gis=True)
             model.read()
-            src = create_native_sfincs_river_handoff_locations(
+            src = create_handoffs(
                 model,
                 config,
                 paths,
@@ -875,7 +875,7 @@ def _write_sfincs_rivers_inflow_geoms(rivers: gpd.GeoDataFrame, output: Path) ->
     rivers.to_file(output, driver="GeoJSON")
 
 
-def set_sfincs_observation_points_from_gages(model, gages) -> gpd.GeoDataFrame:
+def set_observations(model, gages) -> gpd.GeoDataFrame:
     """Set reviewed gages as HydroMT-SFINCS observation points for plotting."""
     gdf = gpd.read_file(gages) if not isinstance(gages, gpd.GeoDataFrame) else gages.copy()
     if gdf.empty:
@@ -1090,7 +1090,7 @@ def _outflow_elevation_quantile(config) -> float:
 def _build_inland_sfincs_base_plan(config, paths, plan: InlandSfincsBasePlan, *, model_cls=None, force=False):
     if plan.built and not force:
         try:
-            validate_built_sfincs_native_physics(plan.base_model_root, config)
+            validate_physics(plan.base_model_root, config)
         except RuntimeError as exc:
             if not _should_rebuild_stale_native_physics(config, exc):
                 raise
@@ -1158,7 +1158,7 @@ def _build_inland_sfincs_base_plan(config, paths, plan: InlandSfincsBasePlan, *,
         model.config.update({"epsg": epsg})
     model.config.update({"storevel": 1})
     model.write()
-    validate_built_sfincs_native_physics(plan.base_model_root, config)
+    validate_physics(plan.base_model_root, config)
     return {
         "status": "built",
         "base_model_root": plan.base_model_root,

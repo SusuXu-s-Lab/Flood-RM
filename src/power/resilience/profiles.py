@@ -343,7 +343,7 @@ _OVERLAY_SHAPE_FNS = {
 }
 
 
-def build_location_load_profile_inputs(
+def load_inputs(
     critical_facility_records: list[Mapping[str, Any]],
     critical_load_assignment_by_facility: Mapping[str, Mapping[str, Any]],
     *,
@@ -923,6 +923,3 @@ def _stable_building_id(index: pd.Index, token: str) -> str:
     labels.sort()
     digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
     return labels[int(digest[:12], 16) % len(labels)]
-
-
-load_inputs = build_location_load_profile_inputs

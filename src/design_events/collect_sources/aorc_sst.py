@@ -183,6 +183,8 @@ def _moving_footprint_plan(precip, paths, config, spec):
         "stride": stride,
         "lon_values": lon_values,
         "lat_values": lat_values,
+        "target_footprint_center_lon": float(center.x),
+        "target_footprint_center_lat": float(center.y),
         "target_lons": np.asarray(target_lons, dtype=float),
         "target_lats": np.asarray(target_lats, dtype=float),
     }
@@ -257,14 +259,46 @@ def _spatial_stats(precip, duration_hours, check_every_n_hours=1, *, paths=None,
                     "min": float(np.nanmin(best_values)),
                     "x": float(moving_plan["target_lons"][best]),
                     "y": float(moving_plan["target_lats"][best]),
+                    "historical_footprint_center_lon": float(moving_plan["target_lons"][best]),
+                    "historical_footprint_center_lat": float(moving_plan["target_lats"][best]),
+                    "target_footprint_center_lon": float(moving_plan["target_footprint_center_lon"]),
+                    "target_footprint_center_lat": float(moving_plan["target_footprint_center_lat"]),
                     "potential_method": "moving_footprint_max_mean",
                 }
             )
         frame = pd.DataFrame(records).dropna()
         if frame.empty:
-            return pd.DataFrame(columns=["storm_date", "mean", "max", "min", "x", "y", "potential_method"])
+            return pd.DataFrame(
+                columns=[
+                    "storm_date",
+                    "mean",
+                    "max",
+                    "min",
+                    "x",
+                    "y",
+                    "historical_footprint_center_lon",
+                    "historical_footprint_center_lat",
+                    "target_footprint_center_lon",
+                    "target_footprint_center_lat",
+                    "potential_method",
+                ]
+            )
         frame["storm_date"] = frame["storm_end"] - pd.to_timedelta(duration_hours - 1, unit="h")
-        return frame[["storm_date", "mean", "max", "min", "x", "y", "potential_method"]]
+        return frame[
+            [
+                "storm_date",
+                "mean",
+                "max",
+                "min",
+                "x",
+                "y",
+                "historical_footprint_center_lon",
+                "historical_footprint_center_lat",
+                "target_footprint_center_lon",
+                "target_footprint_center_lat",
+                "potential_method",
+            ]
+        ]
     mean_depth = rolled.mean(dim=[dim for dim in rolled.dims if dim != "time"])
     max_depth = rolled.max(dim=[dim for dim in rolled.dims if dim != "time"])
     min_depth = rolled.min(dim=[dim for dim in rolled.dims if dim != "time"])
@@ -295,7 +329,12 @@ def _centroid_from_precip_window(precip):
     )
 
 
-def _decluster_top_events(candidates, *, top_n, min_threshold, decluster_hours):
+def _decluster_top_events(candidates, *, min_threshold, decluster_hours, top_n=None):
+    """Keep every independent storm above ``min_threshold`` (threshold-driven POT).
+
+    The member count is data-driven by the threshold and declustering window.
+    ``top_n`` is an optional safety cap only — left ``None`` it keeps all exceedances.
+    """
     candidates = candidates[candidates["mean"] >= float(min_threshold)].copy()
     candidates = candidates.sort_values("mean", ascending=False)
     selected = []
@@ -306,7 +345,7 @@ def _decluster_top_events(candidates, *, top_n, min_threshold, decluster_hours):
             continue
         selected.append(row)
         selected_times.append(storm_time)
-        if len(selected) >= int(top_n):
+        if top_n is not None and len(selected) >= int(top_n):
             break
     if not selected:
         return pd.DataFrame(columns=[*candidates.columns, "por_rank", "annual_rank"])
@@ -326,11 +365,18 @@ def _ranked_storms_are_sst_equivalent(path):
         ranked = pd.read_csv(path, nrows=5)
     except Exception:
         return False
-    return (
-        "potential_method" in ranked.columns
-        and not ranked.empty
-        and set(ranked["potential_method"].dropna()) == {"moving_footprint_max_mean"}
-    )
+    required = {
+        "potential_method",
+        "historical_footprint_center_lon",
+        "historical_footprint_center_lat",
+        "target_footprint_center_lon",
+        "target_footprint_center_lat",
+        "transposition_offset_lon",
+        "transposition_offset_lat",
+    }
+    return required.issubset(ranked.columns) and not ranked.empty and set(ranked["potential_method"].dropna()) == {
+        "moving_footprint_max_mean"
+    }
 
 
 def _yearly_stats_dir(collection_dir):
@@ -348,6 +394,15 @@ def _stats_checkpoint_is_current(path):
         frame = pd.read_csv(path, nrows=5)
     except Exception:
         return False
+    moving = frame.get("potential_method", pd.Series(dtype=object)).eq("moving_footprint_max_mean").any()
+    if moving:
+        required = {
+            "historical_footprint_center_lon",
+            "historical_footprint_center_lat",
+            "target_footprint_center_lon",
+            "target_footprint_center_lat",
+        }
+        return required.issubset(frame.columns)
     return "potential_method" in frame.columns and not frame["potential_method"].dropna().empty
 
 
@@ -370,6 +425,14 @@ def _write_rainfall_members(paths, spec, ranked, source_csv, duration_hours):
     transposed_lat = ranked["transposed_centroid_lat"] if "transposed_centroid_lat" in ranked else pd.NA
     offset_lon = ranked["transposition_offset_lon"] if "transposition_offset_lon" in ranked else pd.NA
     offset_lat = ranked["transposition_offset_lat"] if "transposition_offset_lat" in ranked else pd.NA
+    historical_footprint_lon = (
+        ranked["historical_footprint_center_lon"] if "historical_footprint_center_lon" in ranked else pd.NA
+    )
+    historical_footprint_lat = (
+        ranked["historical_footprint_center_lat"] if "historical_footprint_center_lat" in ranked else pd.NA
+    )
+    target_footprint_lon = ranked["target_footprint_center_lon"] if "target_footprint_center_lon" in ranked else pd.NA
+    target_footprint_lat = ranked["target_footprint_center_lat"] if "target_footprint_center_lat" in ranked else pd.NA
     members = pd.DataFrame(
         {
             "member_id": [
@@ -398,6 +461,10 @@ def _write_rainfall_members(paths, spec, ranked, source_csv, duration_hours):
             "transposed_centroid_lat": transposed_lat,
             "transposition_offset_lon": offset_lon,
             "transposition_offset_lat": offset_lat,
+            "historical_footprint_center_lon": historical_footprint_lon,
+            "historical_footprint_center_lat": historical_footprint_lat,
+            "target_footprint_center_lon": target_footprint_lon,
+            "target_footprint_center_lat": target_footprint_lat,
             "transposition_region_id": transposition_id,
         }
     )
@@ -419,7 +486,7 @@ def _event_window_subset(year_datasets, opener, spec, bbox_wgs84, start, end):
     return xr.concat(subsets, dim="time")
 
 
-def collect_aorc_wflow_baseline_warmup(config: dict, paths: dict, *, force: bool = False, opener=None) -> dict:
+def collect_warmup(config: dict, paths: dict, *, force: bool = False, opener=None) -> dict:
     """Collect a shared AORC warmup forcing baseline for native HydroMT-Wflow.
 
     The output is event-agnostic: ``data/wflow/warmup/<baseline_id>/precip.nc``
@@ -558,7 +625,11 @@ def _compute_selected_event_windows(opener, ranked, spec, bbox_wgs84, output_dir
         if write_event_windows:
             event_id = _event_id(location_name, duration_hours, row)
             path = output_dir / f"{event_id}_{start:%Y%m%dT%H}.nc"
-            if _event_window_file_has_required_variables(path, spec):
+            if _event_window_file_has_required_variables(
+                path,
+                spec,
+                require_transposition=_row_requires_field_transposition(row),
+            ):
                 centroid_lons.append(
                     row.get("historical_centroid_lon", row.get("x", pd.NA))
                 )
@@ -572,6 +643,7 @@ def _compute_selected_event_windows(opener, ranked, spec, bbox_wgs84, output_dir
         centroid_lons.append(centroid_lon)
         centroid_lats.append(centroid_lat)
         if write_event_windows:
+            subset = _apply_field_transposition(subset, row, historical_centroid=(centroid_lon, centroid_lat))
             subset.to_netcdf(path)
             written.append(path)
     for ds in year_datasets.values():
@@ -586,7 +658,13 @@ def _compute_selected_event_windows(opener, ranked, spec, bbox_wgs84, output_dir
     return written, ranked
 
 
-def _event_window_file_has_required_variables(path: Path, spec: dict) -> bool:
+def _event_window_file_has_required_variables(
+    path: Path,
+    spec: dict,
+    *,
+    require_transposition: bool = False,
+    require_transposition_metadata: bool = False,
+) -> bool:
     path = Path(path)
     if not path.exists():
         return False
@@ -595,6 +673,13 @@ def _event_window_file_has_required_variables(path: Path, spec: dict) -> bool:
     try:
         with xr.open_dataset(path) as ds:
             if precip_variable not in ds:
+                return False
+            if (
+                require_transposition_metadata
+                and ds.attrs.get("aorc_sst_field_transposition") not in {"applied", "none"}
+            ):
+                return False
+            if require_transposition and ds.attrs.get("aorc_sst_field_transposition") != "applied":
                 return False
             meteo_cfg = spec.get("event_meteo") or {}
             if not bool(meteo_cfg.get("enabled", False)):
@@ -607,23 +692,113 @@ def _event_window_file_has_required_variables(path: Path, spec: dict) -> bool:
     return True
 
 
+def _row_requires_field_transposition(row) -> bool:
+    offset_lon = _numeric_row_value(row, "transposition_offset_lon")
+    offset_lat = _numeric_row_value(row, "transposition_offset_lat")
+    if np.isfinite(offset_lon) or np.isfinite(offset_lat):
+        return bool(abs(offset_lon) > 0.0 or abs(offset_lat) > 0.0)
+    historical_lon = _numeric_row_value(row, "historical_footprint_center_lon")
+    historical_lat = _numeric_row_value(row, "historical_footprint_center_lat")
+    target_lon = _numeric_row_value(row, "target_footprint_center_lon")
+    target_lat = _numeric_row_value(row, "target_footprint_center_lat")
+    return bool(
+        np.isfinite(historical_lon)
+        and np.isfinite(historical_lat)
+        and np.isfinite(target_lon)
+        and np.isfinite(target_lat)
+        and (abs(target_lon - historical_lon) > 0.0 or abs(target_lat - historical_lat) > 0.0)
+    )
+
+
+def _numeric_row_value(row, column, default=np.nan):
+    try:
+        value = row.get(column, default)
+    except AttributeError:
+        value = default
+    value = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    return float(value) if pd.notna(value) else np.nan
+
+
+def _apply_field_transposition(ds: xr.Dataset, row, *, historical_centroid=None) -> xr.Dataset:
+    offset_lon = _numeric_row_value(row, "transposition_offset_lon")
+    offset_lat = _numeric_row_value(row, "transposition_offset_lat")
+    if not np.isfinite(offset_lon):
+        historical_lon = _numeric_row_value(row, "historical_footprint_center_lon")
+        target_lon = _numeric_row_value(row, "target_footprint_center_lon")
+        offset_lon = target_lon - historical_lon if np.isfinite(historical_lon) and np.isfinite(target_lon) else 0.0
+    if not np.isfinite(offset_lat):
+        historical_lat = _numeric_row_value(row, "historical_footprint_center_lat")
+        target_lat = _numeric_row_value(row, "target_footprint_center_lat")
+        offset_lat = target_lat - historical_lat if np.isfinite(historical_lat) and np.isfinite(target_lat) else 0.0
+    if not (np.isfinite(offset_lon) and np.isfinite(offset_lat)):
+        offset_lon, offset_lat = 0.0, 0.0
+
+    out = ds.copy()
+    lat_name = _coord_name(out, ["latitude", "lat", "y"])
+    lon_name = _coord_name(out, ["longitude", "lon", "x"])
+    if abs(offset_lon) > 0.0:
+        out = out.assign_coords({lon_name: out[lon_name] + offset_lon})
+    if abs(offset_lat) > 0.0:
+        out = out.assign_coords({lat_name: out[lat_name] + offset_lat})
+
+    attrs = {
+        "aorc_sst_field_transposition": "applied" if (abs(offset_lon) > 0.0 or abs(offset_lat) > 0.0) else "none",
+        "transposition_offset_lon": float(offset_lon),
+        "transposition_offset_lat": float(offset_lat),
+        "transposition_method": "coordinate_shift_to_study_footprint",
+    }
+    if historical_centroid is not None:
+        hist_lon, hist_lat = historical_centroid
+        if pd.notna(hist_lon):
+            attrs["historical_centroid_lon"] = float(hist_lon)
+            attrs["transposed_centroid_lon"] = float(hist_lon) + float(offset_lon)
+        if pd.notna(hist_lat):
+            attrs["historical_centroid_lat"] = float(hist_lat)
+            attrs["transposed_centroid_lat"] = float(hist_lat) + float(offset_lat)
+    for column in [
+        "historical_footprint_center_lon",
+        "historical_footprint_center_lat",
+        "target_footprint_center_lon",
+        "target_footprint_center_lat",
+        "potential_method",
+    ]:
+        try:
+            value = row.get(column)
+        except AttributeError:
+            value = None
+        if pd.notna(value):
+            attrs[column] = str(value) if column == "potential_method" else float(value)
+    out.attrs.update(attrs)
+    return out
+
+
 def _ensure_transposition_targets(paths, spec, ranked):
     ranked = ranked.copy()
     if "historical_centroid_lon" not in ranked:
         ranked["historical_centroid_lon"] = ranked["x"] if "x" in ranked else pd.NA
     if "historical_centroid_lat" not in ranked:
         ranked["historical_centroid_lat"] = ranked["y"] if "y" in ranked else pd.NA
-    if "transposed_centroid_lon" not in ranked:
-        ranked["transposed_centroid_lon"] = ranked["x"] if "x" in ranked else ranked["historical_centroid_lon"]
-    if "transposed_centroid_lat" not in ranked:
-        ranked["transposed_centroid_lat"] = ranked["y"] if "y" in ranked else ranked["historical_centroid_lat"]
-    ranked["transposition_offset_lon"] = (
-        pd.to_numeric(ranked["transposed_centroid_lon"], errors="coerce")
-        - pd.to_numeric(ranked["historical_centroid_lon"], errors="coerce")
+    if {"historical_footprint_center_lon", "target_footprint_center_lon"}.issubset(ranked.columns):
+        ranked["transposition_offset_lon"] = (
+            pd.to_numeric(ranked["target_footprint_center_lon"], errors="coerce")
+            - pd.to_numeric(ranked["historical_footprint_center_lon"], errors="coerce")
+        )
+    elif "transposition_offset_lon" not in ranked:
+        ranked["transposition_offset_lon"] = 0.0
+    if {"historical_footprint_center_lat", "target_footprint_center_lat"}.issubset(ranked.columns):
+        ranked["transposition_offset_lat"] = (
+            pd.to_numeric(ranked["target_footprint_center_lat"], errors="coerce")
+            - pd.to_numeric(ranked["historical_footprint_center_lat"], errors="coerce")
+        )
+    elif "transposition_offset_lat" not in ranked:
+        ranked["transposition_offset_lat"] = 0.0
+    ranked["transposed_centroid_lon"] = (
+        pd.to_numeric(ranked["historical_centroid_lon"], errors="coerce")
+        + pd.to_numeric(ranked["transposition_offset_lon"], errors="coerce").fillna(0.0)
     )
-    ranked["transposition_offset_lat"] = (
-        pd.to_numeric(ranked["transposed_centroid_lat"], errors="coerce")
-        - pd.to_numeric(ranked["historical_centroid_lat"], errors="coerce")
+    ranked["transposed_centroid_lat"] = (
+        pd.to_numeric(ranked["historical_centroid_lat"], errors="coerce")
+        + pd.to_numeric(ranked["transposition_offset_lat"], errors="coerce").fillna(0.0)
     )
     return ranked
 
@@ -636,7 +811,8 @@ def collect_aorc_sst(settings, skip_existing=False, opener=None):
     end = _normalize_end(settings["end"])
     duration_hours = int(spec.get("storm_duration_hours", spec.get("storms", {}).get("storm_duration_hours", 72)))
     check_every_n_hours = int(spec.get("check_every_n_hours", spec.get("storms", {}).get("check_every_n_hours", 1)))
-    top_n = int(spec.get("top_n_events", spec.get("storms", {}).get("top_n_events", 440)))
+    top_n_setting = spec.get("top_n_events", spec.get("storms", {}).get("top_n_events"))
+    top_n = int(top_n_setting) if top_n_setting is not None else None
     min_threshold = float(spec.get("min_precip_threshold", spec.get("storms", {}).get("min_precip_threshold", 2.5)))
     decluster_hours = int(spec.get("decluster_hours", duration_hours))
     bbox_wgs84 = _bbox_from_spec(paths, spec)
@@ -650,7 +826,11 @@ def collect_aorc_sst(settings, skip_existing=False, opener=None):
         and ranked_csv.exists()
         and stats_csv.exists()
         and _ranked_storms_are_sst_equivalent(ranked_csv)
-        and _event_windows_include_required_meteo(event_window_dir, spec)
+        and _event_windows_include_required_meteo(
+            event_window_dir,
+            spec,
+            require_transposition_metadata=True,
+        )
         and source_artifact_covers(paths, "aorc_sst", "rainfall_catalog", start, end)
     ):
         print(f"AORC SST: reusing complete rainfall catalog {ranked_csv}")
@@ -695,9 +875,9 @@ def collect_aorc_sst(settings, skip_existing=False, opener=None):
     stats = pd.concat(candidates, ignore_index=True).sort_values("storm_date")
     ranked = _decluster_top_events(
         stats,
-        top_n=top_n,
         min_threshold=min_threshold,
         decluster_hours=decluster_hours,
+        top_n=top_n,
     )
     collection_dir.mkdir(parents=True, exist_ok=True)
     stats.to_csv(stats_csv, index=False)
@@ -730,9 +910,10 @@ def collect_aorc_sst(settings, skip_existing=False, opener=None):
             "bbox_wgs84": list(bbox_wgs84),
             "duration_hours": duration_hours,
             "check_every_n_hours": check_every_n_hours,
-            "top_n_events": top_n,
+            "selection": "threshold_driven_pot",
             "min_precip_threshold": min_threshold,
             "decluster_hours": decluster_hours,
+            "top_n_events_safety_cap": top_n,
             "potential_method": "moving_footprint_max_mean",
         },
     )
@@ -747,18 +928,125 @@ def collect_aorc_sst(settings, skip_existing=False, opener=None):
     }
 
 
-def _event_windows_include_required_meteo(event_window_dir: Path, spec: dict) -> bool:
+def _event_windows_include_required_meteo(
+    event_window_dir: Path,
+    spec: dict,
+    *,
+    require_transposition_metadata: bool = False,
+) -> bool:
     meteo_cfg = spec.get("event_meteo") or {}
-    if not bool(meteo_cfg.get("enabled", False)):
+    if not bool(meteo_cfg.get("enabled", False)) and not require_transposition_metadata:
         return True
     files = sorted(Path(event_window_dir).glob("*.nc"))
     if not files:
         return False
-    required_targets = aorc_wflow_temp_pet_variables({"collection": {"aorc_sst": spec}})
     for path in files:
-        if not _event_window_file_has_required_variables(path, spec):
+        if not _event_window_file_has_required_variables(
+            path,
+            spec,
+            require_transposition_metadata=require_transposition_metadata,
+        ):
             return False
     return True
 
 
-collect_warmup = collect_aorc_wflow_baseline_warmup
+# ── Transposition-domain homogeneity diagnostic ───────────────────────────────
+# SST assumes storms are exchangeable across the transposition domain. This
+# diagnostic samples the 72h storm maxima at the target footprint and at nearby
+# candidate cells across the domain and summarizes how similar they are, so the
+# homogeneity assumption can be reviewed before production collection (see
+# docs/design_events/methodology/marshfield_sst_transposition_region.md).
+
+
+def summarize_homogeneity(samples):
+    target = samples.loc[samples["sample_role"] == "target"].iloc[0]
+    candidates = samples.loc[samples["sample_role"] != "target"].copy()
+    ratios = candidates["max_72h_mm"] / float(target["max_72h_mm"])
+    months = sorted(int(value) for value in candidates["max_month"].dropna().unique())
+    summary = {
+        "target_max_72h_mm": float(target["max_72h_mm"]),
+        "candidate_count": int(len(candidates)),
+        "min_ratio_to_target": float(ratios.min()) if len(ratios) else None,
+        "median_ratio_to_target": float(ratios.median()) if len(ratios) else None,
+        "max_ratio_to_target": float(ratios.max()) if len(ratios) else None,
+        "months_observed": months,
+    }
+    summary["review_required"] = bool(
+        summary["max_ratio_to_target"] is not None
+        and (
+            summary["max_ratio_to_target"] > 2.0
+            or summary["min_ratio_to_target"] < 0.5
+            or len(months) > 4
+        )
+    )
+    return summary
+
+
+def _sample_points(counties_path, target_geometry_path, max_candidates=48):
+    import geopandas as gpd
+
+    counties = gpd.read_file(counties_path).to_crs(5070)
+    target = gpd.read_file(target_geometry_path).to_crs(5070).geometry.union_all().centroid
+    counties = counties.assign(distance_km=counties.geometry.centroid.distance(target) / 1000.0)
+    selected = counties.sort_values("distance_km").head(max_candidates).copy()
+    rows = [
+        {"sample_id": "target", "sample_role": "target", "distance_km": 0.0, "geometry": target}
+    ]
+    for _, row in selected.iterrows():
+        rows.append(
+            {
+                "sample_id": f"{row.get('STATEFP')}_{row.get('COUNTYFP')}_{row.get('NAME')}",
+                "sample_role": "candidate",
+                "distance_km": float(row["distance_km"]),
+                "geometry": row.geometry.centroid,
+            }
+        )
+    return gpd.GeoDataFrame(rows, crs=5070).to_crs(4326)
+
+
+def _aorc_72h_max(points, year, variable="APCP_surface", open_zarr=None):
+    open_zarr = open_zarr or xr.open_zarr
+    url = f"s3://noaa-nws-aorc-v1-1-1km/{int(year)}.zarr"
+    ds = open_zarr(url, storage_options={"anon": True}, chunks={})
+    try:
+        point_index = pd.Index(points["sample_id"], name="sample_id")
+        lat = xr.DataArray(points.geometry.y.to_numpy(), dims="sample_id", coords={"sample_id": point_index})
+        lon = xr.DataArray(points.geometry.x.to_numpy(), dims="sample_id", coords={"sample_id": point_index})
+        series = ds[variable].sel(latitude=lat, longitude=lon, method="nearest").load()
+        rolling = series.rolling(time=72, min_periods=72).sum()
+        peak = rolling.max("time").to_series().rename("max_72h_mm").reset_index()
+        peak_time = rolling.idxmax("time").to_series().rename("max_time").reset_index()
+        out = peak.merge(peak_time, on="sample_id")
+        out["max_month"] = pd.to_datetime(out["max_time"]).dt.month
+        return out
+    finally:
+        ds.close()
+
+
+def run_aorc_homogeneity_diagnostic(
+    *,
+    counties_path,
+    target_geometry_path,
+    output_dir,
+    year=2018,
+    max_candidates=48,
+    open_zarr=None,
+):
+    """Sample AORC 72h maxima across the transposition domain and summarize
+    homogeneity vs the target footprint. Writes samples, summary, and the
+    candidate points for review."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    points = _sample_points(counties_path, target_geometry_path, max_candidates=max_candidates)
+    peaks = _aorc_72h_max(points, year=year, open_zarr=open_zarr)
+    samples = points.drop(columns="geometry").merge(peaks, on="sample_id")
+    summary = summarize_homogeneity(samples)
+    summary["year"] = int(year)
+    summary["sample_count"] = int(len(samples))
+    samples.to_csv(output_dir / f"aorc_homogeneity_samples_{year}.csv", index=False)
+    (output_dir / f"aorc_homogeneity_summary_{year}.json").write_text(
+        json.dumps(summary, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    points.to_file(output_dir / "aorc_homogeneity_sample_points.geojson", driver="GeoJSON")
+    return summary

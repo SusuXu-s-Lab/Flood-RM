@@ -81,7 +81,7 @@ source_order = (
 )
 
 
-def build_source_collection_plan(config, paths, *, start=None, end=None):
+def plan(config, paths, *, start=None, end=None):
     base_start, base_end = _collection_window(config, start=start, end=end)
     collection = config.get("collection", {})
     steps = []
@@ -387,7 +387,7 @@ def collect_all_sources(
     funcs=None,
 ):
     funcs = {**_default_collect_all_funcs(), **(funcs or {})}
-    plan = build_source_collection_plan(config, paths, start=start, end=end)
+    plan = plan(config, paths, start=start, end=end)
     cora_frame = pd.DataFrame()
     if plan.has("cora"):
         cora_frame = funcs["collect_cora"](
@@ -463,7 +463,7 @@ import geopandas as gpd
 import pandas as pd
 
 
-def prepare_collection_prerequisites(config, paths):
+def prepare(config, paths):
     """Create lightweight review-required inputs needed before source collection."""
     rows = []
     aorc_row = prepare_aorc_transposition_region(config, paths)
@@ -687,7 +687,7 @@ class ReviewedStreamgageNetworkWrite:
     result: dict
 
 
-def load_collect_sources_notebook_runtime(
+def load_runtime(
     location_root,
     *,
     streamgage_review_settings: dict | None = None,
@@ -732,7 +732,7 @@ def load_collect_sources_notebook_runtime(
     )
 
 
-def source_record_location_table(runtime: CollectSourcesNotebookRuntime) -> pd.DataFrame:
+def source_records(runtime: CollectSourcesNotebookRuntime) -> pd.DataFrame:
     collection = runtime.collection
     sources = runtime.data_sources["event_catalog"]["forcing_members"]
     records = {
@@ -812,7 +812,7 @@ def source_collection_plan_table(collection_plan, source_roles: dict[str, str]) 
     )
 
 
-def streamgage_review_summary(runtime: CollectSourcesNotebookRuntime) -> pd.Series:
+def review_summary(runtime: CollectSourcesNotebookRuntime) -> pd.Series:
     usgs = runtime.usgs_streamgages
     review = usgs_streamgages_module.streamgage_review_config(usgs)
     if str(review.get("method", "")).lower() == "huc_region":
@@ -854,7 +854,7 @@ def streamgage_review_summary(runtime: CollectSourcesNotebookRuntime) -> pd.Seri
     )
 
 
-def streamgage_review_source_table(runtime: CollectSourcesNotebookRuntime) -> pd.DataFrame:
+def review_sources(runtime: CollectSourcesNotebookRuntime) -> pd.DataFrame:
     review = usgs_streamgages_module.streamgage_review_config(runtime.usgs_streamgages)
     if str(review.get("method", "")).lower() == "huc_region":
         return pd.DataFrame(
@@ -873,11 +873,11 @@ def streamgage_review_source_table(runtime: CollectSourcesNotebookRuntime) -> pd
 
 
 def streamgage_basin_rules_table(runtime: CollectSourcesNotebookRuntime) -> pd.DataFrame:
-    return streamgage_review_source_table(runtime)
+    return review_sources(runtime)
 
 
 def streamgage_review_policy_summary(runtime: CollectSourcesNotebookRuntime) -> pd.Series:
-    return streamgage_review_summary(runtime)
+    return review_summary(runtime)
 
 
 def collect_configured_source_artifacts(
@@ -889,8 +889,8 @@ def collect_configured_source_artifacts(
     progress: bool = True,
 ) -> pd.DataFrame:
     """Collect missing configured artifacts and return one audit table."""
-    collectable_readiness = source_collection_readiness(runtime)
-    prerequisite_result = prepare_collection_prerequisites(runtime.runtime_config, runtime.runtime_paths)
+    collectable_readiness = readiness(runtime)
+    prerequisite_result = prepare(runtime.runtime_config, runtime.runtime_paths)
     collection_result = run_collect(
         runtime.runtime_config,
         runtime.runtime_paths,
@@ -921,7 +921,7 @@ def refresh_wflow_hydrography_basemap(
         refresh_wflow_hydrography_basemap as _refresh_wflow_hydrography_basemap,
     )
 
-    plan = build_source_collection_plan(runtime.runtime_config, runtime.runtime_paths)
+    plan = plan(runtime.runtime_config, runtime.runtime_paths)
     if not plan.has("national_hydrography"):
         raise KeyError("collection.national_hydrography is not configured for this location")
     return _refresh_wflow_hydrography_basemap(
@@ -930,7 +930,7 @@ def refresh_wflow_hydrography_basemap(
     )
 
 
-def source_collection_readiness(runtime: CollectSourcesNotebookRuntime) -> pd.DataFrame:
+def readiness(runtime: CollectSourcesNotebookRuntime) -> pd.DataFrame:
     collection = runtime.collection
     usgs_streamgages = runtime.usgs_streamgages
     national_hydrography = collection["national_hydrography"]
@@ -1002,15 +1002,15 @@ def source_collection_readiness(runtime: CollectSourcesNotebookRuntime) -> pd.Da
     return readiness
 
 
-def streamgage_source_readiness(runtime: CollectSourcesNotebookRuntime) -> pd.DataFrame:
-    return source_collection_readiness(runtime).loc[
+def gage_readiness(runtime: CollectSourcesNotebookRuntime) -> pd.DataFrame:
+    return readiness(runtime).loc[
         lambda frame: frame["artifact"].isin(
             ["streamgage candidates", "reviewed streamgage network", "soil moisture"]
         )
     ]
 
 
-def build_or_write_reviewed_streamgage_network(
+def write_gage_network(
     runtime: CollectSourcesNotebookRuntime,
     *,
     write_file: bool = True,
@@ -1038,7 +1038,7 @@ def build_or_write_reviewed_streamgage_network(
     return ReviewedStreamgageNetworkWrite(decision_table, result)
 
 
-def streamgage_review_area_layer_specs(runtime: CollectSourcesNotebookRuntime) -> list[dict]:
+def review_layers(runtime: CollectSourcesNotebookRuntime) -> list[dict]:
     return [
         {
             "label": "SMART-DS evaluation footprint",
@@ -1067,7 +1067,7 @@ def streamgage_review_area_layer_specs(runtime: CollectSourcesNotebookRuntime) -
     ]
 
 
-def plot_streamgage_review_regions(
+def plot_review(
     runtime: CollectSourcesNotebookRuntime,
     area_layer_specs: list[dict],
 ) -> StreamgageReviewQa:
@@ -1109,7 +1109,7 @@ def plot_streamgage_review_regions(
     )
 
 
-def collect_or_reuse_reviewed_streamflow_records(
+def collect_gage_records(
     runtime: CollectSourcesNotebookRuntime,
     *,
     skip_existing: bool = True,
@@ -1195,7 +1195,7 @@ def collection_readiness_table(runtime: CollectSourcesNotebookRuntime) -> pd.Dat
     return readiness
 
 
-def collected_data_overview() -> pd.DataFrame:
+def overview() -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
@@ -1217,7 +1217,7 @@ def collected_data_overview() -> pd.DataFrame:
     )
 
 
-def source_collection_plan_with_reuse_table(
+def plan_table(
     plan,
     paths: dict,
     *,
@@ -1232,7 +1232,7 @@ def source_collection_plan_with_reuse_table(
     return plan_table
 
 
-def source_collection_runtime_summary(config: dict, paths: dict) -> pd.Series:
+def summary(config: dict, paths: dict) -> pd.Series:
     return pd.Series(
         {
             "location": paths["location_name"],
@@ -1244,7 +1244,7 @@ def source_collection_runtime_summary(config: dict, paths: dict) -> pd.Series:
     )
 
 
-def source_collection_readiness_report(config: dict, paths: dict) -> tuple[pd.Series, pd.DataFrame]:
+def readiness_report(config: dict, paths: dict) -> tuple[pd.Series, pd.DataFrame]:
     from design_events.utils import write_data_acquisition_readiness
 
     audit = write_data_acquisition_readiness(config, paths)
@@ -1276,7 +1276,57 @@ def aorc_sst_source_summary(config: dict, paths: dict) -> pd.Series:
     )
 
 
-def stream_geo_nldi_source_summary(config: dict, paths: dict) -> pd.Series:
+def aorc_sst_params(
+    config: dict,
+    paths: dict,
+    *,
+    min_precip_threshold=None,
+    decluster_hours=None,
+    storm_duration_hours=None,
+    check_every_n_hours=None,
+    top_n_events=None,
+) -> pd.Series:
+    """Apply notebook-facing AORC SST overrides into ``config`` and summarize them.
+
+    Selection is threshold-driven POT: the collector keeps every independent storm
+    whose footprint-mean depth exceeds ``min_precip_threshold`` (mm over the storm
+    window), so the rainfall-member count is data-driven by the threshold and the
+    declustering window. ``top_n_events`` is an optional safety cap only. Any value
+    left as ``None`` keeps the configured default; the returned Series surfaces the
+    parameters a user can retune before Run Collection reads them from ``config``.
+    """
+    aorc_sst = config.setdefault("collection", {}).setdefault("aorc_sst", {})
+    overrides = {
+        "min_precip_threshold": min_precip_threshold,
+        "decluster_hours": decluster_hours,
+        "storm_duration_hours": storm_duration_hours,
+        "check_every_n_hours": check_every_n_hours,
+        "top_n_events": top_n_events,
+    }
+    for key, value in overrides.items():
+        if value is not None:
+            aorc_sst[key] = value
+    return pd.Series(
+        {
+            "source": "direct_aorc_sst",
+            "transposition_region_id": aorc_sst.get("transposition_region", {}).get("id"),
+            "transposition_region": aorc_sst.get("transposition_region", {}).get("geometry_file"),
+            "start_date": aorc_sst.get("start_date", config["collection"].get("start")),
+            "end_date": aorc_sst.get("end_date", config["collection"].get("end")),
+            "selection": "threshold-driven POT (every independent storm above threshold)",
+            "min_precip_threshold_mm": aorc_sst.get("min_precip_threshold"),
+            "storm_duration_hours": aorc_sst.get("storm_duration_hours", 72),
+            "decluster_hours": aorc_sst.get("decluster_hours"),
+            "check_every_n_hours": aorc_sst.get("check_every_n_hours"),
+            "top_n_events_safety_cap": aorc_sst.get("top_n_events"),
+            "rainfall_members": str(paths["aorc_sst_rainfall_members_csv"]),
+            "rainfall_members_exists": paths["aorc_sst_rainfall_members_csv"].exists(),
+        },
+        name="aorc_sst",
+    )
+
+
+def stream_sources(config: dict, paths: dict) -> pd.Series:
     collection = config["collection"]
     stream_geo_nldi = collection.get("stream_geo_nldi", {})
     national_hydrography = collection.get("national_hydrography", {})
@@ -1314,7 +1364,7 @@ def stream_geo_nldi_source_summary(config: dict, paths: dict) -> pd.Series:
     )
 
 
-def reservoir_condition_source_summary(config: dict, paths: dict) -> pd.Series:
+def reservoir_sources(config: dict, paths: dict) -> pd.Series:
     reservoirs = (config.get("collection", {}).get("national_hydrography", {}) or {}).get("reservoirs", {}) or {}
     conditions = reservoirs.get("conditions", {}) or {}
     summary_path = _source_location_path(
@@ -1367,7 +1417,7 @@ def reservoir_condition_table(config: dict, paths: dict) -> pd.DataFrame:
     return frame[[column for column in display_columns if column in frame.columns]]
 
 
-def nwm_soil_moisture_source_summary(config: dict, paths: dict) -> pd.Series:
+def soil_sources(config: dict, paths: dict) -> pd.Series:
     nwm = config["collection"].get("nwm", {})
     soil = nwm.get("soil_moisture", {})
     return pd.Series(
@@ -1403,7 +1453,7 @@ def usgs_streamgage_source_summary(runtime: CollectSourcesNotebookRuntime) -> pd
     )
 
 
-def usgs_streamgage_discovery_summary(runtime: CollectSourcesNotebookRuntime) -> tuple[pd.Series, pd.Series]:
+def discover_gages(runtime: CollectSourcesNotebookRuntime) -> tuple[pd.Series, pd.Series]:
     usgs = runtime.usgs_streamgages
     discovery = usgs.get("discovery", {})
     records = usgs.get("streamflow_records", {})
@@ -1603,9 +1653,48 @@ def plot_aorc_sst_rainfall(paths: dict):
     return fig
 
 
+def plot_cora_boundary_water_level(paths: dict):
+    waterlevel = _read_csv(paths["waterlevel_csv"], parse_dates=["time"])
+    if waterlevel.empty:
+        return None
+    value_column = _first_column(waterlevel, ["value", "zeta", "water_level", "waterlevel"])
+    fig, ax = plt.subplots(figsize=(10, 3), constrained_layout=True)
+    waterlevel.set_index("time")[value_column].plot(ax=ax, color="#2166ac", linewidth=0.6)
+    ax.set_title("CORA boundary water level")
+    ax.set_xlabel("")
+    ax.set_ylabel("m MSL")
+    return fig, ax
+
+
+def plot_era5_waves(paths: dict):
+    import xarray as xr
+
+    wave_path = Path(paths["era5_waves_nc"])
+    if not wave_path.exists():
+        return None
+    with xr.open_dataset(wave_path) as ds:
+        time_name = _first_column(
+            pd.DataFrame(columns=list(ds.coords) + list(ds.dims)), ["valid_time", "time"]
+        )
+        wave_vars = [name for name in ["swh", "pp1d", "mwd", "wdw"] if name in ds.data_vars]
+        if not wave_vars:
+            return None
+        fig, axes = plt.subplots(
+            len(wave_vars), 1, figsize=(10, 1.8 * len(wave_vars)), sharex=True, constrained_layout=True
+        )
+        axes = [axes] if len(wave_vars) == 1 else axes
+        for ax, name in zip(axes, wave_vars):
+            spatial_dims = [dim for dim in ds[name].dims if dim != time_name]
+            series = ds[name].mean(dim=spatial_dims).resample({time_name: "MS"}).mean()
+            series.to_pandas().plot(ax=ax, linewidth=0.8)
+            ax.set_title(f"ERA5 {name}")
+            ax.set_xlabel("")
+    return fig
+
+
 def plot_usgs_streamgage_network(runtime: CollectSourcesNotebookRuntime):
-    area_specs = streamgage_review_area_layer_specs(runtime)
-    qa = plot_streamgage_review_regions(runtime, area_specs)
+    area_specs = review_layers(runtime)
+    qa = plot_review(runtime, area_specs)
     return qa.figure, qa.artifact_summary, qa.gage_domain_summary
 
 
@@ -1888,22 +1977,3 @@ def _streamflow_record_site_numbers(streamflow_records_path: Path) -> set[str]:
 
 # Short notebook-facing API. Implementation names stay descriptive inside this
 # module; notebooks can read as compact workflow steps.
-load_runtime = load_collect_sources_notebook_runtime
-summary = source_collection_runtime_summary
-source_records = source_record_location_table
-plan = build_source_collection_plan
-plan_table = source_collection_plan_with_reuse_table
-discover_gages = usgs_streamgage_discovery_summary
-gage_readiness = streamgage_source_readiness
-review_summary = streamgage_review_summary
-review_sources = streamgage_review_source_table
-stream_sources = stream_geo_nldi_source_summary
-soil_sources = nwm_soil_moisture_source_summary
-reservoir_sources = reservoir_condition_source_summary
-readiness = source_collection_readiness
-prepare = prepare_collection_prerequisites
-write_gage_network = build_or_write_reviewed_streamgage_network
-collect_gage_records = collect_or_reuse_reviewed_streamflow_records
-overview = collected_data_overview
-review_layers = streamgage_review_area_layer_specs
-plot_review = plot_streamgage_review_regions

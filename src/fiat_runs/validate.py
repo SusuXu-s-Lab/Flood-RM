@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from .run import run_fiat_event
+from .run import run_event
 
 
 def historical_events(catalog_csv) -> pd.DataFrame:
@@ -24,7 +24,7 @@ def historical_events(catalog_csv) -> pd.DataFrame:
     return cat[cat["event_origin"] == "historical_tail"][[c for c in cols if c in cat.columns]].reset_index(drop=True)
 
 
-def run_historical_validation(model_root, rasterizer, storage_root, catalog_csv, out_root, hazard_root) -> dict:
+def validate_history(model_root, rasterizer, storage_root, catalog_csv, out_root, hazard_root) -> dict:
     """Run FIAT for each historical event that has a completed SFINCS run."""
     storage_root, out_root, hazard_root = Path(storage_root), Path(out_root), Path(hazard_root)
     hist = historical_events(catalog_csv)
@@ -37,7 +37,7 @@ def run_historical_validation(model_root, rasterizer, storage_root, catalog_csv,
             continue
         haz = hazard_root / f"{eid}.tif"
         rasterizer.export(map_path, haz)
-        res = run_fiat_event(model_root, haz, out_root / eid, event_id=eid)
+        res = run_event(model_root, haz, out_root / eid, event_id=eid)
         res.update({
             "historical_event_time": getattr(ev, "historical_event_time", None),
             "coastal_absolute_peak_m": getattr(ev, "coastal_absolute_peak_m", None),
@@ -50,6 +50,3 @@ def run_historical_validation(model_root, rasterizer, storage_root, catalog_csv,
         "missing_sfincs_runs": missing,
         "damages": pd.DataFrame(rows),
     }
-
-
-validate_history = run_historical_validation

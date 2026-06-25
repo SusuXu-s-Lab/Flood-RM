@@ -9,9 +9,7 @@ The reference network location is Marshfield, Massachusetts; inland coupled floo
 
 ## Pipeline Overview
 
-See: `locations`
-
-### 1. SMART-DS Data Bootstrap
+### 1. SMART-DS Data Collection
 
 Start by downloading the SMART-DS region data used by the location notebooks:
 

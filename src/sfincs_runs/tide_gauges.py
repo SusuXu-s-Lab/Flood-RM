@@ -25,7 +25,7 @@ MODEL_CRS = "EPSG:26919"
 WEB_MERCATOR = "EPSG:3857"
 
 
-def load_runup_transects(path, *, crs: str = MODEL_CRS) -> gpd.GeoDataFrame:
+def load_transects(path, *, crs: str = MODEL_CRS) -> gpd.GeoDataFrame:
     """Load configured SFINCS runup-gauge transects from YAML or ``sfincs.rug``."""
     path = Path(path)
     if not path.exists():
@@ -48,10 +48,10 @@ def load_runup_transects(path, *, crs: str = MODEL_CRS) -> gpd.GeoDataFrame:
                 }
             )
         return gpd.GeoDataFrame(rows, geometry="geometry", crs=runup_cfg.get("crs", crs) or crs).to_crs(crs)
-    return _load_runup_transects_from_rug(path, crs=crs)
+    return _load_transects_from_rug(path, crs=crs)
 
 
-def candidate_points_from_runup_transects(transects: gpd.GeoDataFrame, *, crs: str = MODEL_CRS) -> gpd.GeoDataFrame:
+def runup_candidates(transects: gpd.GeoDataFrame, *, crs: str = MODEL_CRS) -> gpd.GeoDataFrame:
     """Use runup-transect midpoints as candidate water-level sensor seeds."""
     if transects is None or transects.empty:
         return _empty_candidates(crs)
@@ -75,7 +75,7 @@ def candidate_points_from_runup_transects(transects: gpd.GeoDataFrame, *, crs: s
     return gpd.GeoDataFrame(rows, geometry="geometry", crs=crs)
 
 
-def candidate_points_from_building_risk(
+def risk_candidates(
     building_risk: gpd.GeoDataFrame,
     *,
     top_n: int = 30,
@@ -118,7 +118,7 @@ def candidate_points_from_building_risk(
     return gpd.GeoDataFrame(rows, geometry="geometry", crs=crs)
 
 
-def sample_sfincs_at_candidates(
+def sample_candidates(
     runs: pd.DataFrame,
     candidates: gpd.GeoDataFrame,
     *,
@@ -166,7 +166,7 @@ def sample_sfincs_at_candidates(
     return pd.DataFrame(rows)
 
 
-def candidate_event_response_table(
+def response_table(
     samples: pd.DataFrame,
     event_outcomes: pd.DataFrame,
     *,
@@ -183,7 +183,7 @@ def candidate_event_response_table(
     return out
 
 
-def score_sensor_candidates(
+def score_candidates(
     response: pd.DataFrame,
     candidates: gpd.GeoDataFrame,
     *,
@@ -227,7 +227,7 @@ def score_sensor_candidates(
     return out.sort_values("score", ascending=False).reset_index(drop=True)
 
 
-def greedy_sensor_selection(
+def select_sensors(
     scores: gpd.GeoDataFrame,
     *,
     sensor_count: int = 3,
@@ -254,7 +254,7 @@ def greedy_sensor_selection(
     return selected.sort_values("selected_rank").reset_index(drop=True)
 
 
-def mark_selected_candidates(scores: gpd.GeoDataFrame, selected: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+def mark_selected(scores: gpd.GeoDataFrame, selected: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     """Copy selected ranks back onto the full candidate score table."""
     out = scores.copy()
     out["selected_rank"] = pd.NA
@@ -305,7 +305,7 @@ def plot_candidate_scores(
     return ax
 
 
-def plot_selected_sensor_network(
+def plot_network(
     scores: gpd.GeoDataFrame,
     selected: gpd.GeoDataFrame,
     *,
@@ -354,7 +354,7 @@ def plot_selected_sensor_network(
     return ax
 
 
-def plot_candidate_damage_response(
+def plot_response(
     response: pd.DataFrame,
     candidate_id: str,
     *,
@@ -395,7 +395,7 @@ def plot_candidate_damage_response(
     return ax
 
 
-def _load_runup_transects_from_rug(path: Path, *, crs: str) -> gpd.GeoDataFrame:
+def _load_transects_from_rug(path: Path, *, crs: str) -> gpd.GeoDataFrame:
     lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
     rows = []
     i = 0
@@ -511,15 +511,3 @@ def _try_basemap(ax, *, crs: str, style: str) -> None:
         ctx.add_basemap(ax, crs=crs, source=providers.get(style, providers["osm"]), attribution_size=7)
     except Exception as exc:
         ax.text(0.01, 0.01, f"Basemap unavailable: {exc}", transform=ax.transAxes, fontsize=8)
-
-
-load_transects = load_runup_transects
-runup_candidates = candidate_points_from_runup_transects
-risk_candidates = candidate_points_from_building_risk
-sample_candidates = sample_sfincs_at_candidates
-response_table = candidate_event_response_table
-score_candidates = score_sensor_candidates
-select_sensors = greedy_sensor_selection
-mark_selected = mark_selected_candidates
-plot_network = plot_selected_sensor_network
-plot_response = plot_candidate_damage_response

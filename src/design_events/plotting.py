@@ -518,7 +518,7 @@ def plot_return_period_benchmark_coverage(catalog, stress_catalog=None, *, bench
 # Stage 4.1: normalized historical templates + shape-diversity scatter.
 def plot_template_bank(template_frame, n_show=8):
     fig, axes = plt.subplots(1, 2, figsize=(14, 4))
-    sample = template_frame.sample(min(n_show, len(template_frame)), random_state=42)
+    sample = template_frame.sample(min(n_show, len(template_frame)), random_state=0)
     for _, row in sample.iterrows():
         axes[0].plot(row["surge_template"], alpha=0.7)
     axes[0].set_xlabel("relative-hour index")
@@ -1454,7 +1454,7 @@ def plot_distinct_oscillatory_proxies(
     template_frame,
     waterlevel,
     *,
-    random_seed=42,
+    random_seed=0,
     candidate_n=250,
     pick_n=5,
     oscillation_keep_fraction=0.4,

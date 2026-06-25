@@ -54,7 +54,7 @@ class EventCatalogPlan:
 forcing_order = ("rainfall", "streamflow", "soil_moisture")
 
 
-def build_event_catalog_plan(config, paths):
+def plan(config, paths):
     event_cfg = config.get("event_catalog", {})
     if "forcing_members" in event_cfg:
         member_paths = event_cfg.get("forcing_members", {})
@@ -120,7 +120,7 @@ def _pairing_from_collection(config):
                 "strategy": "inland_rainfall_pairing_priority",
                 "same_storm_when_available": True,
                 "fallback_strategy": "seasonal_window_permutation",
-                "seed": 42,
+                "seed": 0,
                 "window_days": 45,
             },
             "streamflow": {
@@ -137,7 +137,7 @@ def _pairing_from_collection(config):
             },
         }
     return {
-        "rainfall": {"strategy": "seasonal_window_permutation", "seed": 42, "window_days": 45},
+        "rainfall": {"strategy": "seasonal_window_permutation", "seed": 0, "window_days": 45},
         "soil_moisture": {
             "strategy": "antecedent_to_forcing",
             "reference_forcing": "rainfall",
@@ -171,7 +171,7 @@ class EventCatalogNotebookRuntime:
         return path
 
 
-def load_event_catalog_notebook_runtime(location_root) -> EventCatalogNotebookRuntime:
+def load_runtime(location_root) -> EventCatalogNotebookRuntime:
     location_root = Path(location_root).resolve()
     repo_root = location_root.parents[1]
     definition = define_location(location_root / "config.yaml")
@@ -293,29 +293,31 @@ from design_events.build_events.inland import (
     InlandEventArtifacts,
     build_inland_event_artifacts,
     build_usgs_streamflow_event_members,
-    write_wflow_sfincs_handoff_manifest,
+    write_handoff,
 )
 from design_events.build_events.selection import (
     attach_antecedent_soil_moisture,
     assign_severity_bands,
-    select_resilience_stress_training_set,
+    select_training,
 )
 from design_events.build_events.probability import (
-    build_historical_tail_catalog,
-    build_inland_design_catalog,
-    build_joint_design_catalog,
+    build_tail,
+    build_inland_catalog,
+    build_joint_catalog,
 )
-from sfincs_runs.scenarios import build_coastal_event_timeseries, write_joint_catalog_sfincs_handoff
 
 
 # Short notebook-facing API.
-load_runtime = load_event_catalog_notebook_runtime
-plan = build_event_catalog_plan
-build_catalog = build_inland_design_catalog
-build_inland_catalog = build_inland_design_catalog
-build_joint_catalog = build_joint_design_catalog
-build_tail = build_historical_tail_catalog
-select_training = select_resilience_stress_training_set
-write_handoff = write_wflow_sfincs_handoff_manifest
-write_joint_handoff = write_joint_catalog_sfincs_handoff
-build_timeseries = build_coastal_event_timeseries
+build_catalog = build_inland_catalog
+
+
+def build_timeseries(*args, **kwargs):
+    from sfincs_runs.scenarios.coastal_realization import build_timeseries as _build_timeseries
+
+    return _build_timeseries(*args, **kwargs)
+
+
+def write_joint_handoff(*args, **kwargs):
+    from sfincs_runs.scenarios.joint_handoff import write_handoff as _write_handoff
+
+    return _write_handoff(*args, **kwargs)

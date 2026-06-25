@@ -82,7 +82,7 @@ def fit_index_marginal(values, *, event_rate, kind="pot", ev_type="pot", criteri
     )
 
 
-def build_historical_tail_catalog(
+def build_tail(
     paired_observations,
     model,
     config,
@@ -136,7 +136,7 @@ def build_historical_tail_catalog(
     )
     frame = _dedupe_observed_tail(frame, decluster_hours=decluster_hours)
     specs = {**default_realization_specs, **(realization_specs or {})}
-    seed = int(dependence.get("copula_seed", 42))
+    seed = int(dependence.get("copula_seed", 0))
 
     rows = []
     for _, row in frame.iterrows():
@@ -272,7 +272,7 @@ def _member_source(members, driver):
     return str(driver)
 
 
-def build_joint_design_catalog(
+def build_joint_catalog(
     config,
     paths,
     *,
@@ -305,7 +305,7 @@ def build_joint_design_catalog(
     # to the configured rate only when paired_observations carries no realized rate.
     realized_rate = float(paired_observations.attrs.get("base_event_rate_per_year", float("nan")))
     event_rate = realized_rate if np.isfinite(realized_rate) and realized_rate > 0 else float(dependence.get("event_rate_per_year", 5.0))
-    seed = int(dependence.get("copula_seed", 42))
+    seed = int(dependence.get("copula_seed", 0))
     n_catalog = int(config.get("events", {}).get("target_event_count", 2500))
     severity_bands = config.get("sampling", {}).get("severity_bands")
     band_fractions = dependence.get("catalog_band_fractions")
@@ -402,7 +402,3 @@ def build_joint_design_catalog(
         or config.get("infiltration", {}).get("treatment", "none")
     )
     return JointCatalogResult(catalog=catalog, budget_report=budget_report, model=model, population_report=population_report)
-
-
-build_joint_catalog = build_joint_design_catalog
-build_tail = build_historical_tail_catalog

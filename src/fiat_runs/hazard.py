@@ -5,7 +5,7 @@ centres in absolute UTM) plus a precomputed ``zsmax`` (peak water-surface elevat
 
 We export the peak **water level** (``zsmax``), not depth, and let FIAT subtract each
 structure's own ground elevation. The ground used in the FIAT model is sampled from the
-high-resolution SFINCS subgrid DEM (see ``build_model.apply_dem_ground_elevation``), so a
+high-resolution SFINCS subgrid DEM (see ``build_model.apply_ground``), so a
 waterfront structure on high ground stays dry even when its coarse 60 m SFINCS cell is wet.
 Doing the depth subtraction at the structure's 10 m ground resolution — rather than against
 the 60 m cell bed — is what keeps damage magnitudes credible.

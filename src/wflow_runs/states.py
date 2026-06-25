@@ -91,7 +91,7 @@ def prepare_wflow_event_instate(event_model_root, base_model_root, *, state_name
     return {"source": str(source), "target": str(target), "configured": True}
 
 
-def prepare_wflow_cold_instates(
+def prepare_instates(
     config: dict,
     location_root,
     *,
@@ -105,7 +105,7 @@ def prepare_wflow_cold_instates(
     ``outstate/outstates.nc`` to the same ``instate/instates.nc`` contract.
     """
     location_root = Path(location_root)
-    plan = plan_wflow_baseline_warmup_state(config, location_root)
+    plan = plan_warmup(config, location_root)
     timestamp = plan["warmup_start"]
     base_root = resolve_wflow_base_root(config.get("wflow", {}) or {}, location_root)
     rows = []
@@ -154,7 +154,7 @@ def prepare_wflow_cold_instates(
     return pd.DataFrame(rows)
 
 
-def plan_wflow_baseline_warmup_state(config: dict, location_root, *, reference_time=None) -> pd.Series:
+def plan_warmup(config: dict, location_root, *, reference_time=None) -> pd.Series:
     """Plan the reusable Wflow antecedent-state baseline.
 
     This keeps the expensive 90-day forcing/state preparation outside any one event.
@@ -194,7 +194,7 @@ def plan_wflow_baseline_warmup_state(config: dict, location_root, *, reference_t
 def plan_wflow_warmup_state(config: dict, location_root, event_id: str, *, reference_time) -> pd.Series:
     settings = shared_baseline_warmup_settings(config)
     if settings["state_policy"] == "shared_baseline":
-        plan = plan_wflow_baseline_warmup_state(config, location_root, reference_time=settings["baseline_reference_time"] or reference_time)
+        plan = plan_warmup(config, location_root, reference_time=settings["baseline_reference_time"] or reference_time)
         plan["event_id"] = str(event_id)
         plan.name = "wflow_warmup_state_plan"
         return plan
@@ -240,7 +240,7 @@ def validate_warmup_forcing(config: dict, location_root, event_id: str, *, refer
     return report
 
 
-def validate_wflow_instates(config: dict, location_root, *, raise_on_error: bool = True) -> pd.DataFrame:
+def validate_instates(config: dict, location_root, *, raise_on_error: bool = True) -> pd.DataFrame:
     """Require Wflow submodels to have native ``instate/instates.nc`` before dynamic replay."""
     location_root = Path(location_root)
     base_root = resolve_wflow_base_root(config.get("wflow", {}) or {}, location_root)
@@ -321,9 +321,6 @@ def validate_wflow_reservoir_states(model_root, *, required: bool = True, raise_
     return report
 
 
-plan_warmup = plan_wflow_baseline_warmup_state
-prepare_instates = prepare_wflow_cold_instates
-validate_instates = validate_wflow_instates
 
 
 def resolve_wflow_base_root(wflow: dict, location_root) -> Path:

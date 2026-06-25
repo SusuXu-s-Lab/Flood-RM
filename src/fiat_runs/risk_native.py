@@ -25,7 +25,7 @@ from .run import _toml_path, read_fiat_damages, write_event_settings
 DEFAULT_TARGET_RPS = (10, 50, 100, 500)
 
 
-def select_rp_representatives(catalog_csv, target_rps=DEFAULT_TARGET_RPS) -> dict:
+def select_rp(catalog_csv, target_rps=DEFAULT_TARGET_RPS) -> dict:
     """Map each target return period to the synthetic event with the nearest joint RP."""
     cat = pd.read_csv(catalog_csv)
     cat = cat[cat["event_origin"].isin(("synthetic_body", "synthetic_tail"))]
@@ -44,7 +44,7 @@ def _ead_column(gdf) -> str:
     raise RuntimeError(f"no EAD/risk column in FIAT risk output; columns={list(gdf.columns)}")
 
 
-def run_native_rp_risk(model_root, rasterizer, storage_root, rp_events, out_dir, hazard_root, *, srs="EPSG:4326") -> dict:
+def run_rp_risk(model_root, rasterizer, storage_root, rp_events, out_dir, hazard_root, *, srs="EPSG:4326") -> dict:
     """Export RP-band water-level rasters, run FIAT risk=true, return native EAD."""
     out_dir, hazard_root = Path(out_dir), Path(hazard_root)
     hazard_root.mkdir(parents=True, exist_ok=True)
@@ -75,7 +75,3 @@ def run_native_rp_risk(model_root, rasterizer, storage_root, rp_events, out_dir,
         "ead": float(pd.to_numeric(gdf[col], errors="coerce").fillna(0).sum()),
         "ead_column": col,
     }
-
-
-select_rp = select_rp_representatives
-run_rp_risk = run_native_rp_risk

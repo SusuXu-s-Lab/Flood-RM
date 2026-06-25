@@ -74,7 +74,7 @@ def ead_by_scenario(damage_df: pd.DataFrame, weights: pd.DataFrame, total_rate: 
     return out
 
 
-def damage_exceedance_curve(damage_df: pd.DataFrame, weights: pd.DataFrame, total_rate: float) -> pd.DataFrame:
+def exceedance(damage_df: pd.DataFrame, weights: pd.DataFrame, total_rate: float) -> pd.DataFrame:
     """Loss vs annual exceedance for one scenario: the curve whose area under it is the EAD."""
     df = _join(damage_df, weights).sort_values("total_damage", ascending=False).reset_index(drop=True)
     df["annual_rate"] = total_rate * df["probability_weight"]
@@ -97,6 +97,3 @@ def ead_audit(damage_df: pd.DataFrame, weights: pd.DataFrame, total_rate: float,
         "ead_origins": list(EAD_ORIGINS),
         "ead_by_scenario": table.to_dict("records"),
     }
-
-
-exceedance = damage_exceedance_curve

@@ -47,7 +47,7 @@ def build_coastal_hydrograph_from_analog(components, peak_time, scale_factor, *,
     return out[~out.index.duplicated(keep="first")].sort_index()
 
 
-def build_coastal_event_timeseries(
+def build_timeseries(
     row,
     components,
     *,
@@ -74,6 +74,3 @@ def build_coastal_event_timeseries(
         "scale_factor": float(scale),
         "msl_offset_m": float(msl_offset_m),
     }
-
-
-build_timeseries = build_coastal_event_timeseries

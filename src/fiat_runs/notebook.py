@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from fiat_runs.config import fiat_paths, load_runtime
+from fiat_runs.config import fiat_paths, load_runtime as _load_config_runtime
 
 
 @dataclass(frozen=True)
@@ -23,14 +23,14 @@ class FiatNotebookRuntime:
     tide_gauge_fig_root: Path
 
 
-def load_fiat_notebook_runtime(location_root, *, create_tide_gauge_dirs: bool = False) -> FiatNotebookRuntime:
+def load_runtime(location_root, *, create_tide_gauge_dirs: bool = False) -> FiatNotebookRuntime:
     """Load derived FIAT paths for a coastal Location Workspace.
 
     Set ``create_tide_gauge_dirs`` for the tide-gauge placement notebook; the
     FIAT risk notebook reads the same paths without creating figure folders.
     """
     location_root = Path(location_root).resolve()
-    config, paths = load_runtime(location_root / "config.yaml")
+    config, paths = _load_config_runtime(location_root / "config.yaml")
     paths = fiat_paths(paths)
     tide_gauge_root = paths["location_data_root"] / "sfincs" / "tide_gauges"
     tide_gauge_fig_root = tide_gauge_root / "figures"
@@ -53,31 +53,30 @@ def load_fiat_notebook_runtime(location_root, *, create_tide_gauge_dirs: bool = 
 
 
 # Compact notebook-facing workflow verbs.
-load_runtime = load_fiat_notebook_runtime
 
-from fiat_runs._env import fiat_env_available as env_ready
-from fiat_runs.build_model import apply_dem_ground_elevation as apply_ground
-from fiat_runs.build_model import build_fiat_model as build_model
-from fiat_runs.build_model import fiat_model_is_built as model_ready
-from fiat_runs.diagnostics import aggregate_building_risk as building_risk
-from fiat_runs.diagnostics import damage_by_depth_band as damage_by_depth
-from fiat_runs.diagnostics import damage_by_occupancy as damage_by_use
-from fiat_runs.diagnostics import event_damage_summary as damage_summary
-from fiat_runs.diagnostics import load_event_damage as event_damage
-from fiat_runs.diagnostics import plot_building_risk as plot_risk
-from fiat_runs.diagnostics import top_damaged_assets as top_assets
-from fiat_runs.risk import damage_exceedance_curve as exceedance
-from fiat_runs.risk_native import run_native_rp_risk as run_rp_risk
-from fiat_runs.risk_native import select_rp_representatives as select_rp
-from fiat_runs.run import run_fiat_event as run_event
-from fiat_runs.validate import run_historical_validation as validate_history
-from sfincs_runs.tide_gauges import candidate_event_response_table as response_table
-from sfincs_runs.tide_gauges import candidate_points_from_building_risk as risk_candidates
-from sfincs_runs.tide_gauges import candidate_points_from_runup_transects as runup_candidates
-from sfincs_runs.tide_gauges import greedy_sensor_selection as select_sensors
-from sfincs_runs.tide_gauges import load_runup_transects as load_transects
-from sfincs_runs.tide_gauges import mark_selected_candidates as mark_selected
-from sfincs_runs.tide_gauges import plot_candidate_damage_response as plot_response
-from sfincs_runs.tide_gauges import plot_selected_sensor_network as plot_network
-from sfincs_runs.tide_gauges import sample_sfincs_at_candidates as sample_candidates
-from sfincs_runs.tide_gauges import score_sensor_candidates as score_candidates
+from fiat_runs._env import env_ready
+from fiat_runs.build_model import apply_ground
+from fiat_runs.build_model import build_model
+from fiat_runs.build_model import model_ready
+from fiat_runs.diagnostics import building_risk
+from fiat_runs.diagnostics import damage_by_depth
+from fiat_runs.diagnostics import damage_by_use
+from fiat_runs.diagnostics import damage_summary
+from fiat_runs.diagnostics import event_damage
+from fiat_runs.diagnostics import plot_risk
+from fiat_runs.diagnostics import top_assets
+from fiat_runs.risk import exceedance
+from fiat_runs.risk_native import run_rp_risk
+from fiat_runs.risk_native import select_rp
+from fiat_runs.run import run_event
+from fiat_runs.validate import validate_history
+from sfincs_runs.tide_gauges import response_table
+from sfincs_runs.tide_gauges import risk_candidates
+from sfincs_runs.tide_gauges import runup_candidates
+from sfincs_runs.tide_gauges import select_sensors
+from sfincs_runs.tide_gauges import load_transects
+from sfincs_runs.tide_gauges import mark_selected
+from sfincs_runs.tide_gauges import plot_response
+from sfincs_runs.tide_gauges import plot_network
+from sfincs_runs.tide_gauges import sample_candidates
+from sfincs_runs.tide_gauges import score_candidates

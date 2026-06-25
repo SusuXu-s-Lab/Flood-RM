@@ -13,10 +13,10 @@ import yaml
 from sfincs_runs.build_base import (
     is_built_sfincs_base,
     is_built_wflow_base,
-    validate_built_sfincs_native_physics,
+    validate_physics,
 )
-from sfincs_runs.scenarios.inland_initial_conditions import configure_hydrograph_initial_conditions
-from wflow_runs.dynamic_handoff import dynamic_handoff_paths, require_accepted_dynamic_handoff
+from sfincs_runs.scenarios.inland_initial_conditions import init_hydrographs
+from wflow_runs.dynamic_handoff import dynamic_handoff_paths, require_handoff
 from wflow_runs.streamflow_realization import wflow_streamflow_gage_overlap
 
 
@@ -45,7 +45,7 @@ class InlandCoupledExamplePlan:
     issues: tuple[str, ...]
 
 
-def stage_inland_coupled_scenarios(
+def stage_scenarios(
     config,
     paths,
     *,
@@ -94,7 +94,7 @@ def stage_inland_coupled_scenarios(
         )
     require_native_physics = bool(set(config.get("event_drivers") or []) & {"rainfall", "streamflow", "soil_moisture"})
     for domain in sfincs_domains:
-        validate_built_sfincs_native_physics(
+        validate_physics(
             domain["base_model_root"],
             config,
             require_spatial_roughness=require_native_physics,
@@ -152,7 +152,7 @@ def stage_inland_coupled_scenarios(
     return report
 
 
-def dynamic_handoff_readiness_table(
+def handoff_readiness(
     config,
     location_root,
     *,
@@ -180,7 +180,7 @@ def dynamic_handoff_readiness_table(
         event_id = str(event_id)
         paths = dynamic_handoff_paths(config, location_root, event_id)
         try:
-            accepted = require_accepted_dynamic_handoff(config, location_root, event_id)
+            accepted = require_handoff(config, location_root, event_id)
             rows.append(
                 {
                     "event_id": event_id,
@@ -246,7 +246,7 @@ def audit_inland_coupled_batch_readiness(
     """
     location_root = _location_root(paths)
     scenarios_root = _location_path(location_root, config.get("paths", {}).get("scenarios_root", "data/sfincs/scenarios"))
-    readiness = dynamic_handoff_readiness_table(
+    readiness = handoff_readiness(
         config,
         location_root,
         catalog_path=catalog_path,
@@ -372,7 +372,7 @@ def stage_inland_coupled_scenario_forcing(
 ) -> pd.DataFrame:
     """Stage native HydroMT-SFINCS rainfall, discharge, and initial conditions.
 
-    ``stage_inland_coupled_scenarios`` creates event/domain folders from the
+    ``stage_scenarios`` creates event/domain folders from the
     reviewed base model. This helper then uses HydroMT-SFINCS components to
     write the mutable event inputs consumed by the cluster runner:
     ``sfincs.dis``, optional ``sfincs_netampr.nc``, and ``sfincs.ini``.
@@ -387,7 +387,7 @@ def stage_inland_coupled_scenario_forcing(
 
     location_root = _location_root(paths)
     if scenario_report is None:
-        scenario_report = stage_inland_coupled_scenarios(
+        scenario_report = stage_scenarios(
             config,
             paths,
             catalog_path=catalog_path,
@@ -407,7 +407,7 @@ def stage_inland_coupled_scenario_forcing(
     for scenario in scenario_report.to_dict("records"):
         event_id = str(scenario["event_id"])
         run_dir = Path(scenario["run_root"])
-        acceptance = require_accepted_dynamic_handoff(config, location_root, event_id)
+        acceptance = require_handoff(config, location_root, event_id)
         discharge_nc = Path(str(acceptance["sfincs_discharge_forcing"]))
         if not discharge_nc.exists():
             raise FileNotFoundError(discharge_nc)
@@ -476,7 +476,7 @@ def stage_inland_coupled_scenario_forcing(
         discharge_df = discharge_by_name[src_names].copy()
         discharge_df.columns = src.index.astype(int)
         sf.discharge_points.create(timeseries=discharge_df, merge=False)
-        initial_condition = configure_hydrograph_initial_conditions(
+        initial_condition = init_hydrographs(
             sf,
             discharge_by_name[src_names],
             config,
@@ -524,7 +524,7 @@ def stage_inland_coupled_scenario_forcing(
     return report
 
 
-def plan_inland_coupled_example(
+def plan_example(
     config,
     paths,
     *,
@@ -751,7 +751,7 @@ def _missing_dynamic_wflow_acceptance(config: dict, location_root: Path, event_i
     missing = []
     for event_id in event_ids:
         try:
-            require_accepted_dynamic_handoff(config, location_root, str(event_id))
+            require_handoff(config, location_root, str(event_id))
         except Exception as exc:
             paths = dynamic_handoff_paths(config, location_root, str(event_id))
             missing.append(f"{event_id}: {paths['acceptance']} ({exc})")
@@ -806,7 +806,7 @@ def _example_plan(
 ) -> InlandCoupledExamplePlan:
     event_flag = f" --event-id {event_id}" if event_id else ""
     stage_command = (
-        "stage_inland_coupled_scenarios(runtime_config, "
+        "stage_scenarios(runtime_config, "
         '{"location_root": location_root}, '
         f'catalog_path="{catalog_path.as_posix()}"'
         f"{', event_ids=[' + repr(event_id) + ']' if event_id else ', limit=1'}, "

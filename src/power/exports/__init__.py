@@ -2,8 +2,8 @@
 
 from power.exports.smart_ds_grid import DEFAULT_OUTPUT_DIR
 from power.exports.smart_ds_grid import DEFAULT_REGISTRY_DIR
-from power.exports.smart_ds_grid import build_control_sandbox_registry
-from power.exports.smart_ds_grid import export_stage_a1
+from power.exports.smart_ds_grid import control_registry
+from power.exports.smart_ds_grid import export_base
 from power.exports.smart_ds_grid import export_stage_a2
 from power.exports.restoration import build_event_window_bundle
 from power.exports.restoration import build_asset_to_dss_element_map
@@ -16,14 +16,12 @@ from power.exports.restoration import run_dynagrid_smoke
 from power.exports.restoration import run_powermodels_onm_smoke
 from power.exports.restoration import slice_annual_profile_to_event_window
 
-control_registry = build_control_sandbox_registry
-export_base = export_stage_a1
 
 __all__ = [
     "DEFAULT_OUTPUT_DIR",
     "DEFAULT_REGISTRY_DIR",
-    "build_control_sandbox_registry",
-    "export_stage_a1",
+    "control_registry",
+    "export_base",
     "export_stage_a2",
     "build_event_window_bundle",
     "build_asset_to_dss_element_map",

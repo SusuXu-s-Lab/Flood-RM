@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from sfincs_runs.config import load_runtime
+from sfincs_runs.config import load_runtime as _load_config_runtime
 
 
 @dataclass(frozen=True)
@@ -37,7 +37,7 @@ class SfincsNotebookRuntime:
     soil_cfg: dict
 
 
-def load_sfincs_notebook_runtime(
+def load_runtime(
     location_root,
     *,
     wave: bool = False,
@@ -45,7 +45,7 @@ def load_sfincs_notebook_runtime(
 ) -> SfincsNotebookRuntime:
     """Load derived paths for SFINCS Location Workspace notebooks."""
     location_root = Path(location_root).resolve()
-    config, paths = load_runtime(location_root / "config.yaml")
+    config, paths = _load_config_runtime(location_root / "config.yaml")
 
     wave_cfg = config.get("coastal_wave_coupling") or {}
     quadtree_cfg = wave_cfg.get("quadtree") or {}
@@ -101,27 +101,26 @@ def _resolve_location_path(location_root: Path, value) -> Path:
 
 
 # Compact notebook-facing workflow verbs.
-load_runtime = load_sfincs_notebook_runtime
 
-from sfincs_runs.build_base import build_inland_sfincs_domain_set as build_domains
-from sfincs_runs.build_base import create_native_sfincs_river_handoff_locations as create_handoffs
-from sfincs_runs.build_base import set_sfincs_observation_points_from_gages as set_observations
-from sfincs_runs.diagnostics import plot_flood_animation as plot_animation
-from sfincs_runs.diagnostics import plot_forcing_qa_standard as plot_forcing_standard
-from sfincs_runs.diagnostics import plot_forcing_qa_waves as plot_forcing_waves
-from sfincs_runs.diagnostics import plot_inland_coupled_forcing_qa as plot_forcing
-from sfincs_runs.diagnostics import plot_inland_coupled_postrun_diagnostics as plot_diagnostics
-from sfincs_runs.diagnostics import plot_inland_flood_animation as plot_inland_animation
-from sfincs_runs.diagnostics import plot_postrun_diagnostics as plot_standard_diagnostics
-from sfincs_runs.diagnostics import plot_runup_overtopping as plot_runup
-from sfincs_runs.hydrology import validate_built_sfincs_native_physics as validate_physics
-from sfincs_runs.scenarios import audit_forcing_manifest as audit_forcing
-from sfincs_runs.scenarios import build_coastal_event_timeseries as build_timeseries
-from sfincs_runs.scenarios import configure_hydrograph_initial_conditions as init_hydrographs
-from sfincs_runs.scenarios import plan_inland_coupled_example as plan_example
-from sfincs_runs.scenarios import stage_inland_coupled_scenarios as stage_scenarios
-from sfincs_runs.scenarios.event_forcing import build_single_use_event as build_event
-from sfincs_runs.scenarios.event_forcing import resolve_event_hydrology_inputs as hydrology_inputs
-from sfincs_runs.scenarios.event_forcing import run_sfincs_model as run_model
-from sfincs_runs.scenarios.event_forcing import stage_event_precipitation as stage_precip
-from sfincs_runs.scenarios.event_forcing import stage_event_run as stage_run
+from sfincs_runs.build_base import build_domains
+from sfincs_runs.build_base import create_handoffs
+from sfincs_runs.build_base import set_observations
+from sfincs_runs.diagnostics import plot_standard_animation as plot_animation
+from sfincs_runs.diagnostics import plot_standard_forcing as plot_forcing_standard
+from sfincs_runs.diagnostics import plot_wave_forcing as plot_forcing_waves
+from sfincs_runs.diagnostics import plot_forcing
+from sfincs_runs.diagnostics import plot_diagnostics
+from sfincs_runs.diagnostics import plot_animation as plot_inland_animation
+from sfincs_runs.diagnostics import plot_standard_diagnostics
+from sfincs_runs.diagnostics import plot_runup
+from sfincs_runs.hydrology import validate_physics
+from sfincs_runs.scenarios import audit_forcing
+from sfincs_runs.scenarios import build_timeseries
+from sfincs_runs.scenarios import init_hydrographs
+from sfincs_runs.scenarios import plan_example
+from sfincs_runs.scenarios import stage_scenarios
+from sfincs_runs.scenarios.event_forcing import build_event
+from sfincs_runs.scenarios.event_forcing import hydrology_inputs
+from sfincs_runs.scenarios.event_forcing import run_model
+from sfincs_runs.scenarios.event_forcing import stage_precip
+from sfincs_runs.scenarios.event_forcing import stage_run

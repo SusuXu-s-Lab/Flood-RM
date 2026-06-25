@@ -15,9 +15,9 @@ from sfincs_runs.config import load_runtime
 from sfincs_runs.scenarios.inland_coupled import (
     audit_inland_coupled_batch_readiness,
     stage_inland_coupled_scenario_forcing,
-    stage_inland_coupled_scenarios,
+    stage_scenarios,
 )
-from wflow_runs.dynamic_handoff_batch import run_dynamic_handoff_batch
+from wflow_runs.dynamic_handoff_batch import run_handoffs
 
 
 def run_inland_coupled_event(
@@ -48,7 +48,7 @@ def run_inland_coupled_event(
     event_id = str(event_id)
     t0 = time.time()
 
-    wflow_report = run_dynamic_handoff_batch(
+    wflow_report = run_handoffs(
         config,
         location_root,
         catalog_path=catalog_path,
@@ -69,7 +69,7 @@ def run_inland_coupled_event(
             "duration_sec": time.time() - t0,
         }
 
-    scenario_report = stage_inland_coupled_scenarios(
+    scenario_report = stage_scenarios(
         config,
         {"location_root": location_root},
         catalog_path=catalog_path,

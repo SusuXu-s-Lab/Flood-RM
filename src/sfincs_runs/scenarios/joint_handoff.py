@@ -9,10 +9,10 @@ import pandas as pd
 import xarray as xr
 
 from design_events.build_events.catalog import write_event_catalog_audit
-from sfincs_runs.scenarios.coastal_realization import build_coastal_event_timeseries
+from sfincs_runs.scenarios.coastal_realization import build_timeseries
 
 
-def write_joint_catalog_sfincs_handoff(joint_catalog, components, *, config, paths):
+def write_handoff(joint_catalog, components, *, config, paths):
     """Write copula-joint coastal realizations in the SFINCS scenario-builder contract."""
     catalog = joint_catalog.copy().reset_index(drop=True)
     scenario = paths.get("scenario", {}) or {"name": "base", "slr_offset_m": 0.0}
@@ -36,7 +36,7 @@ def write_joint_catalog_sfincs_handoff(joint_catalog, components, *, config, pat
     event_rows = []
     for _, row in catalog.iterrows():
         event_id = str(row["event_id"])
-        forcing = build_coastal_event_timeseries(
+        forcing = build_timeseries(
             row,
             components,
             window_hours=window_hours,
@@ -296,6 +296,3 @@ def _write_netcdf_replace(dataset, path):
         tmp_path.replace(path)
     finally:
         tmp_path.unlink(missing_ok=True)
-
-
-write_handoff = write_joint_catalog_sfincs_handoff

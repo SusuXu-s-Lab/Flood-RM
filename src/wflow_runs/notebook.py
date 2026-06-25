@@ -74,7 +74,7 @@ class WflowCalibrationNotebookRuntime(WflowCoupledNotebookRuntime):
     audit_plots_dir: Path
 
 
-def load_wflow_coupled_runtime(
+def load_coupled_runtime(
     location_root,
     *,
     wflow_domain_review_required: bool | None = None,
@@ -123,7 +123,7 @@ def load_wflow_coupled_runtime(
     )
 
 
-def load_wflow_calibration_runtime(
+def load_calibration_runtime(
     location_root,
     *,
     create_audit_dirs: bool = True,
@@ -133,7 +133,7 @@ def load_wflow_calibration_runtime(
     When ``create_audit_dirs`` is true, the helper creates the calibration plot
     output directory used by the notebook.
     """
-    base = load_wflow_coupled_runtime(location_root, wflow_domain_review_required=False)
+    base = load_coupled_runtime(location_root, wflow_domain_review_required=False)
     streamflow_records_path = base.location_root / "data/sources/usgs_streamgages/streamflow_records.csv"
     event_streamflow_iv_root = base.location_root / "data/sources/usgs_streamgages/event_streamflow_iv"
     audit_plots_dir = base.location_root / "data/wflow/audit/plots"
@@ -150,9 +150,9 @@ def load_wflow_calibration_runtime(
 def load_runtime(location_root, *, workflow: str = "coupled", **kwargs):
     """Load the Wflow notebook runtime for a named workflow."""
     if workflow == "coupled":
-        return load_wflow_coupled_runtime(location_root, **kwargs)
+        return load_coupled_runtime(location_root, **kwargs)
     if workflow == "calibration":
-        return load_wflow_calibration_runtime(location_root, **kwargs)
+        return load_calibration_runtime(location_root, **kwargs)
     raise ValueError("workflow must be 'coupled' or 'calibration'")
 
 
@@ -223,7 +223,7 @@ def exists_table(location_root: Path, named_paths: dict) -> pd.DataFrame:
     )
 
 
-def wflow_domain_set_summary(config: dict, location_root: Path) -> tuple:
+def domain_summary(config: dict, location_root: Path) -> tuple:
     build_plan = build_wflow_build_plan(config, {"location_root": location_root})
     domain_plan = plan_wflow_domain_set(config, {"location_root": location_root})
     domain_set = config["wflow"]["domain_set"]
@@ -244,7 +244,7 @@ def wflow_domain_set_summary(config: dict, location_root: Path) -> tuple:
     return build_plan, domain_plan, summary
 
 
-def wflow_subbasin_review_table(domain_plan) -> pd.DataFrame:
+def subbasins(domain_plan) -> pd.DataFrame:
     if not domain_plan.submodels:
         return pd.DataFrame(
             [{"status": domain_plan.status, "issue": issue} for issue in domain_plan.issues]
@@ -270,8 +270,6 @@ def wflow_subbasin_review_table(domain_plan) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-domain_summary = wflow_domain_set_summary
-subbasins = wflow_subbasin_review_table
 
 
 def wflow_event_replay_plan(config: dict, location_root: Path, event_id: str | None) -> pd.Series:
@@ -535,84 +533,84 @@ def _hydromt_subprocess_env(location_root: Path | None = None) -> dict[str, str]
 # Compact notebook-facing workflow verbs. These wrappers import lazily so the
 # Wflow facade does not create circular imports with replay/handoff modules.
 def collect_warmup(*args, **kwargs):
-    from design_events.collect_sources.aorc_sst import collect_aorc_wflow_baseline_warmup
+    from design_events.collect_sources.aorc_sst import collect_warmup
 
-    return collect_aorc_wflow_baseline_warmup(*args, **kwargs)
+    return collect_warmup(*args, **kwargs)
 
 
 def handoff_readiness(*args, **kwargs):
-    from sfincs_runs.scenarios import dynamic_handoff_readiness_table
+    from sfincs_runs.scenarios import handoff_readiness
 
-    return dynamic_handoff_readiness_table(*args, **kwargs)
+    return handoff_readiness(*args, **kwargs)
 
 
 def plan_example(*args, **kwargs):
-    from sfincs_runs.scenarios import plan_inland_coupled_example
+    from sfincs_runs.scenarios import plan_example
 
-    return plan_inland_coupled_example(*args, **kwargs)
+    return plan_example(*args, **kwargs)
 
 
 def validate_staticmaps(*args, **kwargs):
-    from wflow_runs.build_plan import validate_wflow_staticmaps_physics
+    from wflow_runs.build_plan import validate_staticmaps
 
-    return validate_wflow_staticmaps_physics(*args, **kwargs)
+    return validate_staticmaps(*args, **kwargs)
 
 
 def plan_handoff(*args, **kwargs):
-    from wflow_runs.dynamic_handoff import plan_dynamic_wflow_handoff
+    from wflow_runs.dynamic_handoff import plan_handoff
 
-    return plan_dynamic_wflow_handoff(*args, **kwargs)
+    return plan_handoff(*args, **kwargs)
 
 
 def plan_streamflow(*args, **kwargs):
-    from wflow_runs.dynamic_handoff import plan_wflow_streamflow_realization
+    from wflow_runs.dynamic_handoff import plan_streamflow
 
-    return plan_wflow_streamflow_realization(*args, **kwargs)
+    return plan_streamflow(*args, **kwargs)
 
 
 def prepare_handoff(*args, **kwargs):
-    from wflow_runs.dynamic_handoff import prepare_dynamic_wflow_handoff
+    from wflow_runs.dynamic_handoff import prepare_handoff
 
-    return prepare_dynamic_wflow_handoff(*args, **kwargs)
+    return prepare_handoff(*args, **kwargs)
 
 
 def require_handoff(*args, **kwargs):
-    from wflow_runs.dynamic_handoff import require_accepted_dynamic_handoff
+    from wflow_runs.dynamic_handoff import require_handoff
 
-    return require_accepted_dynamic_handoff(*args, **kwargs)
+    return require_handoff(*args, **kwargs)
 
 
 def run_handoffs(*args, **kwargs):
-    from wflow_runs.dynamic_handoff_batch import run_dynamic_handoff_batch
+    from wflow_runs.dynamic_handoff_batch import run_handoffs
 
-    return run_dynamic_handoff_batch(*args, **kwargs)
+    return run_handoffs(*args, **kwargs)
 
 
 def build_meteo(*args, **kwargs):
-    from wflow_runs.replay import build_event_meteo_forcing
+    from wflow_runs.replay import build_meteo
 
-    return build_event_meteo_forcing(*args, **kwargs)
+    return build_meteo(*args, **kwargs)
 
 
 def validate_geometry(*args, **kwargs):
-    from wflow_runs.river_geometry import validate_river_geometry_readiness
+    from wflow_runs.river_geometry import validate_geometry
 
-    return validate_river_geometry_readiness(*args, **kwargs)
+    return validate_geometry(*args, **kwargs)
 
 
 def plan_warmup(*args, **kwargs):
-    from wflow_runs.states import plan_wflow_baseline_warmup_state
+    from wflow_runs.states import plan_warmup
 
-    return plan_wflow_baseline_warmup_state(*args, **kwargs)
+    return plan_warmup(*args, **kwargs)
 
 
 def prepare_instates(*args, **kwargs):
-    from wflow_runs.states import prepare_wflow_cold_instates
+    from wflow_runs.states import prepare_instates
 
-    return prepare_wflow_cold_instates(*args, **kwargs)
+    return prepare_instates(*args, **kwargs)
 
 
 def validate_instates(*args, **kwargs):
-    from wflow_runs.states import validate_wflow_instates
+    from wflow_runs.states import validate_instates
 
-    return validate_wflow_instates(*args, **kwargs)
+    return validate_instates(*args, **kwargs)

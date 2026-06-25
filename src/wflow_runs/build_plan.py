@@ -2108,7 +2108,7 @@ def _legacy_wflow_repairs_enabled(config: dict) -> bool:
 
 def _wflow_staticmap_qa(model_root: Path, config: dict) -> pd.DataFrame:
     try:
-        report = validate_wflow_staticmaps_physics(
+        report = validate_staticmaps(
             model_root,
             river_upa_km2=config.get("inland_coupling", {}).get("discharge_forcing", {}).get("river_upa_km2"),
             raise_on_error=False,
@@ -2254,7 +2254,7 @@ def ensure_wflow_hydrography_basemap_nodata(config, paths) -> Path | None:
     return hydrography_path
 
 
-def validate_wflow_staticmaps_physics(
+def validate_staticmaps(
     model_root,
     *,
     river_upa_km2: float | None = None,
@@ -3458,6 +3458,3 @@ def _write_netcdf_atomically(ds: xr.Dataset, output_path: Path, *, encoding: dic
     temp_path.unlink(missing_ok=True)
     ds.to_netcdf(temp_path, encoding=encoding or {})
     temp_path.replace(output_path)
-
-
-validate_staticmaps = validate_wflow_staticmaps_physics

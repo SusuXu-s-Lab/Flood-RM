@@ -12,8 +12,8 @@ from sfincs_runs.build_base.inland_base import (
     add_wflow_native_rivers_to_sfincs_plot_geoms,
     add_inland_outflow_boundary,
     build_inland_sfincs_base,
-    build_inland_sfincs_domain_set,
-    create_native_sfincs_river_handoff_locations,
+    build_domains,
+    create_handoffs,
     is_built_sfincs_base,
     is_built_wflow_base,
     meaningful_model_files,
@@ -23,11 +23,11 @@ from sfincs_runs.build_base.inland_base import (
     plot_sfincs_handoff_basemap,
     sfincs_grid_resolution_matches,
     sfincs_rivers_inflow_geoms,
-    set_sfincs_observation_points_from_gages,
+    set_observations,
     write_inland_sfincs_domain_set_manifest,
     write_inland_sfincs_handoff_locations,
 )
-from sfincs_runs.hydrology import validate_built_sfincs_native_physics
+from sfincs_runs.hydrology import validate_physics
 from sfincs_runs.build_base.static_intake import (
     clip_dem_and_landcover_to_bbox,
     collect_ssurgo_infiltration_inputs,
@@ -55,10 +55,6 @@ from sfincs_runs.build_base.structures import (
     prepare_structure_layers,
 )
 
-build_domains = build_inland_sfincs_domain_set
-create_handoffs = create_native_sfincs_river_handoff_locations
-set_observations = set_sfincs_observation_points_from_gages
-validate_physics = validate_built_sfincs_native_physics
 
 __all__ = [
     "BaselineBuildPlan",
@@ -71,8 +67,8 @@ __all__ = [
     "apply_sfincs_structures",
     "build_baseline_build_plan",
     "build_inland_sfincs_base",
-    "build_inland_sfincs_domain_set",
-    "create_native_sfincs_river_handoff_locations",
+    "build_domains",
+    "create_handoffs",
     "build_region_setup",
     "build_sfincs_coverage_and_wflow_preflight",
     "build_static_data_catalog",
@@ -103,10 +99,10 @@ __all__ = [
     "prepare_structure_layers",
     "sfincs_grid_resolution_matches",
     "sfincs_rivers_inflow_geoms",
-    "set_sfincs_observation_points_from_gages",
+    "set_observations",
     "write_inland_sfincs_domain_set_manifest",
     "write_inland_sfincs_handoff_locations",
-    "validate_built_sfincs_native_physics",
+    "validate_physics",
     "worldcover_tile_urls",
     "build_domains",
     "create_handoffs",

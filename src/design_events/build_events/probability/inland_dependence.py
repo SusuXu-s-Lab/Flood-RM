@@ -74,7 +74,7 @@ def fit_reference_streamflow_pot(
     return curve
 
 
-def build_inland_design_catalog(
+def build_inland_catalog(
     config,
     paths,
     *,
@@ -110,7 +110,7 @@ def build_inland_design_catalog(
         raise ValueError("need at least 3 finite rainfall member values to fit the inland marginal")
 
     event_rate = float(dependence.get("event_rate_per_year", 5.0))
-    seed = int(dependence.get("copula_seed", 42))
+    seed = int(dependence.get("copula_seed", 0))
     n_catalog = int(config.get("events", {}).get("target_event_count", 500))
     pool_size = int(dependence.get("pool_size", 100_000))
     band_fractions = (
@@ -241,6 +241,3 @@ def _band_budget_report(catalog, band_fractions):
         got = int(counts.get(band, 0))
         rows.append({"severity_band": band, "target": target, "selected": got, "met": got >= target})
     return pd.DataFrame(rows)
-
-
-build_inland_catalog = build_inland_design_catalog
