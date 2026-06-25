@@ -1,11 +1,39 @@
-# SFINCS paths and static inputs.
-paths:
-  data_root: locations/austin/data
+# HydroMT-SFINCS primary model recipe.
+hydromt:
+  build:
+    setup_grid_from_region:
+      res: 60
+      crs: EPSG:32614
+      rotated: true
+    setup_dep:
+      datasets_dep:
+        - elevtn: dem_region
+    setup_mask_active:
+      zmin: -0.1
+      drop_area: 100
+    setup_mask_bounds:
+      btype: outflow
+      zmax: 2
+    setup_subgrid:
+      datasets_dep:
+        - elevtn: dem_region
+      datasets_rgh:
+        - lulc: landcover_region
+      write_dep_tif: true
+      nr_subgrid_pixels: 6
 
-static_sources:
-  ssurgo:
-    hsg_output: data/static/soils/hsg_austin.tif
-    ksat_output: data/static/soils/ksat_mmhr_austin.tif
+  update_forcing:
+    setup_config:
+      tref: 20000101 000000
+      tstart: 20000101 000000
+      tstop: 20000104 000000
+      dtout: 3600
+    setup_precip_forcing:
+      precip_fn: event_precip
+    setup_discharge_forcing:
+      timeseries: wflow_discharge
+    write_forcing:
+    write_config:
 
 # SFINCS model settings and domain selection.
 sfincs:
@@ -15,7 +43,7 @@ sfincs_domain_set:
   include_domain_ids:
     - austin_p5u
 
-# SFINCS forcing and parameters for Wflow-coupled inflow.
+# Wflow-coupled SFINCS forcing and parameters.
 inland_coupling:
   discharge_forcing:
     source: wflow_dynamic
@@ -56,45 +84,17 @@ inland_coupling:
     effective_source: scalar_until_event_nwm_soilsat_top_update
     review_required: true
 
-# Event-catalog driver source used for SFINCS rainfall forcing.
+# SFINCS dataset paths.
 event_catalog:
   dependence:
     driver_records:
       rainfall:
         path: data/sources/aorc_sst/austin/72hr-events/storm-stats.csv
 
-# Native HydroMT-SFINCS recipes extracted by the loader.
-hydromt:
-  build:
-    setup_grid_from_region:
-      res: 60
-      crs: EPSG:32614
-      rotated: true
-    setup_dep:
-      datasets_dep:
-        - elevtn: dem_region
-    setup_mask_active:
-      zmin: -0.1
-      drop_area: 100
-    setup_mask_bounds:
-      btype: outflow
-      zmax: 2
-    setup_subgrid:
-      datasets_dep:
-        - elevtn: dem_region
-      datasets_rgh:
-        - lulc: landcover_region
-      write_dep_tif: true
-      nr_subgrid_pixels: 6
-  update_forcing:
-    setup_config:
-      tref: 20000101 000000
-      tstart: 20000101 000000
-      tstop: 20000104 000000
-      dtout: 3600
-    setup_precip_forcing:
-      precip_fn: event_precip
-    setup_discharge_forcing:
-      timeseries: wflow_discharge
-    write_forcing:
-    write_config:
+static_sources:
+  ssurgo:
+    hsg_output: data/static/soils/hsg_austin.tif
+    ksat_output: data/static/soils/ksat_mmhr_austin.tif
+
+paths:
+  data_root: locations/austin/data

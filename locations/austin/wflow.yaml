@@ -1,4 +1,4 @@
-# Wflow source collection and event-forcing inputs.
+# Austin Wflow collection overrides.
 collection:
   lcra_hydromet:
     output: data/sources/lcra_hydromet/flow_sites.geojson
@@ -9,16 +9,9 @@ collection:
     distinct_from_usgs_network: data/sources/usgs_streamgages/streamgage_network.geojson
     distinct_distance_m: 150
     status: supplemental_current_flow_discovery
-    promotion_note: Validate historical Hydromet records before using these sites in POT/design-event streamflow catalogs.
-  stream_geo_nldi:
-    stream_geo_table: data/sources/national_hydrography/stream_geo.parquet
-    raw_dir: data/sources/national_hydrography/stream_geo_raw
-    nldi_lookup_cache: data/sources/national_hydrography/nldi_stream_geo_comid_cache.csv
+
   national_hydrography:
     basemap_source_resolution_degrees: 0.000925925925925926
-    stream_geo_table: data/sources/national_hydrography/stream_geo.parquet
-    nldi_lookup_cache: data/sources/national_hydrography/nldi_stream_geo_comid_cache.csv
-    nhdplus_v2_flowlines: data/sources/national_hydrography/nhdplus_v2_flowlines.gpkg
     reservoirs:
       enabled: true
       output: data/sources/national_hydrography/nhdplus_hr_wflow_reservoirs.gpkg
@@ -45,119 +38,33 @@ collection:
           Lake Austin: austin
           Lake Lyndon B Johnson: lyndon-b-johnson
           Lake Marble Falls: marble-falls
-      review_note: Public NHDPlus waterbody geometry with TWDB source-backed no-control storage/area/depth where available; unmatched waterbodies and controlled operations require reviewed City/LCRA/GRanD storage, elevation, and release data.
-    stream_geo_join_method: attribute_transfer
-    stream_geo_join_max_distance_m: 2500
-    use_nldi_stream_geo_join: false
-    nldi_request_timeout_seconds: 10
-    nldi_max_workers: 4
-    nldi_progress_interval: 250
+
   aorc_sst:
     transposition_region:
       id: austin-inland-review-required
       geometry_file: data/sources/aorc_sst/transposition_regions/transposition_region.geojson
-    event_meteo:
-      enabled: true
-      source_variables:
-        temp: TMP_2maboveground
-        press_msl: PRES_surface
-        kin: DSWRF_surface
-  nwm:
-    streamflow:
-      reason: Austin production streamflow frequency should use HUC-selected active USGS streamgage records.
 
-# Wflow model settings and handoff configuration.
+# Wflow domain selection.
 wflow:
-  event_forcing:
-    temp_pet:
-      event_temp_pet: data/wflow/events/<event_id>/temp_pet.nc
-      pet_method: makkink
-      pressure_source: AORC surface pressure exposed as HydroMT press_msl; pressure correction disabled.
-  dynamic_handoff:
-    state_policy: shared_baseline
-    baseline_id: baseline_90d
-    baseline_reference_time: "2020-11-14T00:00:00"
-    baseline_root: data/wflow/warmup/baseline_90d
-    warmup_days: 90
   domain_set:
     outlet_source: encompassing_huc
-    allow_multiple_submodels: true
-    event_catalog_scope: shared_across_domain_set
-    subbasin_fabric: data/wflow/domain_set_subbasins.gpkg
-    subbasin_fabric_diagnostics: data/wflow/readiness/nhdplus_subbasin_fabric.csv
-    crossings:
-      min_uparea_km2: 10.0
     review_required: true
 
-# Native HydroMT-Wflow recipes extracted by the loader.
+# Native HydroMT-Wflow recipe deltas.
 hydromt:
   build:
+    inherits: default_wflow_sbm
     steps:
-      - setup_config:
-          data:
-            time.starttime: "2000-01-01T00:00:00"
-            time.endtime: "2000-01-02T00:00:00"
-            time.timestepsecs: 3600
-            input.path_static: staticmaps.nc
-            input.path_forcing: inmaps.nc
-            output.csv.path: output.csv
-            output.csv.header: [river_q, precip]
-            output.csv.params:
-              - river_water__volume_flow_rate
-              - atmosphere_water__precipitation_volume_flux
       - setup_basemaps:
           region:
             bbox: [-98.19382, 30.01264, -97.36073, 30.64317]
-          hydrography_fn: us_hydrography_basemap
-          basin_index_fn: null
           res: 0.0009
-          upscale_method: ihu
-      - setup_rivers:
-          hydrography_fn: us_hydrography_basemap
-          river_geom_fn: nhdplus_hr_river_geometry
-          river_upa: 10
-          rivdph_method: powlaw
-          min_rivwth: 30
-          slope_len: 2000
-          smooth_len: 5000
       - setup_reservoirs_no_control:
           reservoirs_fn: nhdplus_hr_wflow_reservoirs
           min_area: 1.0
           duplicate_id: skip
-      - setup_lulcmaps:
-          lulc_fn: esa_worldcover
-      - setup_soilmaps:
-          soil_fn: ssurgo_wflow_soil_parameters
-          ptf_ksatver: brakensiek
-      - setup_constant_pars:
-          subsurface_water__horizontal_to_vertical_saturated_hydraulic_conductivity_ratio: 100
-          soil_water_saturated_zone_bottom__max_leakage_volume_flux: 0
       - setup_gauges:
           gauges_fn: austin_streamgage_network
-          index_col: site_no
-          snap_to_river: true
-          snap_uparea: true
-          max_dist: 10000
-          toml_output: csv
-          gauge_toml_header:
-            - river_q
-            - precip
-          gauge_toml_param:
-            - river_water__volume_flow_rate
-            - atmosphere_water__precipitation_volume_flux
+
   update_forcing:
-    steps:
-      - setup_config:
-          data:
-            time.starttime: "2000-01-01T00:00:00"
-            time.endtime: "2000-01-04T00:00:00"
-            time.timestepsecs: 3600
-            input.path_forcing: inmaps-event.nc
-            dir_output: run_event
-      - setup_precip_forcing:
-          precip_fn: event_precip
-      - setup_temp_pet_forcing:
-          temp_pet_fn: event_temp_pet
-          press_correction: false
-          temp_correction: true
-          pet_method: makkink
+    inherits: default_wflow_sbm

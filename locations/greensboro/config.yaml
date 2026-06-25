@@ -15,7 +15,6 @@ event_drivers:
 
 coastal_waves: false
 
-# Human-authored detail files; model internals live outside this launch file.
 includes:
   smartds: smartds.yaml
   sfincs: sfincs.yaml

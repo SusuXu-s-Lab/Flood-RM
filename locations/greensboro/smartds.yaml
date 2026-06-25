@@ -1,31 +1,12 @@
-# SMART-DS region inputs consumed by the grid and flood workflows.
+# SMART-DS region inputs consumed by the flood workflow.
 grid:
-  power_grid_root: data/smart_ds
   power_extent: data/static/aoi/dft_power_extent.geojson
-  smart_ds_root: data/smart_ds
-  smart_ds_year: 2016
-  asset_registry: data/power_grid/asset_registry
-  augmented_artifacts: data/power_grid/augmented
-  onm_export: data/power_grid/onm_export
-  figures: data/power_grid/figures
-  source_area:
-    source: smart_ds_footprint
-    reference_extent: data/static/aoi/dft_power_extent.geojson
-  critical_facilities:
-    source: data/static/grid/critical_facilities.geojson
 
-# AOI is generated from SMART-DS Buscoords.dss subregion coordinates.
 aoi:
   source: data/smart_ds/2016
   source_format: smart_ds_buscoords
   preserve_disconnected_subregions: true
-  subregion_bridge_max_edge_degrees: 0.03
-  alpha_ratio: 0.05
-  output: data/static/aoi/study_area.geojson
-  metadata_output: data/static/aoi/study_area.json
 
-# Flood evaluation footprint derived from the SMART-DS AOI.
 smart_ds_evaluation_footprint:
-  source: data/static/aoi/dft_power_extent.geojson
   output: data/static/aoi/evaluation_footprint.geojson
   minimum_flood_coverage: true

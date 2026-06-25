@@ -1,22 +1,4 @@
 # Delft-FIAT model build recipe for Marshfield (hydromt_fiat 0.5.10).
-#
-# Exposure : USACE National Structure Inventory (NSI) building points.
-# Vulnerability : FEMA / HAZUS Inland-Water-Resources depth-damage curves.
-# Both come from the hydromt_fiat bundled USA data catalog (no new science).
-#
-# Units are feet throughout, the native unit of NSI first-floor heights and the
-# HAZUS curves, so no curve resampling is needed.
-#
-# Coupling: per-event hazard is exported as datum-referenced peak water level from
-# SFINCS (`zsmax`) in feet. FIAT subtracts each structure's ground elevation and
-# ground-floor height. The ground elevation in exposure.csv is overwritten after the
-# HydroMT-FIAT build by sampling the SFINCS subgrid DEM at each NSI building point, so
-# FIAT structure depths are evaluated against the same vertical datum as the SFINCS
-# water-level raster. Event settings therefore use hazard.elevation_reference = "datum".
-#
-# Region is injected at build time by fiat_runs.build_model (reprojected to EPSG:4326,
-# which the NSI API requires).
-
 setup_global_settings:
   crs: 4326           # hydromt_fiat prepends 'EPSG:'; pass the bare code
 
@@ -25,10 +7,8 @@ setup_output:
   output_csv_name: output.csv
   output_vector_name: spatial.gpkg
 
-# Vulnerability MUST be set before exposure: setup_exposure_buildings links each NSI
-# occupancy class to a HAZUS damage-function name, which must already exist.
 setup_vulnerability:
-  vulnerability_fn: default_vulnerability_curves        # HAZUS IWR curves (USA catalog)
+  vulnerability_fn: default_vulnerability_curves # HAZUS IWR curves (USA catalog)
   vulnerability_identifiers_and_linking_fn: default_hazus_iwr_linking
   unit: feet
   functions_mean: default

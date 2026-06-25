@@ -21,6 +21,7 @@ import csv
 import json
 import os
 from collections.abc import Iterable, Iterator
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -648,14 +649,38 @@ def _inland_methodology_defaults() -> dict:
                 "service": "usgs_3dhp_or_nhdplus_hr",
                 "hydromt_basemap": "data/wflow/hydrography/us_hydrography_basemap.nc",
                 "basemap_source_resolution_degrees": 0.0009,
+                "stream_geo_table": "data/sources/national_hydrography/stream_geo.parquet",
+                "nldi_lookup_cache": "data/sources/national_hydrography/nldi_stream_geo_comid_cache.csv",
+                "nhdplus_v2_flowlines": "data/sources/national_hydrography/nhdplus_v2_flowlines.gpkg",
+                "stream_geo_join_method": "attribute_transfer",
+                "stream_geo_join_max_distance_m": 2500,
+                "use_nldi_stream_geo_join": False,
+                "nldi_request_timeout_seconds": 10,
+                "nldi_max_workers": 4,
+                "nldi_progress_interval": 250,
                 "river_geometry": "data/sources/national_hydrography/nhdplus_hr_river_geometry.gpkg",
                 "catchments": "data/sources/national_hydrography/nhdplus_hr_catchments.gpkg",
                 "collect_review_vectors": True,
                 "wflow_soil_parameters": "data/wflow/static/ssurgo_wflow_soil_parameters.nc",
             },
+            "stream_geo_nldi": {
+                "stream_geo_table": "data/sources/national_hydrography/stream_geo.parquet",
+                "raw_dir": "data/sources/national_hydrography/stream_geo_raw",
+                "nldi_lookup_cache": "data/sources/national_hydrography/nldi_stream_geo_comid_cache.csv",
+            },
             "aorc_sst": _deep_merge(
                 _AORC_SST_DEFAULTS,
-                {"transposition_region": {"buffer_km": 50}},
+                {
+                    "transposition_region": {"buffer_km": 50},
+                    "event_meteo": {
+                        "enabled": True,
+                        "source_variables": {
+                            "temp": "TMP_2maboveground",
+                            "press_msl": "PRES_surface",
+                            "kin": "DSWRF_surface",
+                        },
+                    },
+                },
             ),
             "nwm": {
                 "version": "3.0",
@@ -869,6 +894,19 @@ def _inland_methodology_defaults() -> dict:
                 "run": {
                     "command": "wflow_cli {run_config}",
                 },
+                "event_forcing": {
+                    "temp_pet": {
+                        "event_temp_pet": "data/wflow/events/<event_id>/temp_pet.nc",
+                        "pet_method": "makkink",
+                    },
+                },
+                "dynamic_handoff": {
+                    "state_policy": "shared_baseline",
+                    "baseline_id": "baseline_90d",
+                    "baseline_reference_time": "2020-11-14T00:00:00",
+                    "baseline_root": "data/wflow/warmup/baseline_90d",
+                    "warmup_days": 90,
+                },
                 "domain_set": {
                     "enabled": True,
                     "review_required": True,
@@ -879,7 +917,7 @@ def _inland_methodology_defaults() -> dict:
                     "subbasin_fabric": "data/wflow/domain_set_subbasins.gpkg",
                     "subbasin_fabric_diagnostics": "data/wflow/readiness/nhdplus_subbasin_fabric.csv",
                     "crossings": {
-                        "min_uparea_km2": 5.0,
+                        "min_uparea_km2": 10.0,
                     },
                     "huc": {
                         "levels": [8, 6, 4],
@@ -1207,8 +1245,19 @@ def _load_model_recipe_includes(root: Path, includes: dict) -> dict:
 def _load_model_recipes(root: Path, includes: dict, *, sfincs: dict, wflow: dict, snapwave: dict) -> dict:
     recipes = _load_model_recipe_includes(root, includes)
     recipes.update(_hydromt_recipes_from_model_config("sfincs", sfincs))
-    recipes.update(_hydromt_recipes_from_model_config("wflow", wflow))
-    recipes.update(_hydromt_recipes_from_model_config("snapwave", snapwave))
+    recipes.update(_inherit_default_wflow_recipes(_hydromt_recipes_from_model_config("wflow", wflow)))
+    snapwave_recipes = _hydromt_recipes_from_model_config("snapwave", snapwave)
+    if "snapwave_build" in snapwave_recipes and "sfincs_build" in recipes:
+        snapwave_recipes["snapwave_build"] = _deep_merge(
+            recipes["sfincs_build"],
+            snapwave_recipes["snapwave_build"],
+        )
+    if "snapwave_update_forcing" in snapwave_recipes and "sfincs_update_forcing" in recipes:
+        snapwave_recipes["snapwave_update_forcing"] = _deep_merge(
+            recipes["sfincs_update_forcing"],
+            snapwave_recipes["snapwave_update_forcing"],
+        )
+    recipes.update(snapwave_recipes)
     return recipes
 
 
@@ -1221,6 +1270,156 @@ def _hydromt_recipes_from_model_config(model_name: str, config: dict) -> dict:
         if isinstance(recipe, dict):
             recipes[f"{model_name}_{purpose}"] = recipe
     return recipes
+
+
+def _inherit_default_wflow_recipes(recipes: dict) -> dict:
+    inherited = {}
+    defaults = _default_wflow_hydromt_recipes()
+    for key, recipe in recipes.items():
+        if not isinstance(recipe, dict):
+            inherited[key] = recipe
+            continue
+        recipe = deepcopy(recipe)
+        inherit = recipe.pop("inherits", None)
+        if inherit is None:
+            inherited[key] = recipe
+            continue
+        if inherit != "default_wflow_sbm":
+            raise ValueError(f"{key}.inherits has unsupported value: {inherit}")
+        if key not in defaults:
+            raise ValueError(f"{key}.inherits is only supported for Wflow build/update recipes")
+        inherited[key] = _merge_hydromt_step_recipe(defaults[key], recipe)
+    return inherited
+
+
+def _merge_hydromt_step_recipe(base: dict, override: dict) -> dict:
+    if "steps" not in override:
+        return _deep_merge(deepcopy(base), override)
+    merged = _deep_merge(deepcopy(base), {key: value for key, value in override.items() if key != "steps"})
+    merged["steps"] = _merge_hydromt_steps(base.get("steps", []), override.get("steps", []))
+    return merged
+
+
+def _merge_hydromt_steps(base_steps: list, override_steps: list) -> list:
+    merged = deepcopy(base_steps)
+    positions = _hydromt_step_positions(merged)
+    for step in override_steps:
+        if not (isinstance(step, dict) and len(step) == 1):
+            merged.append(deepcopy(step))
+            positions = _hydromt_step_positions(merged)
+            continue
+        name, settings = next(iter(step.items()))
+        if name in positions:
+            base_settings = merged[positions[name]][name]
+            merged[positions[name]] = {name: _deep_merge(base_settings, settings or {})}
+            continue
+        insert_at = positions.get("setup_rivers", len(merged) - 1) + 1 if name == "setup_reservoirs_no_control" else len(merged)
+        merged.insert(insert_at, deepcopy(step))
+        positions = _hydromt_step_positions(merged)
+    return merged
+
+
+def _hydromt_step_positions(steps: list) -> dict:
+    return {
+        next(iter(step)): index
+        for index, step in enumerate(steps)
+        if isinstance(step, dict) and len(step) == 1
+    }
+
+
+def _default_wflow_hydromt_recipes() -> dict:
+    gauge_outputs = ["river_q", "precip"]
+    gauge_params = [
+        "river_water__volume_flow_rate",
+        "atmosphere_water__precipitation_volume_flux",
+    ]
+    return {
+        "wflow_build": {
+            "steps": [
+                {
+                    "setup_config": {
+                        "data": {
+                            "time.starttime": "2000-01-01T00:00:00",
+                            "time.endtime": "2000-01-02T00:00:00",
+                            "time.timestepsecs": 3600,
+                            "input.path_static": "staticmaps.nc",
+                            "input.path_forcing": "inmaps.nc",
+                            "output.csv.path": "output.csv",
+                            "output.csv.header": gauge_outputs,
+                            "output.csv.params": gauge_params,
+                        }
+                    }
+                },
+                {
+                    "setup_basemaps": {
+                        "hydrography_fn": "us_hydrography_basemap",
+                        "basin_index_fn": None,
+                        "res": 0.0009,
+                        "upscale_method": "ihu",
+                    }
+                },
+                {
+                    "setup_rivers": {
+                        "hydrography_fn": "us_hydrography_basemap",
+                        "river_geom_fn": "nhdplus_hr_river_geometry",
+                        "river_upa": 10,
+                        "rivdph_method": "powlaw",
+                        "min_rivwth": 30,
+                        "slope_len": 2000,
+                        "smooth_len": 5000,
+                    }
+                },
+                {"setup_lulcmaps": {"lulc_fn": "esa_worldcover"}},
+                {
+                    "setup_soilmaps": {
+                        "soil_fn": "ssurgo_wflow_soil_parameters",
+                        "ptf_ksatver": "brakensiek",
+                    }
+                },
+                {
+                    "setup_constant_pars": {
+                        "subsurface_water__horizontal_to_vertical_saturated_hydraulic_conductivity_ratio": 100,
+                        "soil_water_saturated_zone_bottom__max_leakage_volume_flux": 0,
+                    }
+                },
+                {
+                    "setup_gauges": {
+                        "index_col": "site_no",
+                        "snap_to_river": True,
+                        "snap_uparea": True,
+                        "max_dist": 10000,
+                        "toml_output": "csv",
+                        "gauge_toml_header": gauge_outputs,
+                        "gauge_toml_param": gauge_params,
+                    }
+                },
+            ]
+        },
+        "wflow_update_forcing": {
+            "steps": [
+                {
+                    "setup_config": {
+                        "data": {
+                            "time.starttime": "2000-01-01T00:00:00",
+                            "time.endtime": "2000-01-04T00:00:00",
+                            "time.timestepsecs": 3600,
+                            "input.path_forcing": "inmaps-event.nc",
+                            "dir_output": "run_event",
+                        }
+                    }
+                },
+                {"setup_precip_forcing": {"precip_fn": "event_precip"}},
+                {
+                    "setup_temp_pet_forcing": {
+                        "temp_pet_fn": "event_temp_pet",
+                        "press_correction": False,
+                        "temp_correction": True,
+                        "pet_method": "makkink",
+                    }
+                },
+            ]
+        },
+    }
 
 
 def _apply_model_recipe_paths(config: dict, model_recipes: dict) -> None:

@@ -5,9 +5,10 @@ project:
   model_crs: EPSG:26919
   reference_crs: EPSG:4326
 
-# User-facing location mode and driver selection.
+# Location type
 flood_setting: coastal
 
+# Flood drivers
 event_drivers:
 - coastal_water_level
 - rainfall
@@ -15,37 +16,15 @@ event_drivers:
 
 coastal_waves: true
 
-# User-facing sea-level-rise scenarios for boundary forcing.
+# Sea-level-rise offsets for years 2050 and 2100
 scenarios:
   base:
     slr_offset_m: 0.0
-    description: Observed MSL record 1979-2022. Baseline reference.
   noaa_int_2050:
-    # Projection year: 2050, relative to the NOAA 2022 source baseline year 2000.
     slr_offset_m: 0.3
-    description: NOAA 2022 Tech Report, Intermediate scenario, 2050.
-    source: NOAA/NASA Interagency Sea Level Rise Scenario Tool, 2022 Technical Report data
-    source_url: https://sealevel.nasa.gov/data_tools/18/
-    source_dataset: "Global and Regional Sea Level Rise Scenarios for the United States: Updated Mean Projections and Extreme Water Level Probabilities Along U.S. Coastlines"
-    source_location_basis: regional/local relative sea-level scenario applicable to Massachusetts South Shore; not a Boston tide-gauge detrend
-    source_baseline_year: 2000
-    source_accessed: '2026-05-01'
-    scenario_family: Intermediate
-    projection_year: 2050
   noaa_int_2100:
-    # Projection year: 2100, relative to the NOAA 2022 source baseline year 2000.
     slr_offset_m: 1.1
-    description: NOAA 2022 Tech Report, Intermediate scenario, 2100.
-    source: NOAA/NASA Interagency Sea Level Rise Scenario Tool, 2022 Technical Report data
-    source_url: https://sealevel.nasa.gov/data_tools/18/
-    source_dataset: "Global and Regional Sea Level Rise Scenarios for the United States: Updated Mean Projections and Extreme Water Level Probabilities Along U.S. Coastlines"
-    source_location_basis: regional/local relative sea-level scenario applicable to Massachusetts South Shore; not a Boston tide-gauge detrend
-    source_baseline_year: 2000
-    source_accessed: '2026-05-01'
-    scenario_family: Intermediate
-    projection_year: 2100
 
-# Human-authored detail files; model internals live outside this launch file.
 includes:
   grid: grid.yaml
   sfincs: sfincs.yaml

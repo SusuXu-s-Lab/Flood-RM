@@ -31,31 +31,13 @@ coastal_wave_coupling:
 hydromt:
   build:
     setup_grid_from_region:
-      res: 60
-      crs: EPSG:26919
-      rotated: true
       quadtree: true
-    setup_dep:
-      datasets_dep:
-        - elevtn: cudem_elv
-    setup_mask_active:
-      zmin: -0.1
-      drop_area: 100
     setup_mask_bounds:
-      btype: waterlevel
-      zmax: 2
       buffer: 180
     setup_snapwave:
       boundary_min_dist: 1500
       boundary_seaward_dist: 5000
       directional_spread_degrees: 20.0
-    setup_subgrid:
-      datasets_dep:
-        - elevtn: cudem_elv
-      datasets_rgh:
-        - lulc: worldcover
-      write_dep_tif: true
-      nr_subgrid_pixels: 6
     setup_runup_gauges:
       rugdepth: 0.05
       transects:
@@ -70,16 +52,5 @@ hydromt:
           x1: 364450.0
           y1: 4661450.0
   update_forcing:
-    setup_config:
-      tref: 20000101 000000
-      tstart: 20000101 000000
-      tstop: 20000104 000000
-      dtout: 3600
-    setup_precip_forcing:
-      precip_fn: event_precip
-    setup_waterlevel_forcing:
-      timeseries: cora_waterlevel
     setup_wave_forcing:
       geodataset: era5_waves
-    write_forcing:
-    write_config:
