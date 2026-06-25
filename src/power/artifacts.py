@@ -15,8 +15,10 @@ import csv
 import hashlib
 import json
 import math
+import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -24,10 +26,23 @@ from typing import Any, Iterable
 # src/power/artifacts.py -> parents[2].
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
-# Stable Grid ID namespace (CONTEXT.md: "<location>:*", e.g. "marshfield:*").
-# Single Study Location for now; becomes location-config driven when the package
-# stops hardcoding Marshfield as the default.
-SANDBOX_ID = "marshfield"
+_SOURCE_ROOT = Path(__file__).resolve().parents[1]
+if (_SOURCE_ROOT / "study_location.py").exists():
+    sys.path = [entry for entry in sys.path if entry != str(_SOURCE_ROOT)]
+    sys.path.insert(0, str(_SOURCE_ROOT))
+
+from study_location import default_location_config_path, define_location  # noqa: E402
+
+
+def _configured_location_id() -> str:
+    try:
+        definition = define_location(default_location_config_path(_REPO_ROOT))
+    except ValueError:
+        return "study_location"
+    return str(definition.config.get("project", {}).get("name") or definition.root.name)
+
+# Stable Grid ID namespace (CONTEXT.md: "<location>:*").
+SANDBOX_ID = os.environ.get("FLOOD_RM_SANDBOX_ID") or _configured_location_id()
 PROTOCOL_VERSION = "v0.1"
 
 
@@ -206,26 +221,12 @@ def validation_error(report: dict[str, Any], message: str) -> None:
 """Filesystem anchors for a Study Location's power-grid dataset."""
 
 
-import os
-from pathlib import Path
-import sys
-
-_SOURCE_ROOT = Path(__file__).resolve().parents[1]
-if (_SOURCE_ROOT / "study_location.py").exists():
-    sys.path = [entry for entry in sys.path if entry != str(_SOURCE_ROOT)]
-    sys.path.insert(0, str(_SOURCE_ROOT))
-
-from study_location import define_location
-
 # src/power/artifacts.py -> repo root.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def default_location_config() -> Path:
-    configured = os.environ.get("FLOOD_RM_LOCATION_CONFIG")
-    if configured:
-        return Path(configured)
-    return REPO_ROOT / "locations" / "marshfield" / "config.yaml"
+    return default_location_config_path(REPO_ROOT)
 
 
 def power_grid_root(config_path=None) -> Path:

@@ -1,0 +1,10 @@
+Model and engine references used by this codebase:
+
+- HydroMT: https://deltares.github.io/hydromt/
+- HydroMT-SFINCS: https://deltares.github.io/hydromt_sfincs/
+- HydroMT-Wflow: https://deltares.github.io/hydromt_wflow/
+- SFINCS v2.3.0 mt Faber / SnapWave release: https://github.com/Deltares/SFINCS/releases/tag/v2.3.0_mt_Faber_release
+- SFINCS documentation: https://sfincs.readthedocs.io/
+- Wflow.jl v1.0.2: https://github.com/Deltares/Wflow.jl/releases/tag/v1.0.2
+- Delft-FIAT: https://deltares.github.io/Delft-FIAT/
+- HydroMT-FIAT: https://deltares.github.io/hydromt_fiat/

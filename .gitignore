@@ -23,6 +23,7 @@ cluster
 docs
 
 # data
+artifacts/credentials/
 locations/marshfield/data
 locations/austin/data
 locations/greensboro/data

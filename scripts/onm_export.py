@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 import zipfile
@@ -19,12 +20,6 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from power.exports.restoration import (  # noqa: E402
-    build_powermodels_onm_export,
-    materialize_onm_run_bundle,
-)
-
-DEFAULT_LOCATION = "marshfield"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "artifacts"
 DEFAULT_EVENT_START = "2026-01-01T00:00:00+00:00"
 
@@ -54,8 +49,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--location",
-        default=DEFAULT_LOCATION,
-        help="Location name under locations/. Default: marshfield",
+        default=os.environ.get("FLOOD_RM_LOCATION"),
+        help="Location name under locations/. Defaults to FLOOD_RM_LOCATION when set.",
     )
     parser.add_argument(
         "--location-dir",
@@ -67,7 +62,7 @@ def parse_args() -> argparse.Namespace:
         "--output",
         type=Path,
         default=None,
-        help="Output zip path. Default: artifacts/mfield_onm.zip for marshfield.",
+        help="Output zip path. Default: artifacts/<location>_onm.zip.",
     )
     parser.add_argument(
         "--staging-dir",
@@ -141,11 +136,20 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    location = str(args.location)
+    if args.location is None and args.location_dir is None:
+        raise SystemExit("Provide --location, --location-dir, or set FLOOD_RM_LOCATION.")
+    location = str(args.location or args.location_dir.name)
     location_dir = (
         args.location_dir.resolve()
         if args.location_dir is not None
         else (REPO_ROOT / "locations" / location).resolve()
+    )
+    os.environ.setdefault("FLOOD_RM_LOCATION_CONFIG", str(location_dir / "config.yaml"))
+
+    global build_powermodels_onm_export, materialize_onm_run_bundle
+    from power.exports.restoration import (  # noqa: PLC0415
+        build_powermodels_onm_export,
+        materialize_onm_run_bundle,
     )
     output_zip = (
         args.output.resolve()
@@ -257,8 +261,6 @@ def _parse_event_start(value: str) -> datetime:
 
 
 def _default_zip_name(location: str) -> str:
-    if location == "marshfield":
-        return "mfield_onm.zip"
     return f"{location}_onm.zip"
 
 

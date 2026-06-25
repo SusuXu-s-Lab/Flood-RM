@@ -1,0 +1,15 @@
+Remote/public data dependencies used by collection stages:
+
+- OEDI SMART-DS: https://data.openei.org/s3_viewer?bucket=oedi-data-lake&prefix=SMART-DS/
+- NOAA AORC v1.1 1 km: https://registry.opendata.aws/noaa-nws-aorc/
+- NOAA NWM retrospective: https://registry.opendata.aws/nwm-archive/
+- NOAA NOS CORA: https://noaa-nos-cora-pds.s3.amazonaws.com/
+- NOAA HURDAT2: https://www.nhc.noaa.gov/data/#hurdat
+- USGS Water Services: https://waterservices.usgs.gov/
+- USGS NLDI: https://api.water.usgs.gov/nldi/swagger-ui/index.html
+- USGS NHD/WBD hydro services: https://hydro.nationalmap.gov/arcgis/rest/services
+- NRCS SSURGO / Soil Data Access: https://sdmdataaccess.sc.egov.usda.gov/
+- Figshare STREAM-geo article 24463240: https://api.figshare.com/v2/articles/24463240
+- TWDB reservoir data: https://waterdatafortexas.org/reservoirs/individual
+- LCRA Hydromet: https://hydromet.lcra.org/
+- USACE National Structure Inventory: https://nsi.sec.usace.army.mil/

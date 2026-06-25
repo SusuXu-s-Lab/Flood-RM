@@ -41,6 +41,14 @@ def find_repo_root(start=None) -> Path:
     return _find_repo_root(Path(start) if start is not None else Path.cwd())
 
 
+def _location_name_from_cwd(root: Path) -> str | None:
+    try:
+        relative = Path.cwd().resolve().relative_to(root / "locations")
+    except ValueError:
+        return None
+    return relative.parts[0] if relative.parts else None
+
+
 def default_location_config_path(repo_root=None, environ=None) -> Path:
     root = Path(repo_root) if repo_root is not None else find_repo_root()
     environ = os.environ if environ is None else environ
@@ -48,7 +56,12 @@ def default_location_config_path(repo_root=None, environ=None) -> Path:
     if configured:
         path = Path(configured).expanduser()
         return path if path.is_absolute() else (root / path).resolve()
-    location_name = environ.get("FLOOD_RM_LOCATION", "marshfield")
+    location_name = environ.get("FLOOD_RM_LOCATION") or _location_name_from_cwd(root)
+    if not location_name:
+        raise ValueError(
+            "No Flood-RM location is selected. Set FLOOD_RM_LOCATION_CONFIG, "
+            "set FLOOD_RM_LOCATION, or run from a locations/<name> workspace."
+        )
     return root / "locations" / location_name / "config.yaml"
 
 
@@ -889,7 +902,7 @@ def _coastal_methodology_defaults() -> dict:
             },
             "era5_waves": {
                 "provider": "earthdatahub",
-                "auth_path": "code/api-key.txt",
+                "auth_path": "artifacts/credentials/earthdatahub-api-key.txt",
                 "smoke_start": "2018-01-01T00:00:00",
                 "smoke_end": "2018-01-01T23:00:00",
             },

@@ -695,7 +695,7 @@ def _default_sleep(seconds: float) -> None:
     time.sleep(seconds)
 
 
-DEFAULT_NLR_API_KEY_FILE = Path("docs/nlr_api.txt")
+DEFAULT_NLR_API_KEY_FILE = Path("artifacts/credentials/nlr_api.txt")
 
 
 def default_reopt_client(

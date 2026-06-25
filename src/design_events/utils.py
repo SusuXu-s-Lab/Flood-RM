@@ -25,7 +25,7 @@ def default_config_path():
     return default_location_config_path(repo_root)
 
 
-project_config_path = default_config_path()
+project_config_path = None
 
 
 def resolve_path(path):
@@ -120,7 +120,7 @@ def build_paths(config=None, scenario=None):
         "location_config_path": location.config_path,
         "notebooks_root": location.notebooks_root,
         "root": outputs_root,
-        "project_config_path": default_config_path(),
+        "project_config_path": location.config_path,
         "data_root": data_root,
         "outputs_root": outputs_root,
         "cache_root": cache_root,

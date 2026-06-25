@@ -61,12 +61,14 @@ Current design-event defaults are:
 - one coupled Wflow-SFINCS or SFINCS-SnapWave scenario folder per selected design driver
 - run outputs and evaluation products
 
+## Local Credentials
+Suggested local paths: 
+- EarthDataHub ERA5 via `EARTHDATAHUB_TOKEN` or `artifacts/credentials/earthdatahub-api-key.txt`
+- CDS ERA5 via `~/.cdsapirc`
+- REopt/NLR via `NLR_API_KEY` or `artifacts/credentials/nlr_api.txt`.
+
 ## References
 
 [1] Usberti, F. L., Vizcaino Gonzalez, J. F., de Assis, L. S., & Cavellucci, C. (2025). A polynomial-time exact algorithm for the sectionalizing switch allocation problem. *Electric Power Systems Research, 249*, Article 112016. https://doi.org/10.1016/j.epsr.2025.112016
 
 [2] Krishnan, V., Bugbee, B., Elgindy, T., Mateo, C., Duenas, P., Postigo, F., Lacroix, J. S., Gomez San Roman, T., & Palmintier, B. (2020). Validation of synthetic U.S. electric power distribution system data sets. *IEEE Transactions on Smart Grid, 11*(5), 4477-4489. https://doi.org/10.1109/TSG.2020.2981077
-
-[3] *SFINCS v2.3.0 mt Faber release: https://github.com/Deltares/SFINCS/releases/tag/v2.3.0_mt_Faber_release
-
-[4] *Wflow.jl v1.0.2 release: https://github.com/Deltares/Wflow.jl/releases/tag/v1.0.2
