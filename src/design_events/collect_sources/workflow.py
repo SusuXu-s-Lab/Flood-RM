@@ -1541,6 +1541,7 @@ def plot_sst_region(config: dict, paths: dict, *, zoom: int = 9, basemap: bool =
 
 
 def plot_collected_sst_geography(config: dict, paths: dict):
+    from matplotlib.collections import LineCollection
     from matplotlib.lines import Line2D
     from matplotlib.patches import Patch
 
@@ -1548,33 +1549,82 @@ def plot_collected_sst_geography(config: dict, paths: dict):
     sst_region = gpd.read_file(
         _source_location_path(paths, config["collection"]["aorc_sst"]["transposition_region"]["geometry_file"])
     ).to_crs("EPSG:4326")
-    rainfall = _read_csv(paths["aorc_sst_rainfall_members_csv"], parse_dates=["storm_start", "storm_end"])
+    rainfall_members_csv = paths.get("aorc_sst_rainfall_members_csv")
+    if rainfall_members_csv is None:
+        rainfall_members_csv = (
+            Path(paths["location_root"])
+            / config.get("event_catalog", {})
+            .get("forcing_members", {})
+            .get("rainfall", "data/sources/aorc_sst/rainfall_members.csv")
+        )
+    rainfall = _read_csv(rainfall_members_csv, parse_dates=["storm_start", "storm_end"])
 
-    lon_column = _first_column(rainfall, ["centroid_lon", "transposed_centroid_lon"])
-    lat_column = _first_column(rainfall, ["centroid_lat", "transposed_centroid_lat"])
-    value_column = _first_column(rainfall, ["max_precip_in", "mean_precip_in", "max", "mean"])
+    historical_lon = _first_column(rainfall, ["historical_footprint_center_lon", "centroid_lon"])
+    historical_lat = _first_column(rainfall, ["historical_footprint_center_lat", "centroid_lat"])
+    target_lon = _first_column(rainfall, ["target_footprint_center_lon", "transposed_centroid_lon"])
+    target_lat = _first_column(rainfall, ["target_footprint_center_lat", "transposed_centroid_lat"])
+    value_column = _first_column(rainfall, ["mean_precip_mm", "max_precip_mm", "mean", "max"])
 
     fig, ax = plt.subplots(figsize=(8, 7), constrained_layout=True)
     sst_region.plot(ax=ax, facecolor="#f4a26133", edgecolor="#d95f02", linewidth=1.8)
     study_area.boundary.plot(ax=ax, color="black", linewidth=1.2)
 
-    if not rainfall.empty and lon_column and lat_column:
-        rainfall_points = gpd.GeoDataFrame(
-            rainfall.dropna(subset=[lon_column, lat_column]),
-            geometry=gpd.points_from_xy(rainfall[lon_column], rainfall[lat_column]),
+    plotted_targets = False
+    if not rainfall.empty and historical_lon and historical_lat:
+        history = rainfall.dropna(subset=[historical_lon, historical_lat]).copy()
+        historical_points = gpd.GeoDataFrame(
+            history,
+            geometry=gpd.points_from_xy(history[historical_lon], history[historical_lat]),
             crs="EPSG:4326",
         )
-        rainfall_points.plot(
+        historical_points.plot(
             ax=ax,
             column=value_column,
-            cmap="inferno_r",
+            cmap="viridis",
             markersize=24,
-            alpha=0.75,
-            edgecolor="white",
-            linewidth=0.15,
+            alpha=0.82,
+            edgecolor="black",
+            linewidth=0.2,
             legend=value_column is not None,
-            legend_kwds={"label": "72h rainfall magnitude", "shrink": 0.62},
+            legend_kwds={"label": "event precipitation [mm]", "shrink": 0.62},
         )
+        plotted_targets = True
+
+    vector_columns = [historical_lon, historical_lat, target_lon, target_lat]
+    if not rainfall.empty and all(column is not None for column in vector_columns):
+        vectors = rainfall.dropna(subset=[historical_lon, historical_lat, target_lon, target_lat]).copy()
+        if not vectors.empty:
+            segments = [
+                [
+                    (float(row[historical_lon]), float(row[historical_lat])),
+                    (float(row[target_lon]), float(row[target_lat])),
+                ]
+                for _, row in vectors.iterrows()
+            ]
+            ax.add_collection(
+                LineCollection(
+                    segments,
+                    colors="#2b2b2b",
+                    linewidths=0.45,
+                    alpha=0.22,
+                    zorder=3,
+                )
+            )
+            target_points = gpd.GeoDataFrame(
+                vectors,
+                geometry=gpd.points_from_xy(vectors[target_lon], vectors[target_lat]),
+                crs="EPSG:4326",
+            )
+            target_points.drop_duplicates(subset=[target_lon, target_lat]).plot(
+                ax=ax,
+                marker="*",
+                color="#d7191c",
+                edgecolor="white",
+                linewidth=0.55,
+                markersize=120,
+                zorder=5,
+            )
+            plotted_targets = True
 
     ax.legend(
         handles=[
@@ -1585,14 +1635,48 @@ def plot_collected_sst_geography(config: dict, paths: dict):
                 [0],
                 marker="o",
                 color="none",
-                markerfacecolor="#c51b7d",
+                markerfacecolor="#3f8f7f",
+                markeredgecolor="black",
                 markersize=8,
-                label="rainfall transposition targets",
+                label="winning historical footprint center",
+            ),
+            Line2D(
+                [0],
+                [0],
+                color="#2b2b2b",
+                linewidth=1.2,
+                alpha=0.55,
+                label="field transposition vector",
+            ),
+            Line2D(
+                [0],
+                [0],
+                marker="*",
+                color="none",
+                markerfacecolor="#d7191c",
+                markeredgecolor="white",
+                markersize=11,
+                label="study footprint center",
             ),
         ],
         loc="best",
     )
-    ax.set_title("Collected source geography")
+    if not plotted_targets:
+        ax.text(
+            0.5,
+            0.04,
+            "rainfall member transposition columns not found",
+            transform=ax.transAxes,
+            ha="center",
+            va="bottom",
+            fontsize=9,
+        )
+    xmin, ymin, xmax, ymax = sst_region.total_bounds
+    sx = xmax - xmin
+    sy = ymax - ymin
+    ax.set_xlim(xmin - 0.06 * sx, xmax + 0.06 * sx)
+    ax.set_ylim(ymin - 0.06 * sy, ymax + 0.06 * sy)
+    ax.set_title("AORC SST collection geography and realized transpositions")
     ax.set_xlabel("")
     ax.set_ylabel("")
     return fig, ax

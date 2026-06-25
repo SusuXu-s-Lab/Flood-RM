@@ -333,6 +333,290 @@ def plot_wflow_ldd_components(
     return fig, axes
 
 
+def event_peak_discharge_table(
+    catalog,
+    *,
+    location_root,
+    events_root=None,
+    discharge_filename: str = "sfincs_discharge.nc",
+):
+    """Attach Wflow handoff peak discharge metrics to Event Catalog rows.
+
+    The dynamic Wflow handoff writes one SFINCS-ready discharge GeoDataset per
+    event. For catalog-scale diagnostics, the most useful scalar response is
+    the peak of the summed handoff hydrograph, with the largest individual
+    source peak retained for QA.
+    """
+    import numpy as np
+    import pandas as pd
+    import xarray as xr
+
+    location_root = Path(location_root)
+    events_root = _resolve_path(location_root, events_root or "data/wflow/events")
+    frame = catalog.copy()
+    if "event_id" not in frame:
+        raise ValueError("catalog must include an event_id column")
+
+    rows = []
+    for _, row in frame.iterrows():
+        event_id = str(row["event_id"])
+        discharge_nc = _event_discharge_path(
+            row,
+            location_root=location_root,
+            events_root=events_root,
+            event_id=event_id,
+            discharge_filename=discharge_filename,
+        )
+        metrics = {
+            "event_id": event_id,
+            "wflow_discharge_nc": str(discharge_nc),
+            "wflow_discharge_exists": discharge_nc.exists(),
+            "peak_discharge_m3s": np.nan,
+            "max_source_peak_discharge_m3s": np.nan,
+            "handoff_source_count": np.nan,
+        }
+        if discharge_nc.exists():
+            with xr.open_dataset(discharge_nc) as ds:
+                if "discharge" in ds and "time" in ds["discharge"].dims:
+                    discharge = ds["discharge"]
+                    source_dims = tuple(dim for dim in discharge.dims if dim != "time")
+                    total = discharge.sum(dim=source_dims, skipna=True) if source_dims else discharge
+                    metrics["peak_discharge_m3s"] = float(total.max(skipna=True))
+                    if source_dims:
+                        source_peak = discharge.max(dim="time", skipna=True)
+                        metrics["max_source_peak_discharge_m3s"] = float(source_peak.max(skipna=True))
+                        metrics["handoff_source_count"] = int(source_peak.size)
+                    else:
+                        metrics["max_source_peak_discharge_m3s"] = metrics["peak_discharge_m3s"]
+                        metrics["handoff_source_count"] = 1
+        rows.append(metrics)
+
+    return frame.merge(pd.DataFrame(rows), on="event_id", how="left")
+
+
+def plot_event_precipitation_peak_discharge(
+    catalog,
+    *,
+    location_root,
+    events_root=None,
+    rainfall_column: str | None = None,
+    soil_moisture_column: str | None = None,
+    log_y: bool = True,
+    ax=None,
+):
+    """Plot Event Catalog rainfall against Wflow-generated peak discharge."""
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+
+    frame = event_peak_discharge_table(catalog, location_root=location_root, events_root=events_root)
+    rainfall_column = rainfall_column or _first_present(
+        frame,
+        ["rainfall_mm", "rainfall", "event_precipitation_mm", "mean_precip_mm"],
+    )
+    soil_moisture_column = soil_moisture_column or _first_present(
+        frame,
+        ["soil_moisture_metric", "SOILSAT_TOP", "antecedent_soil_moisture", "mean_soil_moisture"],
+    )
+    if rainfall_column is None:
+        raise ValueError("catalog has no recognizable rainfall column")
+
+    plot_frame = frame.copy()
+    plot_frame["event_precipitation_mm"] = pd.to_numeric(plot_frame[rainfall_column], errors="coerce")
+    plot_frame["peak_discharge_m3s"] = pd.to_numeric(plot_frame["peak_discharge_m3s"], errors="coerce")
+    plot_frame = plot_frame.dropna(subset=["event_precipitation_mm", "peak_discharge_m3s"])
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(6.5, 5.2), constrained_layout=True)
+    else:
+        fig = ax.figure
+
+    if plot_frame.empty:
+        ax.text(0.5, 0.5, "No completed Wflow discharge artifacts found", ha="center", va="center")
+        ax.set_axis_off()
+        return fig, ax, frame
+
+    if soil_moisture_column and soil_moisture_column in plot_frame:
+        moisture = pd.to_numeric(plot_frame[soil_moisture_column], errors="coerce")
+    else:
+        moisture = pd.Series(np.nan, index=plot_frame.index)
+
+    if moisture.notna().any():
+        points = ax.scatter(
+            plot_frame["event_precipitation_mm"],
+            plot_frame["peak_discharge_m3s"],
+            c=moisture,
+            cmap="turbo_r",
+            s=18,
+            alpha=0.72,
+            edgecolors="none",
+        )
+        fig.colorbar(points, ax=ax, shrink=0.72, label="Antecedent soil moisture [-]")
+    else:
+        ax.scatter(
+            plot_frame["event_precipitation_mm"],
+            plot_frame["peak_discharge_m3s"],
+            color="#2b83ba",
+            s=22,
+            alpha=0.72,
+            edgecolors="white",
+            linewidths=0.25,
+        )
+        ax.text(
+            0.02,
+            0.98,
+            "antecedent soil moisture unavailable",
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=8,
+        )
+
+    ax.set_xlabel("Event precipitation [mm]")
+    ax.set_ylabel("Peak Wflow handoff discharge [m3 s$^{-1}$]")
+    if log_y:
+        ymin = max(float(plot_frame["peak_discharge_m3s"].min()) * 0.8, 1.0e-3)
+        ymax = float(plot_frame["peak_discharge_m3s"].max()) * 1.25
+        ax.set_yscale("log")
+        ax.set_ylim(ymin, ymax)
+    ax.grid(True, which="both", color="#d9d9d9", linewidth=0.7, alpha=0.8)
+    ax.set_title("Rainfall driver vs Wflow response")
+    return fig, ax, frame
+
+
+def plot_wflow_event_handoff(
+    discharge_nc,
+    *,
+    precipitation_nc=None,
+    event_label: str | None = None,
+    figsize=(13, 4.5),
+):
+    """Plot one dynamic Wflow-to-SFINCS handoff event."""
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import pandas as pd
+    import xarray as xr
+
+    discharge_nc = Path(discharge_nc)
+    if not discharge_nc.exists():
+        raise FileNotFoundError(discharge_nc)
+
+    with xr.open_dataset(discharge_nc) as opened:
+        ds = opened.load()
+    if "discharge" not in ds:
+        raise ValueError(f"{discharge_nc} lacks discharge")
+    discharge = ds["discharge"]
+    if "time" not in discharge.dims:
+        raise ValueError("discharge has no time dimension")
+
+    has_precip = precipitation_nc is not None and Path(precipitation_nc).exists()
+    ncols = 3 if has_precip else 2
+    fig, axes = plt.subplots(1, ncols, figsize=figsize, constrained_layout=True)
+    if ncols == 2:
+        map_ax, hydro_ax = axes
+    else:
+        map_ax, precip_ax, hydro_ax = axes
+
+    source_dim = next((dim for dim in discharge.dims if dim != "time"), None)
+    if source_dim is None:
+        source_peak = discharge.max(dim="time", skipna=True).values.reshape(1)
+        x = np.array([0.0])
+        y = np.array([0.0])
+        names = np.array(["total"])
+    else:
+        source_peak = discharge.max(dim="time", skipna=True)
+        x = np.asarray(ds.coords.get("x", np.arange(source_peak.size)), dtype=float).ravel()
+        y = np.asarray(ds.coords.get("y", np.zeros(source_peak.size)), dtype=float).ravel()
+        names = np.asarray(ds.coords.get("name", np.arange(source_peak.size)), dtype=str).ravel()
+        source_peak = np.asarray(source_peak.values, dtype=float).ravel()
+
+    points = map_ax.scatter(
+        x,
+        y,
+        c=source_peak,
+        cmap="plasma",
+        s=np.clip(source_peak / max(np.nanmax(source_peak), 1.0) * 180.0, 45.0, 180.0),
+        edgecolors="black",
+        linewidths=0.55,
+    )
+    fig.colorbar(points, ax=map_ax, shrink=0.78, label="Peak discharge [m3 s$^{-1}$]")
+    for xi, yi, name in zip(x, y, names, strict=False):
+        map_ax.annotate(str(name), (xi, yi), xytext=(4, 4), textcoords="offset points", fontsize=7)
+    map_ax.set_title("Wflow handoff peaks")
+    map_ax.set_aspect("equal", adjustable="datalim")
+    map_ax.set_xlabel("x")
+    map_ax.set_ylabel("y")
+
+    if has_precip:
+        with xr.open_dataset(precipitation_nc) as precip_opened:
+            precip_ds = precip_opened.load()
+        precip_name = "precip" if "precip" in precip_ds else next(iter(precip_ds.data_vars))
+        rainfall = precip_ds[precip_name]
+        total_rainfall = rainfall.sum(dim="time", skipna=True) if "time" in rainfall.dims else rainfall
+        total_rainfall.plot(
+            ax=precip_ax,
+            cmap="Blues",
+            cbar_kwargs=dict(shrink=0.78, label="Storm total rainfall [mm]"),
+        )
+        precip_ax.set_title("Staged rainfall total")
+        precip_ax.set_aspect("equal", adjustable="datalim")
+
+    times = pd.DatetimeIndex(pd.to_datetime(discharge["time"].values))
+    if source_dim is None:
+        hydro_ax.plot(times, np.asarray(discharge.values, dtype=float), color="#225ea8", linewidth=1.8)
+    else:
+        frame = discharge.transpose(source_dim, "time").to_pandas().T
+        if len(names) == len(frame.columns):
+            frame.columns = names
+        for column in frame.columns:
+            hydro_ax.plot(times, frame[column].to_numpy(dtype=float), linewidth=1.25, alpha=0.86)
+    hydro_ax.set_title("Handoff hydrographs")
+    hydro_ax.set_xlabel("time")
+    hydro_ax.set_ylabel("discharge [m3 s$^{-1}$]")
+    hydro_ax.grid(True, color="#d9d9d9", linewidth=0.7, alpha=0.8)
+    hydro_ax.tick_params(axis="x", labelrotation=30)
+
+    title = event_label or discharge_nc.parent.name
+    fig.suptitle(f"{title} Wflow dynamic handoff", y=1.03)
+    return fig, axes
+
+
+def _first_present(frame, candidates):
+    return next((column for column in candidates if column in frame), None)
+
+
+def _resolve_path(location_root: Path, value) -> Path:
+    path = Path(value)
+    return path if path.is_absolute() else location_root / path
+
+
+def _event_discharge_path(
+    row,
+    *,
+    location_root: Path,
+    events_root: Path,
+    event_id: str,
+    discharge_filename: str,
+) -> Path:
+    for column in ("wflow_discharge_forcing", "sfincs_discharge_forcing"):
+        value = row.get(column) if hasattr(row, "get") else None
+        if value not in (None, "") and not _is_missing_value(value):
+            return _resolve_path(location_root, value)
+    value = row.get("wflow_event_dir") if hasattr(row, "get") else None
+    if value not in (None, "") and not _is_missing_value(value):
+        return _resolve_path(location_root, value) / discharge_filename
+    return events_root / event_id / discharge_filename
+
+
+def _is_missing_value(value) -> bool:
+    try:
+        import pandas as pd
+
+        return bool(pd.isna(value))
+    except Exception:
+        return False
+
+
 def _mask_positive(data_array):
     try:
         masked = data_array.raster.mask_nodata()

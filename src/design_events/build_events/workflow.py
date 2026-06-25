@@ -218,12 +218,15 @@ def materialize_inland_catalog_outputs(
     *,
     runtime: EventCatalogNotebookRuntime,
     event_catalog: pd.DataFrame,
-    historical_tail_catalog: pd.DataFrame,
     stress_training_catalog: pd.DataFrame,
+    historical_tail_catalog: pd.DataFrame | None = None,
+    selected_catalog_csv: Path | None = None,
+    summary_fields: dict | None = None,
 ) -> dict:
     """Write catalog/replay artifacts after visible scientific selection."""
     catalog_root = runtime.ensure_parent("data/event_catalog/catalog/probability_catalog.csv").parent
     paths = {
+        "inland_design_event_catalog_csv": selected_catalog_csv or catalog_root / "inland_design_event_catalog.csv",
         "selected_design_catalog_parquet": catalog_root / "probability_catalog.parquet",
         "selected_design_catalog_csv": catalog_root / "probability_catalog.csv",
         "historical_tail_catalog_csv": catalog_root / "historical_tail_catalog.csv",
@@ -232,6 +235,18 @@ def materialize_inland_catalog_outputs(
         "wflow_replay_set_csv": catalog_root / "wflow_replay_set.csv",
         "wflow_scenario_replay_set_csv": catalog_root / "wflow_scenario_replay_set.csv",
     }
+    if historical_tail_catalog is None:
+        historical_tail_catalog = (
+            pd.read_csv(paths["historical_tail_catalog_csv"], dtype={"event_id": str})
+            if paths["historical_tail_catalog_csv"].exists()
+            else pd.DataFrame()
+        )
+
+    event_catalog = _location_relative_member_files(event_catalog, runtime.location_root)
+    stress_training_catalog = _location_relative_member_files(stress_training_catalog, runtime.location_root)
+    historical_tail_catalog = _location_relative_member_files(historical_tail_catalog, runtime.location_root)
+    paths["inland_design_event_catalog_csv"].parent.mkdir(parents=True, exist_ok=True)
+    event_catalog.to_csv(paths["inland_design_event_catalog_csv"], index=False)
     event_catalog.to_parquet(paths["selected_design_catalog_parquet"], index=False)
     event_catalog.to_csv(paths["selected_design_catalog_csv"], index=False)
     historical_tail_catalog.to_csv(paths["historical_tail_catalog_csv"], index=False)
@@ -249,12 +264,55 @@ def materialize_inland_catalog_outputs(
     scenario_catalog.to_csv(paths["scenario_catalog_csv"], index=False)
     scenario_catalog[_replay_columns(scenario_catalog)].copy().to_csv(paths["wflow_scenario_replay_set_csv"], index=False)
 
+    preview_columns = [
+        column
+        for column in [
+            "event_id",
+            "catalog_role",
+            "sample_rp_years",
+            "severity_band",
+            "sampling_weight",
+            "probability_weight",
+            "rainfall_mm",
+            "rainfall_member_id",
+            "rainfall_scale_factor",
+            "soil_moisture_member_id",
+            "forcing_pairing_policy",
+            "event_drivers",
+            "streamflow_design_role",
+        ]
+        if column in event_catalog.columns
+    ]
+    summary = {
+        "event_catalog_rows": len(event_catalog),
+        "design_driver": "rainfall + antecedent moisture (discharge = Wflow response)",
+        "inland_design_event_catalog_csv": str(paths["inland_design_event_catalog_csv"]),
+        "probability_catalog_csv": str(paths["selected_design_catalog_csv"]),
+        "scenario_catalog_csv": str(paths["scenario_catalog_csv"]),
+        "scenario_catalog_rows": len(scenario_catalog),
+        "wflow_scenario_replay_set_csv": str(paths["wflow_scenario_replay_set_csv"]),
+    }
+    if "rainfall_member_id" in event_catalog:
+        summary["rainfall_analog_count"] = int(event_catalog["rainfall_member_id"].nunique())
+    summary.update(summary_fields or {})
+
     return {
         **paths,
+        "event_catalog": event_catalog,
         "stress_training_catalog_csv": stress_training_path,
         "stress_training_catalog": stress_training_catalog,
         "scenario_catalog": scenario_catalog,
         "wflow_replay_set": wflow_replay_set,
+        "preview": event_catalog[preview_columns].head(8).round(
+            {
+                "sample_rp_years": 2,
+                "sampling_weight": 3,
+                "probability_weight": 8,
+                "rainfall_mm": 1,
+                "rainfall_scale_factor": 3,
+            }
+        ),
+        "summary": pd.Series(summary, name="event_catalog_handoff"),
     }
 
 
@@ -278,6 +336,27 @@ def _replay_columns(catalog: pd.DataFrame) -> list[str]:
         ]
         if column in catalog.columns
     ]
+
+
+def _location_relative_member_files(catalog: pd.DataFrame, location_root: Path) -> pd.DataFrame:
+    frame = catalog.copy()
+    for column in [c for c in frame.columns if c.endswith("_member_file")]:
+        frame[column] = frame[column].map(lambda value: _location_relative_path(value, location_root))
+    if "event_reference_time" in frame:
+        frame["event_reference_time"] = pd.to_datetime(frame["event_reference_time"], errors="coerce")
+    return frame
+
+
+def _location_relative_path(value, location_root: Path):
+    if value is None or pd.isna(value) or str(value).strip() == "":
+        return pd.NA
+    path = Path(str(value))
+    if not path.is_absolute():
+        return path.as_posix()
+    try:
+        return path.relative_to(location_root).as_posix()
+    except ValueError:
+        return path.as_posix()
 
 
 

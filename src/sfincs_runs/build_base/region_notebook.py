@@ -580,7 +580,7 @@ def collect_configured_coastal_ssurgo(
     )
 
 
-def plot_domains(runtime: CoastalRegionSetupRuntime, domain: CoastalRegionDomain):
+def _plot_coastal_domains(runtime: CoastalRegionSetupRuntime, domain: CoastalRegionDomain):
     import matplotlib.pyplot as plt
 
     coastal_region = (
@@ -846,7 +846,7 @@ def _collect_inland_static(
     )
 
 
-def plot_domains(runtime: RegionSetupNotebookRuntime, domains: InlandRegionDomains):
+def _plot_inland_domains(runtime: RegionSetupNotebookRuntime, domains: InlandRegionDomains):
     """Plot the selected SMART-DS/SFINCS footprint inside the Wflow HUC watershed."""
     import matplotlib.pyplot as plt
 
@@ -886,8 +886,8 @@ def plot_domains(runtime: RegionSetupNotebookRuntime, domains: InlandRegionDomai
 def plot_domains(runtime: RegionSetupNotebookRuntime | CoastalRegionSetupRuntime, domains):
     """Plot the configured flood domains for inland or coastal setup notebooks."""
     if isinstance(runtime, CoastalRegionSetupRuntime):
-        return plot_domains(runtime, domains)
-    return plot_domains(runtime, domains)
+        return _plot_coastal_domains(runtime, domains)
+    return _plot_inland_domains(runtime, domains)
 
 
 def _plot_inland_static(runtime: RegionSetupNotebookRuntime):

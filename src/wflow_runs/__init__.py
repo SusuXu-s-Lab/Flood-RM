@@ -28,7 +28,14 @@ from wflow_runs.build_plan import (
     write_wflow_subbasin_fabric_from_nhdplus,
     write_wflow_domain_set_manifest,
 )
-from wflow_runs.visualize import animate_wflow_output, plot_wflow_basemap, plot_wflow_ldd_components
+from wflow_runs.visualize import (
+    animate_wflow_output,
+    event_peak_discharge_table,
+    plot_event_precipitation_peak_discharge,
+    plot_wflow_basemap,
+    plot_wflow_event_handoff,
+    plot_wflow_ldd_components,
+)
 from wflow_runs.replay import (
     build_meteo,
     build_discharge_geodataset,
@@ -99,6 +106,9 @@ __all__ = [
     "write_wflow_domain_set_manifest",
     "plot_wflow_basemap",
     "plot_wflow_ldd_components",
+    "plot_event_precipitation_peak_discharge",
+    "plot_wflow_event_handoff",
+    "event_peak_discharge_table",
     "animate_wflow_output",
     "resolve_event_window",
     "build_meteo",
