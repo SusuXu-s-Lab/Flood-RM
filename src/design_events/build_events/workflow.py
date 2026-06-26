@@ -206,7 +206,7 @@ def configure_coastal_dependence_policy(
                 },
                 "rainfall": {
                     "path": _location_relative_path(rainfall_stats, location_root),
-                    "time_column": "storm_date",
+                    "time_column": "rainfall_peak_time",
                     "value_column": "mean",
                 },
                 "soil_moisture": {
@@ -315,10 +315,7 @@ def configure_coastal_design_event_policy(
                 "real_event_window_hours": 72,
                 "soil_moisture_lead_time_hours": 24,
                 "role_fractions": {
-                    "high_rainfall_cooccurrence": 0.4,
-                    "rainfall_before_coastal": 0.25,
-                    "rainfall_after_coastal": 0.25,
-                    "wet_soil_high_rainfall": 0.1,
+                    "empirical_analog_lag": 1.0,
                 },
             }
         },

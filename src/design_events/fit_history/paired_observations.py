@@ -43,7 +43,7 @@ def declustered_pot_peaks(series, *, threshold=None, threshold_quantile=0.98, mi
         if all(abs(time - chosen) >= separation for chosen in selected):
             selected.append(time)
     selected = sorted(selected)
-    return pd.DataFrame({"time": selected, "value": [float(exceedances.loc[t]) for t in selected]})
+    return pd.DataFrame({"time": selected, "value": [_scalar_at_time(exceedances, t) for t in selected]})
 
 
 def calibrate_threshold_for_rate(series, target_rate_per_year, *, min_separation_hours=120.0, search_quantile=0.90):
@@ -164,7 +164,7 @@ def build_paired_observations(
                 window = series[other].loc[event_time - pairing : event_time + pairing]
                 if len(window):
                     other_time = pd.Timestamp(window.idxmax())
-                    row[other] = float(window.loc[other_time])
+                    row[other] = _scalar_at_time(window, other_time)
                     row[f"{other}_time"] = other_time
                 else:
                     row[other] = np.nan
@@ -180,3 +180,10 @@ def build_paired_observations(
     out.attrs["record_years"] = float(record_years)
     out.attrs["target_rate_per_year"] = float(target_rate_per_year) if target_rate_per_year is not None else float("nan")
     return out
+
+
+def _scalar_at_time(series, time):
+    value = pd.Series(series).loc[pd.Timestamp(time)]
+    if isinstance(value, pd.Series):
+        return float(pd.to_numeric(value, errors="coerce").max())
+    return float(value)

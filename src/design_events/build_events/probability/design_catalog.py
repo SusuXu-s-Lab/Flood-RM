@@ -20,6 +20,10 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from design_events.build_events.compound_timing import (
+    attach_empirical_rainfall_lags,
+    enrich_rainfall_member_timing,
+)
 from design_events.build_events.probability.dependence import (
     DriverDependenceModel,
     check_stress_budget,
@@ -136,6 +140,9 @@ def build_tail(
     )
     frame = _dedupe_observed_tail(frame, decluster_hours=decluster_hours)
     specs = {**default_realization_specs, **(realization_specs or {})}
+    member_libraries = dict(member_libraries)
+    if "rainfall" in member_libraries:
+        member_libraries["rainfall"] = enrich_rainfall_member_timing(member_libraries["rainfall"])
     seed = int(dependence.get("copula_seed", 0))
 
     rows = []
@@ -171,11 +178,12 @@ def build_tail(
             driver_time = pd.to_datetime(row.get(f"{driver}_time", event_time), errors="coerce")
             if pd.isna(driver_time):
                 driver_time = event_time
+            lookup_time_column = "rainfall_peak_time" if driver == "rainfall" else spec.get("time_column")
             member = _nearest_observed_member(
                 member_libraries[driver],
                 value=row[driver],
                 value_column=spec.get("index_column", "value"),
-                time_column=spec.get("time_column"),
+                time_column=lookup_time_column,
                 reference_time=driver_time,
                 window_hours=float(dependence.get("cooccurrence", {}).get("pairing_window_hours", 72.0)),
             )
@@ -199,6 +207,27 @@ def build_tail(
             out[f"{driver}_source"] = _member_source(member_libraries[driver], driver)
             out[f"{driver}_pairing_policy"] = "historical_observed_member"
             out[f"{driver}_pairing_seed"] = seed
+            if driver == "rainfall":
+                out["rainfall_peak_time"] = pd.Timestamp(driver_time).strftime("%Y-%m-%dT%H:%M:%S")
+                out["rainfall_peak_time_source"] = "observed_paired_event"
+                out["rainfall_peak_offset_from_start_hours"] = member.get("rainfall_peak_offset_from_start_hours", pd.NA)
+                out["rainfall_duration_hours"] = member.get("duration_hours", pd.NA)
+        if {"rainfall", "coastal_water_level"}.issubset(driver_vector):
+            coastal_time = pd.to_datetime(row.get("coastal_water_level_time", event_time), errors="coerce")
+            rainfall_peak = pd.to_datetime(row.get("rainfall_time", out.get("rainfall_peak_time")), errors="coerce")
+            peak_from_start = pd.to_numeric(
+                pd.Series([out.get("rainfall_peak_offset_from_start_hours", pd.NA)]), errors="coerce"
+            ).iloc[0]
+            duration = pd.to_numeric(pd.Series([out.get("rainfall_duration_hours", pd.NA)]), errors="coerce").iloc[0]
+            if pd.notna(coastal_time) and pd.notna(rainfall_peak) and pd.notna(peak_from_start) and pd.notna(duration):
+                lag = float((pd.Timestamp(rainfall_peak) - pd.Timestamp(coastal_time)) / pd.Timedelta(hours=1))
+                out["rainfall_pairing_lag_hours"] = lag
+                out["rainfall_peak_offset_hours"] = lag
+                out["rainfall_start_offset_hours"] = lag - float(peak_from_start)
+                out["rainfall_end_offset_hours"] = out["rainfall_start_offset_hours"] + float(duration)
+                out["compound_pairing_policy"] = "historical_observed_peak_lag"
+                out["compound_pairing_role"] = "historical_observed_lag"
+                out["scenario_timing_edge_case"] = "historical-observed-lag"
         rows.append(out)
 
     catalog = pd.DataFrame(rows)
@@ -312,6 +341,9 @@ def build_joint_catalog(
     pool_size = int(dependence.get("pool_size", 500_000))
     enforce_budget = bool(dependence.get("enforce_stress_budget", True))
     specs = {**default_realization_specs, **(realization_specs or {})}
+    member_libraries = dict(member_libraries)
+    if "rainfall" in member_libraries:
+        member_libraries["rainfall"] = enrich_rainfall_member_timing(member_libraries["rainfall"])
 
     marginal_kinds = dependence.get("marginals", {}) or {}
     driver_kinds = {d: str((marginal_kinds.get(d, {}) or {}).get("kind", "pot")) for d in driver_vector}
@@ -383,6 +415,20 @@ def build_joint_catalog(
             catalog[f"{driver}_source"] = str(driver)
         catalog[f"{driver}_pairing_policy"] = "copula_joint_field_preserving_analog"
         catalog[f"{driver}_pairing_seed"] = seed
+
+    if {"rainfall", "coastal_water_level"}.issubset(driver_vector):
+        timing_settings = (config.get("resilience_stress_training", {}) or {}).get("compound_pairing", {}) or {}
+        catalog = attach_empirical_rainfall_lags(
+            catalog,
+            paired_observations,
+            member_libraries["rainfall"],
+            window_hours=float(timing_settings.get("real_event_window_hours", 72.0)),
+            season_window_days=int(timing_settings.get("seasonal_window_days", timing_settings.get("window_days", 45))),
+            min_storm_type_analogs=int(timing_settings.get("min_storm_type_lag_analogs", 5)),
+            lag_pool_size=int(timing_settings.get("lag_pool_size", 25)),
+            reuse_penalty_lambda=float(timing_settings.get("lag_reuse_penalty_lambda", 0.15)),
+            seed=seed,
+        )
 
     catalog["study_location"] = str(study_location or paths.get("location_name") or config.get("project", {}).get("name"))
     catalog["event_family"] = str(

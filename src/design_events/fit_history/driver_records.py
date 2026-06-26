@@ -87,8 +87,17 @@ def load_driver_series(record_specs, *, location_root=None, sites=None):
         group_column = spec.get("group_column")
         if group_column and sites and group_column in frame:
             frame = frame[frame[group_column].astype(str).isin({str(s) for s in sites})]
-        time = pd.to_datetime(frame[spec["time_column"]], errors="coerce")
-        value = pd.to_numeric(frame[spec["value_column"]], errors="coerce")
+        time_column = spec["time_column"]
+        value_column = spec["value_column"]
+        missing_columns = [column for column in [time_column, value_column] if column not in frame]
+        if missing_columns:
+            raise ValueError(
+                f"{driver} record is missing configured column(s) {missing_columns}: {path}. "
+                "Refresh the source artifact or update event_catalog.dependence.driver_records "
+                "so the dependence sample uses the intended driver timestamp and value."
+            )
+        time = pd.to_datetime(frame[time_column], errors="coerce")
+        value = pd.to_numeric(frame[value_column], errors="coerce")
         clean = pd.Series(value.to_numpy(dtype=float), index=pd.DatetimeIndex(time)).dropna().sort_index()
         aggregate = spec.get("aggregate")
         if aggregate:

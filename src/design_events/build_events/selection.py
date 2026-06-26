@@ -7,6 +7,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from design_events.build_events.compound_timing import (
+    attach_empirical_rainfall_lags,
+    enrich_rainfall_member_timing,
+)
+
 
 def default_severity_bands():
     return [
@@ -300,12 +305,13 @@ def apply_compound_stress_pairing(
     real_window_hours = float(settings.get("real_event_window_hours", 72))
     lead_hours = float(settings.get("soil_moisture_lead_time_hours", 24))
     reuse_penalty = float(settings.get("reuse_penalty", 0.15))
-    # Empirical pool of observed within-event peak-RF-to-peak-NTR lags (hours). When supplied,
-    # realistic co-occurrence events sample their compound lag from it rather than forcing the
-    # peaks to coincide (Maduwantha et al. 2026, Fig 2p / Sec 4.3.4).
+    # Empirical observed within-event peak-RF-to-peak-NTR timing. The full pool lets the
+    # selected stress set use nearest-neighbor observed analog lags conditioned on driver
+    # magnitudes/storm type/season; the scalar lag list is retained only as a marked fallback.
+    observed_cooccurrence_pool = settings.get("observed_cooccurrence_pool")
     observed_cooccurrence_lags = settings.get("observed_cooccurrence_lags")
 
-    out["compound_pairing_policy"] = "operationally_severe_plausible_dependence"
+    out["compound_pairing_policy"] = "conditional_empirical_weighted_knn_lag"
     out["compound_pairing_role"] = pd.NA
     out["scenario_timing_edge_case"] = pd.NA
     out["event_reference_time"] = _event_reference_times(out).dt.strftime("%Y-%m-%dT%H:%M:%S")
@@ -326,6 +332,42 @@ def apply_compound_stress_pairing(
         if column in out:
             out[column] = out[column].astype("object")
 
+    requested_fractions = settings.get("role_fractions", {"empirical_analog_lag": 1.0})
+    fixed_timing_roles = {"rainfall_before_coastal", "rainfall_after_coastal", "wet_soil_high_rainfall"}
+    empirical_only = not fixed_timing_roles.intersection(requested_fractions)
+    if observed_cooccurrence_pool is None and empirical_only and {"rainfall", "coastal_water_level"}.issubset(out.columns):
+        raise RuntimeError(
+            "Empirical compound rainfall timing requires observed_cooccurrence_pool; refusing to "
+            "fall back to fixed or high-rainfall stress pairing for the normal catalogue."
+        )
+    if observed_cooccurrence_pool is not None and empirical_only:
+        out = attach_empirical_rainfall_lags(
+            out,
+            observed_cooccurrence_pool,
+            rainfall,
+            window_hours=real_window_hours,
+            season_window_days=season_window_days,
+            lag_pool_size=int(settings.get("lag_pool_size", 25)),
+            reuse_penalty_lambda=float(settings.get("lag_reuse_penalty_lambda", 0.15)),
+            seed=seed,
+        )
+        soil = _soil_member_table(soil_moisture_members)
+        if soil is not None and not soil.empty:
+            for index in out.index:
+                if pd.isna(out.at[index, "rainfall_member_time"]):
+                    continue
+                rainfall_time = pd.Timestamp(out.at[index, "rainfall_member_time"])
+                soil_member = _select_soil_member(
+                    soil,
+                    rainfall_time,
+                    lead_hours=lead_hours,
+                    season_window_days=season_window_days,
+                    wet=False,
+                )
+                if soil_member is not None:
+                    _assign_soil_member(out, index, soil_member, rainfall_time, lead_hours, wet=False, seed=seed)
+        return out
+
     role_by_index = _compound_roles(out, rainfall, real_count, real_window_hours, rng, settings)
     reuse_counts: dict[str, int] = {}
     for index, role in role_by_index.items():
@@ -344,6 +386,18 @@ def apply_compound_stress_pairing(
         cooccurrence_lag = _draw_cooccurrence_lag(role, observed_cooccurrence_lags, real_window_hours, seed, index)
         _assign_rainfall_member(
             out, index, member, reference, role, season_window_days, seed, real_window_hours, cooccurrence_lag
+        )
+
+    if observed_cooccurrence_pool is not None:
+        out = attach_empirical_rainfall_lags(
+            out,
+            observed_cooccurrence_pool,
+            rainfall,
+            window_hours=real_window_hours,
+            season_window_days=season_window_days,
+            lag_pool_size=int(settings.get("lag_pool_size", 25)),
+            reuse_penalty_lambda=float(settings.get("lag_reuse_penalty_lambda", 0.15)),
+            seed=seed,
         )
 
     soil = _soil_member_table(soil_moisture_members)
@@ -523,6 +577,7 @@ def _rainfall_member_table(rainfall_members):
     if "duration_hours" not in out:
         out["duration_hours"] = 72
     out["duration_hours"] = pd.to_numeric(out["duration_hours"], errors="coerce").fillna(72.0)
+    out = enrich_rainfall_member_timing(out)
     return out
 
 
@@ -579,12 +634,17 @@ def _compound_roles(frame, rainfall, real_count, real_window_hours, rng, setting
     fractions = settings.get(
         "role_fractions",
         {
-            "high_rainfall_cooccurrence": 0.40,
-            "rainfall_before_coastal": 0.25,
-            "rainfall_after_coastal": 0.25,
-            "wet_soil_high_rainfall": 0.10,
+            "empirical_analog_lag": 1.0,
         },
     )
+    fixed_timing_roles = {"rainfall_before_coastal", "rainfall_after_coastal", "wet_soil_high_rainfall"}
+    requested_fixed = fixed_timing_roles.intersection(fractions)
+    if requested_fixed and not bool(settings.get("allow_fixed_timing_sensitivity_roles", False)):
+        raise RuntimeError(
+            "Fixed compound timing roles are sensitivity-only and are disabled for the normal "
+            f"event catalogue: {sorted(requested_fixed)}. Use empirical_analog_lag, or set "
+            "allow_fixed_timing_sensitivity_roles=true in an explicitly named sensitivity run."
+        )
     role_names = [name for name, fraction in fractions.items() if float(fraction) > 0]
     weights = np.array([float(fractions[name]) for name in role_names], dtype=float)
     weights = weights / weights.sum() if weights.sum() else np.full(len(role_names), 1 / len(role_names))
@@ -605,7 +665,8 @@ def _historical_compound_indices(frame, rainfall, real_count, real_window_hours)
     references = _event_reference_times(frame)
     scored = []
     for index, reference in references.items():
-        deltas = (rainfall["member_time"] - reference).abs() / pd.Timedelta(hours=1)
+        member_peak = pd.to_datetime(rainfall.get("rainfall_peak_time", rainfall["member_time"]), errors="coerce")
+        deltas = (member_peak - reference).abs() / pd.Timedelta(hours=1)
         close = rainfall[deltas <= real_window_hours]
         if close.empty:
             continue
@@ -626,7 +687,8 @@ def _select_compound_rainfall_member(
     reuse_penalty,
 ):
     if role == "historical_coastal_rainfall_pair":
-        deltas = (rainfall["member_time"] - reference).abs() / pd.Timedelta(hours=1)
+        member_peak = pd.to_datetime(rainfall.get("rainfall_peak_time", rainfall["member_time"]), errors="coerce")
+        deltas = (member_peak - reference).abs() / pd.Timedelta(hours=1)
         candidates = rainfall[deltas <= real_window_hours].copy()
         if not candidates.empty:
             candidates["_time_score"] = -deltas.loc[candidates.index].to_numpy(dtype=float)
@@ -665,7 +727,7 @@ def _draw_cooccurrence_lag(role, observed_lags, real_window_hours, seed, index):
     timing pattern (rainfall-before/after, wet-soil) or when no observed pool is supplied, in
     which case the prior coincident default is preserved.
     """
-    if role != "high_rainfall_cooccurrence" or observed_lags is None or len(observed_lags) == 0:
+    if role not in {"empirical_analog_lag", "high_rainfall_cooccurrence"} or observed_lags is None or len(observed_lags) == 0:
         return None
     from design_events.build_events.probability.realization import draw_relative_lags
 
@@ -700,22 +762,29 @@ def _assign_rainfall_member(
 
 def _rainfall_offsets(role, duration, member, reference, real_window_hours=72.0, observed_lag_hours=None):
     half = duration / 2.0
-    if role == "high_rainfall_cooccurrence" and observed_lag_hours is not None and np.isfinite(observed_lag_hours):
+    peak_from_start = pd.to_numeric(pd.Series([member.get("rainfall_peak_offset_from_start_hours", half)]), errors="coerce").iloc[0]
+    if pd.isna(peak_from_start):
+        peak_from_start = half
+    if role in {"empirical_analog_lag", "high_rainfall_cooccurrence"} and observed_lag_hours is not None and np.isfinite(observed_lag_hours):
         # Place the rainfall peak at the sampled observed lag relative to the coastal (NTR) peak,
         # instead of forcing coincidence (Maduwantha et al. 2026, Fig 2p / Sec 4.3.4).
         lag = float(np.clip(observed_lag_hours, -real_window_hours, real_window_hours))
-        return lag - half, lag, lag + half, "high-rainfall-cooccurrence-observed-lag"
+        return lag - peak_from_start, lag, lag - peak_from_start + duration, "observed-analog-lag"
+    if role == "empirical_analog_lag":
+        return -peak_from_start, 0.0, duration - peak_from_start, "empirical-lag-pending-observed-pool"
     if role == "rainfall_before_coastal":
         return -duration, -half, 0.0, "rainfall-before-coastal"
     if role == "rainfall_after_coastal":
         return 0.0, half, duration, "rainfall-after-coastal"
     if role == "historical_coastal_rainfall_pair":
         start = (pd.Timestamp(member["member_time"]) - pd.Timestamp(reference)) / pd.Timedelta(hours=1)
+        peak_time = pd.to_datetime(member.get("rainfall_peak_time", pd.NaT), errors="coerce")
+        peak = (pd.Timestamp(peak_time) - pd.Timestamp(reference)) / pd.Timedelta(hours=1) if pd.notna(peak_time) else start + peak_from_start
         # A genuine historical co-occurrence carries a real, bounded lead/lag. Do not manufacture
         # a coincident hyetograph for seasonal analogs from another year; that would turn a
         # provenance fallback into a physical boundary condition.
-        if abs(start) <= float(real_window_hours):
-            return float(start), float(start + half), float(start + duration), "historical-compound-pair"
+        if abs(peak) <= float(real_window_hours):
+            return float(start), float(peak), float(start + duration), "historical-compound-pair"
         raise RuntimeError(
             "historical_coastal_rainfall_pair requires a rainfall member within "
             f"{real_window_hours:g} h of the coastal reference; got offset {start:g} h"

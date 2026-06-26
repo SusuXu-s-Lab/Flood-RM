@@ -405,6 +405,266 @@ def nearest_benchmark_events(catalog, *, benchmarks=None):
         )
     return pd.DataFrame(rows)
 
+def _compound_lag_frame(catalog):
+    lag_column = next(
+        (column for column in ["rainfall_peak_offset_hours", "rainfall_pairing_lag_hours"] if column in catalog),
+        None,
+    )
+    has_lag_column = lag_column is not None
+    if lag_column is None:
+        lag_column = "rainfall_peak_offset_hours"
+        frame = catalog.assign(**{lag_column: np.nan}).copy()
+    else:
+        frame = catalog.copy()
+
+    numeric_columns = [
+        lag_column,
+        "rainfall_start_offset_hours",
+        "rainfall_end_offset_hours",
+        "coastal_water_level",
+        "coastal_peak_m",
+        "rainfall_metric_mm",
+        "rainfall",
+        "sample_rp_years",
+    ]
+    for column in numeric_columns:
+        if column in frame:
+            frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    return frame, lag_column, has_lag_column
+
+def _compound_lag_driver_panels(frame):
+    rainfall_column = next(
+        (column for column in ["rainfall_metric_mm", "rainfall"] if column in frame and frame[column].notna().any()),
+        "rainfall_metric_mm",
+    )
+    coastal_column = next(
+        (
+            column for column in ["coastal_water_level", "coastal_peak_m"]
+            if column in frame and frame[column].notna().any()
+        ),
+        None,
+    )
+    panels = [
+        (rainfall_column, "Rainfall event total (mm)"),
+    ]
+    if coastal_column is not None:
+        panels.insert(0, (coastal_column, "Coastal peak NTR / residual (m)"))
+    return [
+        (column, label)
+        for column, label in panels
+        if column in frame and frame[column].notna().any()
+    ]
+
+def _first_nonnull(frame, column, default=pd.NA):
+    if column not in frame:
+        return default
+    values = frame[column].dropna()
+    if values.empty:
+        return default
+    return values.iloc[0]
+
+def compound_lag_diagnostic_summary(catalog):
+    frame, lag_column, has_lag_column = _compound_lag_frame(catalog)
+    finite = frame[frame[lag_column].notna()].copy()
+    driver_panels = _compound_lag_driver_panels(finite)
+    timing_columns = {"rainfall_start_offset_hours", "rainfall_end_offset_hours"}
+    has_timing_window = timing_columns.issubset(finite.columns) and finite[list(timing_columns)].notna().all(axis=1).any()
+    ready = has_lag_column and not finite.empty and len(driver_panels) >= 2
+    summary = {
+        "diagnostic_status": "ready" if ready else "insufficient_lag_metadata",
+        "lag_basis": f"{lag_column}: rainfall peak relative to coastal peak",
+        "plot_design": "intensity-vs-lag scatter panels plus rainfall timing strips",
+        "finite_lag_rows": len(finite),
+        "available_driver_panels": len(driver_panels),
+        "has_rainfall_window_offsets": bool(has_timing_window),
+    }
+    if not finite.empty:
+        summary.update({
+            "median_peak_lag_hours": float(finite[lag_column].median()),
+            "lag_5th_percentile_hours": float(finite[lag_column].quantile(0.05)),
+            "lag_95th_percentile_hours": float(finite[lag_column].quantile(0.95)),
+        })
+    return pd.Series(summary, name="compound_lag_diagnostic")
+
+def compound_lag_analog_reuse_summary(catalog):
+    frame, lag_column, has_lag_column = _compound_lag_frame(catalog)
+    index_column = "empirical_lag_analog_index"
+    if index_column not in frame or frame[index_column].dropna().empty:
+        return pd.Series(
+            {
+                "diagnostic_status": "missing_empirical_lag_analog_index",
+                "finite_lag_rows": int(frame[lag_column].notna().sum()) if has_lag_column else 0,
+            },
+            name="compound_lag_analog_reuse",
+        )
+
+    analog = frame[index_column].dropna()
+    counts = analog.astype(str).value_counts()
+    total = int(counts.sum())
+    ess = float(total * total / np.square(counts.to_numpy(dtype=float)).sum()) if total else np.nan
+    top_key = counts.index[0] if len(counts) else None
+    top_rows = frame[frame[index_column].astype(str).eq(str(top_key))] if top_key is not None else pd.DataFrame()
+    summary = {
+        "diagnostic_status": "ready",
+        "pairing_policy": _first_nonnull(frame, "compound_pairing_policy"),
+        "finite_lag_rows": int(frame[lag_column].notna().sum()) if has_lag_column else 0,
+        "unique_lag_analogues": int(len(counts)),
+        "effective_lag_analogues_ess": ess,
+        "ess_fraction_of_rows": float(ess / total) if total else np.nan,
+        "max_analogue_reuse_count": int(counts.iloc[0]) if len(counts) else 0,
+        "max_analogue_reuse_fraction": float(counts.iloc[0] / total) if total and len(counts) else np.nan,
+        "dominant_analogue_index": top_key,
+    }
+    if not top_rows.empty:
+        summary["dominant_analogue_event_time"] = _first_nonnull(top_rows, "empirical_lag_analog_event_time")
+        summary["dominant_analogue_storm_type"] = _first_nonnull(top_rows, "empirical_lag_analog_storm_type")
+        summary["dominant_analogue_lag_hours"] = float(pd.to_numeric(top_rows[lag_column], errors="coerce").median())
+    return pd.Series(summary, name="compound_lag_analog_reuse")
+
+def plot_compound_lag_sampling_diagnostic(catalog, paired_observations=None, *, top_n=15):
+    frame, lag_column, has_lag_column = _compound_lag_frame(catalog)
+    if not has_lag_column or frame[lag_column].dropna().empty:
+        return None
+
+    sampled_lag = pd.to_numeric(frame[lag_column], errors="coerce").dropna().to_numpy(dtype=float)
+    observed_lag = np.array([], dtype=float)
+    if paired_observations is not None:
+        from design_events.build_events.compound_timing import observed_compound_lag_pool
+
+        pool = observed_compound_lag_pool(paired_observations)
+        if not pool.empty:
+            observed_lag = pd.to_numeric(pool["observed_lag_hours"], errors="coerce").dropna().to_numpy(dtype=float)
+
+    fig, axes = plt.subplots(1, 2, figsize=(12.8, 4.8), gridspec_kw={"width_ratios": [1.1, 1.0]})
+
+    axis = axes[0]
+    if observed_lag.size:
+        x = np.sort(observed_lag)
+        y = np.arange(1, len(x) + 1) / len(x)
+        axis.step(x, y, where="post", color="0.35", linewidth=2.0, label=f"observed pool (n={len(x)})")
+    x = np.sort(sampled_lag)
+    y = np.arange(1, len(x) + 1) / len(x)
+    axis.step(x, y, where="post", color="tab:blue", linewidth=2.0, label=f"sampled catalogue (n={len(x)})")
+    axis.axvline(0.0, color="0.25", linestyle="--", linewidth=1.0)
+    axis.set_xlabel("Rainfall peak lag from coastal NTR peak (hours)")
+    axis.set_ylabel("Empirical CDF")
+    axis.set_title("Observed vs sampled compound lag")
+    axis.grid(True, alpha=0.3)
+    axis.legend(loc="best", fontsize=8)
+
+    axis = axes[1]
+    if "empirical_lag_analog_index" in frame and frame["empirical_lag_analog_index"].notna().any():
+        counts = frame["empirical_lag_analog_index"].dropna().astype(str).value_counts().head(int(top_n)).sort_values()
+        axis.barh(counts.index, counts.to_numpy(dtype=float), color="tab:blue", alpha=0.82)
+        total = int(frame["empirical_lag_analog_index"].notna().sum())
+        ess_summary = compound_lag_analog_reuse_summary(frame)
+        ess = float(ess_summary.get("effective_lag_analogues_ess", np.nan))
+        max_fraction = float(ess_summary.get("max_analogue_reuse_fraction", np.nan))
+        title = "Lag analogue reuse"
+        if np.isfinite(ess) and np.isfinite(max_fraction):
+            title = f"{title} (ESS={ess:.1f}, max={100 * max_fraction:.1f}%)"
+        axis.set_title(title)
+        axis.set_xlabel("Catalogue rows using analogue")
+        axis.set_ylabel("Observed analogue index")
+        axis.grid(True, axis="x", alpha=0.3)
+        if total:
+            axis.axvline(0.05 * total, color="0.35", linestyle=":", linewidth=1.2, label="5% of rows")
+            axis.legend(loc="lower right", fontsize=8)
+    else:
+        axis.text(0.5, 0.5, "lag analogue reuse\nmetadata not available", ha="center", va="center", transform=axis.transAxes)
+        axis.set_axis_off()
+
+    fig.suptitle("Conditional empirical lag analogue diagnostic", fontsize=13)
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.94))
+    return fig
+
+def plot_compound_lag_diagnostic(catalog):
+    frame, lag_column, has_lag_column = _compound_lag_frame(catalog)
+    frame = frame[frame[lag_column].notna()].copy()
+    driver_panels = _compound_lag_driver_panels(frame)
+    if not has_lag_column or frame.empty or len(driver_panels) < 2:
+        return None
+
+    fig, axes = plt.subplots(
+        1, 3, figsize=(13.5, 5.4),
+        gridspec_kw={"width_ratios": [1, 1, 1.3]},
+    )
+    role_column = (
+        "compound_pairing_role"
+        if "compound_pairing_role" in frame and frame["compound_pairing_role"].notna().any()
+        else None
+    )
+    roles = sorted(frame[role_column].dropna().astype(str).unique()) if role_column is not None else []
+    base_palette = plt.cm.tab10.colors
+    palette = {role: base_palette[index % len(base_palette)] for index, role in enumerate(roles)}
+
+    for axis, (driver_column, driver_label) in zip(axes[:2], driver_panels):
+        if role_column is None:
+            axis.scatter(
+                frame[driver_column], frame[lag_column],
+                s=24, alpha=0.72, edgecolor="white", linewidth=0.35,
+            )
+        else:
+            for role in roles:
+                role_rows = frame[frame[role_column].astype(str).eq(role)]
+                axis.scatter(
+                    role_rows[driver_column], role_rows[lag_column],
+                    s=24, alpha=0.72, edgecolor="white", linewidth=0.35,
+                    label=role, color=palette[role],
+                )
+        axis.axhline(0.0, color="0.25", linestyle="--", linewidth=1.0)
+        axis.set_xlabel(driver_label)
+        axis.set_ylabel("Rainfall peak lag from coastal peak (hours)")
+        axis.set_title(driver_label.split(" (")[0])
+
+    timing_axis = axes[2]
+    if {"rainfall_start_offset_hours", "rainfall_end_offset_hours"}.issubset(frame.columns):
+        timing_rows = frame.dropna(subset=["rainfall_start_offset_hours", lag_column, "rainfall_end_offset_hours"]).copy()
+    else:
+        timing_rows = pd.DataFrame()
+
+    if not timing_rows.empty:
+        timing_rows = timing_rows.sort_values(lag_column)
+        if len(timing_rows) > 11:
+            pick_positions = np.linspace(0, len(timing_rows) - 1, 11).round().astype(int)
+            timing_rows = timing_rows.iloc[pick_positions].drop_duplicates(subset=["event_id"])
+        y_positions = np.arange(len(timing_rows))
+        timing_axis.hlines(
+            y_positions,
+            timing_rows["rainfall_start_offset_hours"],
+            timing_rows["rainfall_end_offset_hours"],
+            color="0.55", linewidth=2.2,
+        )
+        timing_axis.scatter(timing_rows[lag_column], y_positions, color="tab:blue", s=28, zorder=3)
+        timing_axis.axvline(0.0, color="0.25", linestyle="--", linewidth=1.0)
+        timing_axis.set_yticks(y_positions)
+        timing_axis.set_yticklabels(timing_rows["event_id"].astype(str), fontsize=8)
+        timing_axis.set_xlabel("Hours from coastal peak")
+        timing_axis.set_title("Representative rainfall windows")
+    else:
+        timing_axis.text(
+            0.5, 0.5,
+            "rainfall start/end offsets\nnot available",
+            ha="center", va="center", transform=timing_axis.transAxes,
+        )
+        timing_axis.set_axis_off()
+
+    fig.suptitle("Compound rainfall-coastal lag diagnostic", fontsize=13)
+    if roles:
+        handles, labels = axes[0].get_legend_handles_labels()
+        fig.legend(
+            handles, labels,
+            title="Pairing role",
+            loc="lower center",
+            bbox_to_anchor=(0.5, 0.02),
+            ncol=min(len(labels), 5),
+            fontsize=8,
+            title_fontsize=8,
+            frameon=True,
+        )
+    fig.tight_layout(rect=(0.0, 0.18 if roles else 0.0, 1.0, 0.94))
+    return fig
+
 def plot_return_period_benchmark_coverage(catalog, stress_catalog=None, *, benchmarks=None):
     benchmarks = benchmarks or [10, 50, 100, 500]
     axis = _return_period_axis_context(catalog)

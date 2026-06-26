@@ -242,6 +242,10 @@ def _rainfall_metrics(catalog: pd.DataFrame) -> list[float]:
     cache = {}
     values = []
     for _, row in catalog.iterrows():
+        catalog_metric = pd.to_numeric(pd.Series([row.get("rainfall_metric_mm")]), errors="coerce").iloc[0]
+        if pd.notna(catalog_metric):
+            values.append(float(catalog_metric))
+            continue
         rainfall_file = row.get("rainfall_member_file")
         rainfall_time = pd.to_datetime(row.get("rainfall_member_time"), errors="coerce")
         metric = np.nan
@@ -254,6 +258,9 @@ def _rainfall_metrics(catalog: pd.DataFrame) -> list[float]:
                 matched = table[pd.to_datetime(table["storm_date"], errors="coerce") == rainfall_time]
                 if not matched.empty and "mean" in matched:
                     metric = float(matched.iloc[0]["mean"])
+        scale = pd.to_numeric(pd.Series([row.get("rainfall_scale_factor", 1.0)]), errors="coerce").iloc[0]
+        if pd.notna(metric) and pd.notna(scale):
+            metric *= float(scale)
         values.append(metric)
     return values
 

@@ -230,6 +230,10 @@ def _event_window_variables(ds, spec, precip_variable):
 def _spatial_stats(precip, duration_hours, check_every_n_hours=1, *, paths=None, config=None, spec=None):
     window = int(duration_hours)
     stride = max(1, int(check_every_n_hours))
+    # Materialize the year's precip once. The per-window rainfall-peak-time lookup
+    # re-slices this array ~once per checked window; left lazy (zarr/dask) each slice
+    # re-fetches from S3, turning one bulk read into thousands of tiny remote reads.
+    precip = precip.load()
     rolled = precip.rolling(time=window, min_periods=window).sum()
     rolled = rolled.isel(time=slice(window - 1, None, stride))
     moving_plan = None
@@ -253,12 +257,22 @@ def _spatial_stats(precip, duration_hours, check_every_n_hours=1, *, paths=None,
                 continue
             best = int(np.nanargmax(means))
             best_values = values[best]
+            storm_start = pd.Timestamp(storm_end) - pd.to_timedelta(duration_hours - 1, unit="h")
+            peak_time, peak_value = _rainfall_window_peak_time(
+                precip,
+                storm_start,
+                pd.Timestamp(storm_end),
+                rows=rows[best],
+                cols=cols[best],
+            )
             records.append(
                 {
                     "storm_end": pd.Timestamp(storm_end),
                     "mean": float(means[best]),
                     "max": float(np.nanmax(best_values)),
                     "min": float(np.nanmin(best_values)),
+                    "rainfall_peak_time": peak_time,
+                    "rainfall_peak_mm_per_hour": peak_value,
                     "x": float(moving_plan["target_lons"][best]),
                     "y": float(moving_plan["target_lats"][best]),
                     "historical_footprint_center_lon": float(moving_plan["target_lons"][best]),
@@ -276,6 +290,8 @@ def _spatial_stats(precip, duration_hours, check_every_n_hours=1, *, paths=None,
                     "mean",
                     "max",
                     "min",
+                    "rainfall_peak_time",
+                    "rainfall_peak_mm_per_hour",
                     "x",
                     "y",
                     "historical_footprint_center_lon",
@@ -292,6 +308,8 @@ def _spatial_stats(precip, duration_hours, check_every_n_hours=1, *, paths=None,
                 "mean",
                 "max",
                 "min",
+                "rainfall_peak_time",
+                "rainfall_peak_mm_per_hour",
                 "x",
                 "y",
                 "historical_footprint_center_lon",
@@ -313,8 +331,40 @@ def _spatial_stats(precip, duration_hours, check_every_n_hours=1, *, paths=None,
         }
     ).dropna()
     frame["storm_date"] = frame["storm_end"] - pd.to_timedelta(duration_hours - 1, unit="h")
+    peak_times, peak_values = [], []
+    hourly_mean = precip.mean(dim=[dim for dim in precip.dims if dim != "time"], skipna=True)
+    for _, row in frame.iterrows():
+        peak_time, peak_value = _rainfall_window_peak_time(
+            hourly_mean,
+            pd.Timestamp(row["storm_date"]),
+            pd.Timestamp(row["storm_end"]),
+        )
+        peak_times.append(peak_time)
+        peak_values.append(peak_value)
+    frame["rainfall_peak_time"] = peak_times
+    frame["rainfall_peak_mm_per_hour"] = peak_values
     frame["potential_method"] = "region_mean"
-    return frame[["storm_date", "mean", "max", "min", "potential_method"]]
+    return frame[["storm_date", "mean", "max", "min", "rainfall_peak_time", "rainfall_peak_mm_per_hour", "potential_method"]]
+
+
+def _rainfall_window_peak_time(precip, start, end, *, rows=None, cols=None):
+    window = precip.sel(time=slice(pd.Timestamp(start), pd.Timestamp(end)))
+    if window.sizes.get("time", 0) == 0:
+        return pd.NaT, np.nan
+    if rows is not None and cols is not None:
+        values = np.asarray(window.values, dtype=float)
+        hourly = np.nanmean(values[:, rows, cols], axis=1)
+        times = pd.to_datetime(window["time"].values)
+    else:
+        series = window
+        if "time" in series.dims and len(series.dims) > 1:
+            series = series.mean(dim=[dim for dim in series.dims if dim != "time"], skipna=True)
+        hourly = np.asarray(series.values, dtype=float)
+        times = pd.to_datetime(series["time"].values)
+    if not np.isfinite(hourly).any():
+        return pd.NaT, np.nan
+    index = int(np.nanargmax(hourly))
+    return pd.Timestamp(times[index]), float(hourly[index])
 
 
 def _centroid_from_precip_window(precip):
@@ -369,6 +419,7 @@ def _ranked_storms_are_sst_equivalent(path):
         return False
     required = {
         "potential_method",
+        "rainfall_peak_time",
         "historical_footprint_center_lon",
         "historical_footprint_center_lat",
         "target_footprint_center_lon",
@@ -399,13 +450,18 @@ def _stats_checkpoint_is_current(path):
     moving = frame.get("potential_method", pd.Series(dtype=object)).eq("moving_footprint_max_mean").any()
     if moving:
         required = {
+            "rainfall_peak_time",
             "historical_footprint_center_lon",
             "historical_footprint_center_lat",
             "target_footprint_center_lon",
             "target_footprint_center_lat",
         }
         return required.issubset(frame.columns)
-    return "potential_method" in frame.columns and not frame["potential_method"].dropna().empty
+    return (
+        "potential_method" in frame.columns
+        and "rainfall_peak_time" in frame.columns
+        and not frame["potential_method"].dropna().empty
+    )
 
 
 def _collection_dir(paths, duration_hours):
@@ -472,6 +528,12 @@ def _write_rainfall_members(paths, spec, ranked, source_csv, duration_hours):
             "storm_end": (
                 pd.to_datetime(ranked["storm_date"]) + pd.to_timedelta(duration_hours, unit="h")
             ).dt.strftime("%Y-%m-%dT%H:%M:%S"),
+            "rainfall_peak_time": (
+                pd.to_datetime(ranked["rainfall_peak_time"], errors="coerce").dt.strftime("%Y-%m-%dT%H:%M:%S")
+                if "rainfall_peak_time" in ranked else pd.NA
+            ),
+            "rainfall_peak_mm_per_hour": ranked["rainfall_peak_mm_per_hour"] if "rainfall_peak_mm_per_hour" in ranked else pd.NA,
+            "rainfall_peak_time_source": "storm_stats_hourly_peak" if "rainfall_peak_time" in ranked else "missing",
             "duration_hours": int(duration_hours),
             "rank": ranked["por_rank"],
             "annual_rank": ranked["annual_rank"],

@@ -1,6 +1,8 @@
 import argparse
 import json
+import os
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -40,7 +42,15 @@ def parse_args(argv=None):
     p.add_argument("--full-forcing", action="store_true", help="stage coastal water level, SnapWave, precipitation, and soil moisture")
     p.add_argument("--zsini-mode", choices=["dry", "boundary_t0"], default="dry")
     p.add_argument("--tref", default="2000-01-01 00:00:00")
+    p.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="number of worker processes for staging events (1 = serial; <=0 = min(8, cpu_count))",
+    )
     args = p.parse_args(argv)
+    if args.jobs is not None and args.jobs <= 0:
+        args.jobs = min(8, os.cpu_count() or 1)
     if args.force and args.resume:
         p.error("--force and --resume are mutually exclusive.")
     if not args.force and not args.resume:
@@ -133,8 +143,6 @@ def _build_precip_model(base_dir):
     event in a batch and every design scenario in a notebook loop (they all share
     the same base_dir). Cached by resolved base_dir to make that reuse automatic.
     """
-    import os
-
     key = str(Path(base_dir).resolve())
     cached = _PRECIP_MODEL_CACHE.get(key)
     if cached is not None:
@@ -146,6 +154,115 @@ def _build_precip_model(base_dir):
     model = SfincsModel(root=str(base_dir), mode="r+")
     _PRECIP_MODEL_CACHE[key] = model
     return model
+
+
+_SURGE_DS_CACHE = {}
+
+
+def _get_surge_ds(args):
+    """Return the loaded surge-member dataset for a scenario, cached per process.
+
+    Worker processes do not receive the parent's in-memory dataset; each reopens
+    it once and reuses it for every event it stages.
+    """
+    key = (str(args.design_outputs), str(args.design_scenario))
+    ds = _SURGE_DS_CACHE.get(key)
+    if ds is None:
+        _, ds = read_event_catalog_inputs(args.design_outputs, scenario=args.design_scenario)
+        _SURGE_DS_CACHE[key] = ds
+    return ds
+
+
+def _stage_event(index, row, ds, args, *, config, runtime_paths, root):
+    """Stage a single event folder and return its report row.
+
+    Shared by the serial and parallel paths. Resumable: when args.resume is set
+    and the event is already complete it is skipped; partial folders from an
+    interrupted run are rebuilt because stage_run replaces the event dir.
+    """
+    forcing = event_forcing_from_row(row, ds, args)
+    event_dir = root / forcing.event_id
+    if args.resume and scenario_is_complete(
+        event_dir,
+        include_waves=args.include_waves,
+        include_precip=args.include_precip,
+    ):
+        manifest = _read_manifest(event_dir / "forcing_manifest.json")
+        return _report_row(
+            manifest,
+            row=row,
+            index=index,
+            event_dir=event_dir,
+            args=args,
+            status="skipped_existing",
+        )
+
+    staged = event_forcing.stage_run(
+        args.base_dir,
+        root,
+        forcing,
+        force=True,
+        include_waves=args.include_waves,
+        include_precip=args.include_precip,
+        timing_config={"allow_legacy_inference": True},
+        paths=runtime_paths,
+        config=config,
+    )
+    if args.include_precip:
+        event_forcing.stage_precip(
+            _build_precip_model(args.base_dir),
+            staged.run_root,
+            forcing,
+            paths=runtime_paths,
+            config=config,
+        )
+        if not _scenario_precipitation_is_valid(
+            staged.run_root,
+            _read_manifest(staged.run_root / "forcing_manifest.json"),
+        ):
+            raise RuntimeError(
+                f"Invalid precipitation forcing written for {forcing.event_id}: "
+                f"{staged.run_root / 'sfincs_netampr.nc'}"
+            )
+
+    manifest = _read_manifest(staged.run_root / "forcing_manifest.json")
+    return _report_row(
+        manifest,
+        row=row,
+        index=index,
+        event_dir=staged.run_root,
+        args=args,
+        status="written",
+    )
+
+
+_WORKER_CTX = {}
+
+
+def _init_worker(args, config, runtime_paths, root_str):
+    # Pin nested BLAS/dask threading to one thread per worker so N processes do
+    # not oversubscribe the cores.
+    for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        os.environ[var] = "1"
+    _WORKER_CTX.update(
+        args=args,
+        config=config,
+        runtime_paths=runtime_paths,
+        root=Path(root_str),
+    )
+
+
+def _build_one_event(payload):
+    args = _WORKER_CTX["args"]
+    return _stage_event(
+        payload["index"],
+        pd.Series(payload["row"]),
+        _get_surge_ds(args),
+        args,
+        config=_WORKER_CTX["config"],
+        runtime_paths=_WORKER_CTX["runtime_paths"],
+        root=_WORKER_CTX["root"],
+    )
 
 
 def _read_manifest(path):
@@ -291,76 +408,41 @@ def build_scenarios(args, *, config=None, runtime_paths=None, sf_model=None):
     else:
         root = ensure_clean_dir(args.scenarios_dir, force=args.force)
     rows, wall_t0 = [], time.time()
-    precip_model = sf_model
+    # Seed the per-process precip-model cache with any caller-supplied model so
+    # _stage_event reuses it instead of rebuilding (serial path only).
+    if sf_model is not None:
+        _PRECIP_MODEL_CACHE[str(Path(args.base_dir).resolve())] = sf_model
 
-    for i, row in df.iterrows():
-        # 3. Build one event folder.
-        forcing = event_forcing_from_row(row, ds, args)
-        event_dir = root / forcing.event_id
-        if args.resume and scenario_is_complete(
-            event_dir,
-            include_waves=args.include_waves,
-            include_precip=args.include_precip,
-        ):
-            manifest = _read_manifest(event_dir / "forcing_manifest.json")
-            rows.append(
-                _report_row(
-                    manifest,
-                    row=row,
-                    index=i,
-                    event_dir=event_dir,
-                    args=args,
-                    status="skipped_existing",
-                )
-            )
-            continue
+    jobs = max(1, int(getattr(args, "jobs", 1) or 1))
+    total = len(df)
 
-        staged = event_forcing.stage_run(
-            args.base_dir,
-            root,
-            forcing,
-            force=True,
-            include_waves=args.include_waves,
-            include_precip=args.include_precip,
-            timing_config={"allow_legacy_inference": True},
-            paths=runtime_paths,
-            config=config,
-        )
-        if args.include_precip:
-            if precip_model is None:
-                precip_model = _build_precip_model(args.base_dir)
-            event_forcing.stage_precip(
-                precip_model,
-                staged.run_root,
-                forcing,
-                paths=runtime_paths,
-                config=config,
-            )
-            if not _scenario_precipitation_is_valid(
-                staged.run_root,
-                _read_manifest(staged.run_root / "forcing_manifest.json"),
-            ):
-                raise RuntimeError(
-                    f"Invalid precipitation forcing written for {forcing.event_id}: "
-                    f"{staged.run_root / 'sfincs_netampr.nc'}"
-                )
-
-        # 4. Keep small receipts for later batch runs/stats checks.
-        manifest = _read_manifest(staged.run_root / "forcing_manifest.json")
-        out = _report_row(
-            manifest,
-            row=row,
-            index=i,
-            event_dir=staged.run_root,
-            args=args,
-            status="written",
-        )
-        rows.append(out)
-
-        if (i + 1) % 25 == 0 or i + 1 == len(df):
+    def _log_progress(done):
+        if done % 25 == 0 or done == total:
             written = sum(r.get("scenario_status") == "written" for r in rows)
             skipped = sum(r.get("scenario_status") == "skipped_existing" for r in rows)
-            print(f"  {i + 1}/{len(df)} processed; {written} written, {skipped} skipped ({time.time() - wall_t0:.0f}s total)")
+            print(f"  {done}/{total} processed; {written} written, {skipped} skipped ({time.time() - wall_t0:.0f}s total)")
+
+    # 3. Build event folders, serially or across worker processes. Each event is
+    # independent and resumable, so completion order does not matter (the report
+    # is sorted by event_id below).
+    if jobs == 1 or total <= 1:
+        for i, row in df.iterrows():
+            rows.append(
+                _stage_event(i, row, ds, args, config=config, runtime_paths=runtime_paths, root=root)
+            )
+            _log_progress(len(rows))
+    else:
+        payloads = [{"index": int(i), "row": row.to_dict()} for i, row in df.iterrows()]
+        print(f"  staging {total} events across {jobs} worker processes")
+        with ProcessPoolExecutor(
+            max_workers=jobs,
+            initializer=_init_worker,
+            initargs=(args, config, runtime_paths, str(root)),
+        ) as ex:
+            futures = [ex.submit(_build_one_event, payload) for payload in payloads]
+            for fut in as_completed(futures):
+                rows.append(fut.result())
+                _log_progress(len(rows))
 
     # 5. Build catalogs used by SLURM and run statistics.
     report = pd.DataFrame(rows).sort_values("event_id")
