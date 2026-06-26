@@ -630,8 +630,6 @@ def _select_compound_rainfall_member(
         candidates = rainfall[deltas <= real_window_hours].copy()
         if not candidates.empty:
             candidates["_time_score"] = -deltas.loc[candidates.index].to_numpy(dtype=float)
-        else:
-            candidates = _seasonal_candidates(rainfall, reference, season_window_days)
     else:
         candidates = _seasonal_candidates(rainfall, reference, season_window_days)
     if candidates.empty:
@@ -713,13 +711,15 @@ def _rainfall_offsets(role, duration, member, reference, real_window_hours=72.0,
         return 0.0, half, duration, "rainfall-after-coastal"
     if role == "historical_coastal_rainfall_pair":
         start = (pd.Timestamp(member["member_time"]) - pd.Timestamp(reference)) / pd.Timedelta(hours=1)
-        # A genuine within-window co-occurrence carries a real (bounded) lead/lag. When the
-        # selector falls back to a same-season analog from another year, member_time - reference
-        # spans the historical record (decades); that is a provenance gap, NOT a physical compound
-        # lag, so place the hyetograph coincident with the coastal peak inside the event window.
+        # A genuine historical co-occurrence carries a real, bounded lead/lag. Do not manufacture
+        # a coincident hyetograph for seasonal analogs from another year; that would turn a
+        # provenance fallback into a physical boundary condition.
         if abs(start) <= float(real_window_hours):
             return float(start), float(start + half), float(start + duration), "historical-compound-pair"
-        return -half, 0.0, half, "historical-pair-seasonal-fallback"
+        raise RuntimeError(
+            "historical_coastal_rainfall_pair requires a rainfall member within "
+            f"{real_window_hours:g} h of the coastal reference; got offset {start:g} h"
+        )
     if role == "wet_soil_high_rainfall":
         return -half, 0.0, half, "wet-soil-high-rain"
     return -half, 0.0, half, "rainfall-coincident"

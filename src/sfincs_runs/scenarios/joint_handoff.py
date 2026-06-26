@@ -14,7 +14,7 @@ from sfincs_runs.scenarios.coastal_realization import build_timeseries
 
 def write_handoff(joint_catalog, components, *, config, paths):
     """Write copula-joint coastal realizations in the SFINCS scenario-builder contract."""
-    catalog = joint_catalog.copy().reset_index(drop=True)
+    catalog = _overlay_stress_training_fields(joint_catalog, paths).reset_index(drop=True)
     scenario = paths.get("scenario", {}) or {"name": "base", "slr_offset_m": 0.0}
     scenario_name = str(scenario.get("name", "base"))
     slr_offset_m = float(scenario.get("slr_offset_m", 0.0))
@@ -57,15 +57,14 @@ def write_handoff(joint_catalog, components, *, config, paths):
         rainfall_time = _optional_timestamp(row, "rainfall_member_time")
         # Compound lag is the within-event offset of the rainfall peak relative to the coastal
         # peak (bounded by the pairing window), carried from the catalogue's
-        # rainfall_peak_offset_hours / rainfall_pairing_lag_hours. Do NOT difference the two
+        # rainfall_peak_offset_hours / rainfall_pairing_lag_hours / rainfall_realization_lag_hours.
+        # Do NOT difference the two
         # independently sampled analog calendar times (rainfall_member_time vs the coastal
         # analog_time) -- those span the historical record (decades) and are a provenance
         # artifact, never a physical compound lag.
-        rainfall_lag_hours = _optional(
-            row,
-            "rainfall_peak_offset_hours",
-            _optional(row, "rainfall_pairing_lag_hours", pd.NA),
-        )
+        rainfall_start_offset_hours = _optional(row, "rainfall_start_offset_hours", pd.NA)
+        rainfall_lag_hours = _compound_lag_hours(row)
+        rainfall_end_offset_hours = _optional(row, "rainfall_end_offset_hours", pd.NA)
         snapwave_start = analog_time + pd.Timedelta(hours=start_hour)
         snapwave_end = analog_time + pd.Timedelta(hours=end_hour)
 
@@ -156,6 +155,9 @@ def write_handoff(joint_catalog, components, *, config, paths):
                 "rainfall_pairing_seed": _optional(row, "rainfall_pairing_seed", pd.NA),
                 "rainfall_pairing_reference_time": _format_time(analog_time),
                 "rainfall_pairing_lag_hours": rainfall_lag_hours,
+                "rainfall_start_offset_hours": rainfall_start_offset_hours,
+                "rainfall_peak_offset_hours": rainfall_lag_hours,
+                "rainfall_end_offset_hours": rainfall_end_offset_hours,
                 "streamflow_source": pd.NA,
                 "streamflow_member_file": pd.NA,
                 "streamflow_member_id": pd.NA,
@@ -214,6 +216,7 @@ def write_handoff(joint_catalog, components, *, config, paths):
     summary = pd.DataFrame(summary_rows)
     summary.to_csv(event_summary_csv, index=False)
     sfincs_catalog = pd.DataFrame(event_rows)
+    _validate_compound_lag_contract(sfincs_catalog, window_hours=window_hours)
     sfincs_catalog.to_csv(event_catalog_csv, index=False)
 
     if paths.get("event_acceptance_json") is not None:
@@ -241,6 +244,92 @@ def write_handoff(joint_catalog, components, *, config, paths):
     if not audit["passed"]:
         raise RuntimeError(f"joint SFINCS handoff catalog failed audit: {audit['issues'][:5]}")
     return {"catalog": sfincs_catalog, "summary": summary, "dataset": ds, "audit": audit}
+
+
+def _overlay_stress_training_fields(joint_catalog, paths):
+    """Carry stress/training timing enrichment into the SFINCS scenario catalog."""
+    catalog = joint_catalog.copy()
+    stress_value = paths.get("resilience_stress_training_catalog_csv")
+    if stress_value is None:
+        return catalog
+    stress_path = Path(stress_value)
+    if not stress_path.exists():
+        return catalog
+    stress = pd.read_csv(stress_path)
+    if "event_id" not in stress or stress.empty:
+        return catalog
+
+    overlay_cols = [c for c in stress.columns if c != "event_id"]
+    merged = catalog.merge(stress[["event_id", *overlay_cols]], on="event_id", how="left", suffixes=("", "_stress"))
+    for column in overlay_cols:
+        stress_column = f"{column}_stress"
+        if stress_column not in merged:
+            continue
+        if column in merged:
+            merged[column] = merged[stress_column].combine_first(merged[column])
+        else:
+            merged[column] = merged[stress_column]
+        merged = merged.drop(columns=[stress_column])
+    return merged
+
+
+def _compound_lag_hours(row):
+    lag = _optional(row, "rainfall_peak_offset_hours", _optional(row, "rainfall_pairing_lag_hours", pd.NA))
+    if not _is_missing(lag):
+        return lag
+    # Historical observed compound rows carry a true observed event time and may only have the
+    # realization lag; synthetic copula-joint rows must get bounded stress/pairing lag instead.
+    if str(_optional(row, "event_origin", "")).startswith("historical"):
+        return _optional(row, "rainfall_realization_lag_hours", pd.NA)
+    return pd.NA
+
+
+def _validate_compound_lag_contract(catalog, *, window_hours):
+    if "rainfall_member_id" not in catalog:
+        return
+    origin = catalog.get("event_origin", pd.Series("", index=catalog.index)).astype(str)
+    policy = catalog.get("forcing_pairing_policy", pd.Series("", index=catalog.index)).astype(str)
+    has_rain = ~catalog["rainfall_member_id"].map(_is_missing)
+    synthetic_copula = origin.isin(["synthetic_body", "synthetic_tail"]) & policy.eq("copula_joint")
+    required = catalog[has_rain & synthetic_copula]
+    if required.empty:
+        return
+    timing_cols = [
+        "rainfall_start_offset_hours",
+        "rainfall_peak_offset_hours",
+        "rainfall_end_offset_hours",
+        "rainfall_pairing_lag_hours",
+    ]
+    missing_cols = [column for column in timing_cols if column not in required]
+    if missing_cols:
+        raise RuntimeError(
+            "copula_joint SFINCS handoff requires full rainfall timing offsets; "
+            f"missing columns: {missing_cols}"
+        )
+
+    timing = required[timing_cols].apply(pd.to_numeric, errors="coerce")
+    missing = required[timing.isna().any(axis=1)]
+    ordered = (
+        (timing["rainfall_start_offset_hours"] <= timing["rainfall_peak_offset_hours"])
+        & (timing["rainfall_peak_offset_hours"] <= timing["rainfall_end_offset_hours"])
+    )
+    inconsistent = required[~ordered]
+    lag = timing["rainfall_pairing_lag_hours"]
+    peak = timing["rainfall_peak_offset_hours"]
+    unbounded = required[(lag.abs() > float(window_hours)) | (peak.abs() > float(window_hours))]
+    if missing.empty and inconsistent.empty and unbounded.empty:
+        return
+    examples = []
+    if not missing.empty:
+        examples.extend(missing["event_id"].astype(str).head(5).tolist())
+    if not inconsistent.empty:
+        examples.extend(inconsistent["event_id"].astype(str).head(5).tolist())
+    if not unbounded.empty:
+        examples.extend(unbounded["event_id"].astype(str).head(5).tolist())
+    raise RuntimeError(
+        "copula_joint SFINCS handoff requires finite rainfall timing offsets and bounded peak lag "
+        f"for synthetic rainfall events; examples: {examples[:5]}"
+    )
 
 
 def _required(row, column):

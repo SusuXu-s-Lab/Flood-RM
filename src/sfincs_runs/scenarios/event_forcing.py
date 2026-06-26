@@ -357,6 +357,8 @@ def stage_precip(sf, run_root, forcing: EventForcing, *, paths, config):
     hydrology_cfg = (config.get("coastal_wave_coupling") or {}).get("hydrology") or {}
     precip_cfg = hydrology_cfg.get("precipitation") or {}
     window_alignment = str(precip_cfg.get("window_alignment", "wettest"))
+    precip_start = _catalog_rainfall_start(forcing.catalog)
+    _validate_catalog_precip_timing(forcing.catalog, precip_start)
     rainfall_scale_factor = _nullable_float(forcing.catalog.get("rainfall_scale_factor"))
     if rainfall_scale_factor is None or not (rainfall_scale_factor > 0):
         rainfall_scale_factor = 1.0
@@ -368,13 +370,14 @@ def stage_precip(sf, run_root, forcing: EventForcing, *, paths, config):
         variable=str(precip_cfg.get("variable", "APCP_surface")),
         align_start_to_run=True,
         window_alignment=window_alignment,
-        precip_start=_catalog_rainfall_start(forcing.catalog),
+        precip_start=precip_start,
         scale_factor=rainfall_scale_factor,
     )
     soil_manifest = _stage_event_soil_moisture(Path(run_root), hydrology)
+    precip_source = _precip_source_name(forcing.event_id)
     sf.data_catalog.from_dict(
         {
-            "event_precip": {
+            precip_source: {
                 "uri": str(prepared_precip),
                 "data_type": "RasterDataset",
                 "driver": {"name": "raster_xarray"},
@@ -392,12 +395,13 @@ def stage_precip(sf, run_root, forcing: EventForcing, *, paths, config):
         sf.config.set("tref", run_start.strftime("%Y%m%d %H%M%S"))
         sf.config.set("tstart", run_start.strftime("%Y%m%d %H%M%S"))
         sf.config.set("tstop", run_stop.strftime("%Y%m%d %H%M%S"))
+        sf.precipitation.clear()
         # HydroMT-SFINCS reads configured meteo files before appending new data
         # in r+ mode; clear stale pointers until create/write has produced them.
         sf.config.set("precipfile", None)
         sf.config.set("netamprfile", None)
         sf.precipitation.create(
-            precip="event_precip",
+            precip=precip_source,
             buffer=float(precip_cfg.get("buffer_m", 30000.0)),
             cumulative_input=bool(precip_cfg.get("cumulative_input", True)),
             time_label=str(precip_cfg.get("time_label", "right")),
@@ -720,6 +724,27 @@ def _catalog_rainfall_start(catalog):
     if reference is None or offset is None or pd.isna(reference) or pd.isna(offset):
         return None
     return pd.Timestamp(reference) + pd.Timedelta(hours=float(offset))
+
+
+def _precip_source_name(event_id):
+    token = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in str(event_id).strip())
+    token = token.strip("_") or "event"
+    return f"event_precip_{token}"
+
+
+def _validate_catalog_precip_timing(catalog, precip_start):
+    if catalog is None:
+        return
+    origin = str(catalog.get("event_origin", ""))
+    policy = str(catalog.get("forcing_pairing_policy", ""))
+    has_rain = catalog.get("rainfall_member_id") is not None and not pd.isna(catalog.get("rainfall_member_id"))
+    synthetic_copula = origin in {"synthetic_body", "synthetic_tail"} and policy == "copula_joint"
+    if synthetic_copula and has_rain and precip_start is None:
+        raise RuntimeError(
+            "Synthetic copula_joint rainfall staging requires event_reference_time/coastal_template_peak_time "
+            "and rainfall_start_offset_hours from the Event Catalog. Regenerate the handoff before creating "
+            f"scenario {catalog.get('event_id', '<unknown>')!r}."
+        )
 
 
 def _required_catalog_value(catalog, key):

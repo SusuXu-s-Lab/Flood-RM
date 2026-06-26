@@ -41,6 +41,12 @@ def parse_args(argv=None):
     p.add_argument("--zsini-mode", choices=["dry", "boundary_t0"], default="dry")
     p.add_argument("--tref", default="2000-01-01 00:00:00")
     args = p.parse_args(argv)
+    if args.force and args.resume:
+        p.error("--force and --resume are mutually exclusive.")
+    if not args.force and not args.resume:
+        # Default to resume: rebuild only missing/incomplete events rather than
+        # erroring on an existing dir or forcing a full rmtree of the batch.
+        args.resume = True
     runtime_config, runtime_paths = load_runtime(args.config)
     if args.full_forcing:
         args.include_waves = True
@@ -116,13 +122,30 @@ def event_forcing_from_row(row, ds, args) -> EventForcing:
     )
 
 
+_PRECIP_MODEL_CACHE = {}
+
+
 def _build_precip_model(base_dir):
+    """Return a HydroMT SfincsModel for precip staging, reused across calls.
+
+    Constructing the model is several seconds of overhead. stage_precip restores
+    the model's root/config after every event, so one instance can serve every
+    event in a batch and every design scenario in a notebook loop (they all share
+    the same base_dir). Cached by resolved base_dir to make that reuse automatic.
+    """
     import os
+
+    key = str(Path(base_dir).resolve())
+    cached = _PRECIP_MODEL_CACHE.get(key)
+    if cached is not None:
+        return cached
 
     os.environ.pop("DEBUG", None)
     from hydromt_sfincs import SfincsModel
 
-    return SfincsModel(root=str(base_dir), mode="r+")
+    model = SfincsModel(root=str(base_dir), mode="r+")
+    _PRECIP_MODEL_CACHE[key] = model
+    return model
 
 
 def _read_manifest(path):

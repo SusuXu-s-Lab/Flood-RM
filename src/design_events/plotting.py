@@ -13,7 +13,6 @@ from .fit_history.extreme_value import (
 )
 from .build_events.selection import assign_severity_bands
 
-
 # Stage 1.1: SFINCS offshore boundary + chosen CORA snap node centroid.
 def plot_boundary_and_node(paths, config):
     boundary_pts = []
@@ -38,7 +37,6 @@ def plot_boundary_and_node(paths, config):
     fig.tight_layout()
     return fig
 
-
 # Stage 2.1: raw hourly water level: sample window + full distribution.
 def plot_raw_waterlevel(waterlevel, window_slice=("2018-01-01", "2018-03-31")):
     window = waterlevel.loc[window_slice[0]:window_slice[1]]
@@ -53,7 +51,6 @@ def plot_raw_waterlevel(waterlevel, window_slice=("2018-01-01", "2018-03-31")):
     axes[1].grid(True, alpha=0.3)
     fig.tight_layout()
     return fig
-
 
 # Stage 2.2: linear MSL trend used to detrend hourly water level to a reference epoch.
 def plot_detrending(waterlevel, detrend_meta):
@@ -86,7 +83,6 @@ def plot_detrending(waterlevel, detrend_meta):
     fig.tight_layout()
     return fig
 
-
 # Stage 2.3: POT thresholding on a sample window + magnitude histogram.
 def plot_pot_extraction(waterlevel, peaks, threshold_m,
                         window_slice=("2018-01-01", "2018-03-31")):
@@ -110,7 +106,6 @@ def plot_pot_extraction(waterlevel, peaks, threshold_m,
     fig.tight_layout()
     return fig
 
-
 # Stage 2.4: candidate distributions (Exp vs GPD) with AIC scores. Use the
 # same fitting and scoring path as production so the figure cannot disagree
 # with the selected marginal.
@@ -118,7 +113,6 @@ def plot_aic_model_selection(peaks, marginal):
     values = peaks.dropna().to_numpy(dtype=float)
     sorted_vals = np.sort(values)
     fig, axes = plt.subplots(1, 2, figsize=(14, 4.2))
-
     # Left: empirical CDF vs fitted CDFs, with AIC printed in the legend.
     axes[0].plot(sorted_vals, np.linspace(0, 1, len(sorted_vals)),
                  "o", color="0.3", alpha=0.7, label=f"empirical CDF ({len(sorted_vals):,} peaks)")
@@ -163,10 +157,9 @@ def plot_aic_model_selection(peaks, marginal):
     fig.tight_layout()
     return fig
 
-
 # Stage 2.5: the 3-step conversion chain that turns a fitted distribution
 # into a return-period curve. Each panel is one substitution:
-#   per-peak probability  →  expected exceedances per year  →  return period.
+# per-peak probability: expected exceedances per year:  return period.
 # The 100-yr peak is highlighted in every panel so a reviewer can trace it
 # horizontally across the figure.
 def plot_return_curve_with_ci(peaks, marginal, bootstrap, rps=None,
@@ -182,9 +175,7 @@ def plot_return_curve_with_ci(peaks, marginal, bootstrap, rps=None,
     h_star = float(marginal.magnitude(highlight_rp))
     p_star = 1.0 / (rate * highlight_rp)
     rate_star = 1.0 / highlight_rp
-
     fig, axes = plt.subplots(1, 3, figsize=(16.5, 4.4))
-
     # Step 1: per-peak survival probability from the fitted Exponential.
     ax = axes[0]
     ax.semilogy(h_grid, surv_at_h, "-", color="crimson", lw=2)
@@ -199,7 +190,6 @@ def plot_return_curve_with_ci(peaks, marginal, bootstrap, rps=None,
             transform=ax.transAxes, fontsize=9,
             bbox=dict(boxstyle="round", fc="white", alpha=0.85))
     ax.grid(True, alpha=0.3, which="both")
-
     # Step 2: multiply by the peaks-per-year rate.
     ax = axes[1]
     ax.semilogy(h_grid, annual_at_h, "-", color="crimson", lw=2)
@@ -214,7 +204,6 @@ def plot_return_curve_with_ci(peaks, marginal, bootstrap, rps=None,
             transform=ax.transAxes, fontsize=9,
             bbox=dict(boxstyle="round", fc="white", alpha=0.85))
     ax.grid(True, alpha=0.3, which="both")
-
     # Step 3: invert the annual rate into a return period; overlay the
     # historical peaks and the bootstrap confidence band on the inverse view.
     ax = axes[2]
@@ -241,7 +230,6 @@ def plot_return_curve_with_ci(peaks, marginal, bootstrap, rps=None,
     ax.set_title("Step 3 — RP = 1 / annual rate")
     ax.legend(loc="lower right", fontsize=9)
     ax.grid(True, alpha=0.3, which="both")
-
     fig.suptitle(
         f"From fitted distribution to return-period curve  "
         f"(per-peak P  →  × {rate:.1f}/yr  →  invert)",
@@ -249,7 +237,6 @@ def plot_return_curve_with_ci(peaks, marginal, bootstrap, rps=None,
     )
     fig.tight_layout()
     return fig
-
 
 # Stage 2.6: peak series + Theil-Sen line + Mann-Kendall p-value annotation.
 def plot_stationarity(peaks, report):
@@ -273,7 +260,6 @@ def plot_stationarity(peaks, report):
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     return fig
-
 
 # Stage 3.1: hybrid splice between empirical body and parametric tail.
 def plot_hybrid_splice(historical_peaks, sampled_peaks, splice_q):
@@ -301,11 +287,9 @@ def plot_hybrid_splice(historical_peaks, sampled_peaks, splice_q):
     fig.tight_layout()
     return fig
 
-
 def _annual_chance_label(return_period_years):
     aep = 100.0 / float(return_period_years)
     return f"{aep:g}% annual chance"
-
 
 def _return_period_axis_context(catalog):
     columns = set(catalog.columns)
@@ -330,13 +314,11 @@ def _return_period_axis_context(catalog):
         "joint_label": "Event-driver return period",
     }
 
-
 def _short_event_label(value, *, max_length=28):
     text = "" if pd.isna(value) else str(value)
     if len(text) <= max_length:
         return text
     return text[: max_length - 1] + "…"
-
 
 def _catalog_display_label(catalog, *, default="Catalog"):
     if catalog is None or "catalog_role" not in catalog:
@@ -356,12 +338,10 @@ def _catalog_display_label(catalog, *, default="Catalog"):
         return "Probability Catalog"
     return default
 
-
 def _candidate_pool_band_counts(catalog, bands):
     counts = pd.Series(0.0, index=list(bands), dtype=float)
     if catalog is None or "severity_band" not in catalog:
         return counts, 0
-
     keyed = catalog.copy()
     keyed["severity_band"] = keyed["severity_band"].astype(str)
     if "pool_band_support" in keyed:
@@ -390,12 +370,10 @@ def _candidate_pool_band_counts(catalog, bands):
     total = int(round(float(total_column.iloc[0]))) if len(total_column) else int(round(float(counts.sum())))
     return counts.astype(float), total
 
-
 def _format_return_period_label(value):
     value = float(value)
     number = f"{int(round(value))}" if value.is_integer() else f"{value:g}"
     return f"{number}-yr"
-
 
 def nearest_benchmark_events(catalog, *, benchmarks=None):
     benchmarks = benchmarks or [10, 50, 100, 500]
@@ -426,7 +404,6 @@ def nearest_benchmark_events(catalog, *, benchmarks=None):
             }
         )
     return pd.DataFrame(rows)
-
 
 def plot_return_period_benchmark_coverage(catalog, stress_catalog=None, *, benchmarks=None):
     benchmarks = benchmarks or [10, 50, 100, 500]
@@ -469,7 +446,6 @@ def plot_return_period_benchmark_coverage(catalog, stress_catalog=None, *, bench
     axes[0].set_title(f"10/50/100/500-year {axis['title_label']}")
     axes[0].legend(loc="best", fontsize=9)
     axes[0].grid(True, alpha=0.3, which="both")
-
     axes[1].axis("off")
     if not nearest.empty:
         table_columns = [
@@ -512,7 +488,6 @@ def plot_return_period_benchmark_coverage(catalog, stress_catalog=None, *, bench
     fig.tight_layout()
     return fig
 
-
 # Stage 4.1: normalized historical templates + shape-diversity scatter.
 def plot_template_bank(template_frame, n_show=8):
     fig, axes = plt.subplots(1, 2, figsize=(14, 4))
@@ -534,7 +509,6 @@ def plot_template_bank(template_frame, n_show=8):
     axes[1].grid(True, alpha=0.3)
     fig.tight_layout()
     return fig
-
 
 # Stage 4.2: tail-morph time-stretch as a function of target peak magnitude.
 def plot_tail_morph(historical_peaks, settings):
@@ -564,7 +538,6 @@ def plot_tail_morph(historical_peaks, settings):
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     return fig
-
 
 # Stage 4.3: Gaussian kernel weights for one target peak + reuse distribution.
 def plot_template_matching(template_frame, summary, target_peak, settings):
@@ -606,11 +579,9 @@ def plot_template_matching(template_frame, summary, target_peak, settings):
     fig.tight_layout()
     return fig
 
-
 def _circular_day_gap(a, b):
     diff = np.abs(np.asarray(a, dtype=float) - np.asarray(b, dtype=float))
     return np.minimum(diff, 366.0 - diff)
-
 
 def _catalog_time_series(catalog, columns):
     for column in columns:
@@ -618,14 +589,12 @@ def _catalog_time_series(catalog, columns):
             return pd.to_datetime(catalog[column], errors="coerce"), column
     return pd.Series(pd.NaT, index=catalog.index, dtype="datetime64[ns]"), None
 
-
 def _normalize_pairing_strategy(strategy, forcing=None):
     if strategy == "inland_rainfall_pairing_priority":
         return "seasonal_window_permutation"
     if strategy == "inland_antecedent_moisture_pairing":
         return "antecedent_to_forcing"
     return strategy
-
 
 def _seasonal_pairing_values(catalog, forcing):
     reference_time, reference_column = _catalog_time_series(
@@ -649,7 +618,6 @@ def _seasonal_pairing_values(catalog, forcing):
     members = member_id.loc[mask].astype(str)
     return reference_doy, member_doy, diff, members, reference_column
 
-
 def seasonal_pairing_diagnostics(catalog, forcing, *, window_days=None):
     _, member_doy, diff, members, _ = _seasonal_pairing_values(catalog, forcing)
     reuse = members.value_counts()
@@ -672,7 +640,6 @@ def seasonal_pairing_diagnostics(catalog, forcing, *, window_days=None):
             }
         ]
     )
-
 
 def antecedent_pairing_diagnostics(catalog, forcing):
     member_time = pd.to_datetime(catalog.get(f"{forcing}_member_time"), errors="coerce")
@@ -707,7 +674,6 @@ def antecedent_pairing_diagnostics(catalog, forcing):
         ]
     )
 
-
 def forcing_pairing_diagnostics(catalog, forcings=None, policies=None):
     if forcings is None:
         forcings = [
@@ -735,7 +701,6 @@ def forcing_pairing_diagnostics(catalog, forcings=None, policies=None):
         elif strategy == "antecedent_to_forcing":
             frames.append(antecedent_pairing_diagnostics(catalog, forcing))
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-
 
 def wave_analog_diagnostics(catalog):
     policy = catalog.get("snapwave_pairing_policy", pd.Series(dtype=object)).dropna().astype(str)
@@ -766,7 +731,6 @@ def wave_analog_diagnostics(catalog):
         ]
     )
 
-
 def plot_antecedent_pairing(catalog, forcing, *, ax=None):
     member_time = pd.to_datetime(catalog.get(f"{forcing}_member_time"), errors="coerce")
     reference_time = pd.to_datetime(catalog.get(f"{forcing}_pairing_reference_time"), errors="coerce")
@@ -790,7 +754,6 @@ def plot_antecedent_pairing(catalog, forcing, *, ax=None):
     fig.tight_layout()
     return fig
 
-
 def plot_configured_pairing(catalog, forcing, *, policy=None, ax=None):
     policy = policy or {}
     strategy = policy.get("strategy")
@@ -805,7 +768,6 @@ def plot_configured_pairing(catalog, forcing, *, policy=None, ax=None):
         window_values = pd.to_numeric(catalog[f"{forcing}_pairing_window_days"], errors="coerce").dropna()
         window = float(window_values.iloc[0]) if len(window_values) else None
     return plot_seasonal_pairing(catalog, forcing, window_days=window, ax=ax)
-
 
 def plot_rainfall_member_distribution(members):
     depth_column = next(
@@ -852,7 +814,6 @@ def plot_rainfall_member_distribution(members):
     fig.tight_layout()
     return fig
 
-
 def _shade_circular_window(ax, window):
     window = float(window)
     if window >= 365:
@@ -873,7 +834,6 @@ def _shade_circular_window(ax, window):
     right = x[x >= 366 - window]
     if len(right):
         ax.fill_between(right, 1, right + window - 366, color="steelblue", alpha=0.12)
-
 
 # Stage 5.2: seasonal-window pairing diagnostic. Day-of-year (DOY) of each
 # catalog reference event vs. DOY of the paired member, with the configured
@@ -904,7 +864,6 @@ def plot_seasonal_pairing(catalog, forcing, *, window_days=None, ax=None):
     fig.tight_layout()
     return fig
 
-
 # Stage 6.1: tail-enrichment audit. Sampling-region split (body vs tail) and
 # the per-row sampling_weight that records simulation-budget enrichment.
 def plot_sampling_weights(catalog):
@@ -930,7 +889,6 @@ def plot_sampling_weights(catalog):
     fig.tight_layout()
     return fig
 
-
 def _catalog_with_severity(catalog, *, severity_bands=None):
     frame = catalog.copy()
     if "severity_band" not in frame:
@@ -939,12 +897,10 @@ def _catalog_with_severity(catalog, *, severity_bands=None):
         frame["severity_band"] = assign_severity_bands(frame["sample_rp_years"], severity_bands)
     return frame
 
-
 def _sampling_weight_series(catalog):
     if "sampling_weight" in catalog:
         return pd.to_numeric(catalog["sampling_weight"], errors="coerce").fillna(0.0)
     return pd.Series(np.ones(len(catalog), dtype=float), index=catalog.index)
-
 
 def severity_band_distribution(catalog, *, band_order=None, severity_bands=None):
     band_order = band_order or ["mild", "common", "significant", "rare", "extreme", "beyond_design"]
@@ -970,7 +926,6 @@ def severity_band_distribution(catalog, *, band_order=None, severity_bands=None)
     )
     distribution.attrs["has_probability_weight"] = has_probability_weight
     return distribution
-
 
 # Stage 6.2: severity-band coverage. Counts show model-budget allocation;
 # probability mass shows the distribution used by response summaries when
@@ -1014,7 +969,6 @@ def plot_severity_bands(catalog, *, band_order=None):
     fig.tight_layout()
     return fig
 
-
 def plot_catalog_set_severity_comparison(probability_catalog, stress_catalog, *, band_order=None):
     band_order = band_order or ["mild", "common", "significant", "rare", "extreme", "beyond_design"]
     catalog_label = _catalog_display_label(probability_catalog, default="Catalog")
@@ -1043,7 +997,6 @@ def plot_catalog_set_severity_comparison(probability_catalog, stress_catalog, *,
     fig.tight_layout()
     return fig
 
-
 def plot_original_vs_design_severity(original_catalog, design_catalog, *, band_order=None, severity_bands=None):
     band_order = band_order or ["mild", "common", "significant", "rare", "extreme", "beyond_design"]
     original = severity_band_distribution(
@@ -1067,7 +1020,6 @@ def plot_original_vs_design_severity(original_catalog, design_catalog, *, band_o
         original_mass = original_counts / original_total
     if float(design_mass.sum()) <= 0:
         design_mass = design_counts / design_total
-
     x = np.arange(len(bands))
     fig, axes = plt.subplots(1, 2, figsize=(14, 4.5))
     axes[0].bar(x - 0.18, original_counts / original_total, width=0.36, color="#4c78a8", alpha=0.75,
@@ -1093,7 +1045,6 @@ def plot_original_vs_design_severity(original_catalog, design_catalog, *, band_o
     fig.tight_layout()
     return fig
 
-
 # Stage 5.5: pairing-policy sensitivity. Overlay seasonal-window vs independent permutation
 # for one forcing. Independent permutation is the baseline sensitivity case, not production.
 def plot_independent_vs_seasonal(catalog_seasonal, catalog_independent, forcing, *, window_days=None):
@@ -1113,7 +1064,6 @@ def plot_independent_vs_seasonal(catalog_seasonal, catalog_independent, forcing,
     fig.suptitle("Stage 5.5 — Pairing-policy sensitivity (in-memory comparison)", y=1.02)
     fig.tight_layout()
     return fig
-
 
 def _forcing_value_column(members, forcing, value_column=None):
     if value_column is not None:
@@ -1152,7 +1102,6 @@ def _forcing_value_column(members, forcing, value_column=None):
         raise ValueError(f"could not infer a numeric value column for {forcing} members")
     return column
 
-
 def _plot_member_table(members, forcing):
     frame = members.copy()
     if "member_id" in frame:
@@ -1175,7 +1124,6 @@ def _plot_member_table(members, forcing):
         return frame
     raise ValueError("members must include a 'member_id' column")
 
-
 def _probability_series(catalog):
     if "probability_weight" in catalog:
         probability = pd.to_numeric(catalog["probability_weight"], errors="coerce")
@@ -1186,7 +1134,6 @@ def _probability_series(catalog):
     if np.isfinite(total) and total > 0:
         return sampling / total
     return pd.Series(np.full(len(catalog), 1.0 / max(len(catalog), 1)), index=catalog.index)
-
 
 def forcing_selection_frame(catalog, members, forcing, *, value_column=None):
     member_id_column = f"{forcing}_member_id"
@@ -1222,7 +1169,6 @@ def forcing_selection_frame(catalog, members, forcing, *, value_column=None):
     out["forcing"] = forcing
     return out
 
-
 def _selected_forcing_values(catalog, members, forcing, *, value_column=None):
     member_id_column = f"{forcing}_member_id"
     members = _plot_member_table(members, forcing)
@@ -1237,7 +1183,6 @@ def _selected_forcing_values(catalog, members, forcing, *, value_column=None):
     joined = joined.rename(columns={value_column: "member_value"})
     joined["value_column"] = value_column
     return joined
-
 
 def plot_forcing_marginal_comparison(catalog, members, forcing, *, value_column=None):
     selection = forcing_selection_frame(catalog, members, forcing, value_column=value_column)
@@ -1271,7 +1216,6 @@ def plot_forcing_marginal_comparison(catalog, members, forcing, *, value_column=
     fig.tight_layout()
     return fig
 
-
 def _streamflow_member_frame(members):
     frame = members.copy()
     required = {"site_no", "event_time", "peak_flow_cfs"}
@@ -1288,7 +1232,6 @@ def _streamflow_member_frame(members):
     if "sampling_region" not in frame:
         frame["sampling_region"] = "body"
     return frame.dropna(subset=["event_time", "peak_flow_cfs"]).copy()
-
 
 def _streamflow_record_frame(records):
     frame = records.copy()
@@ -1310,7 +1253,6 @@ def _streamflow_record_frame(records):
     frame["discharge_cfs"] = pd.to_numeric(frame["discharge_cfs"], errors="coerce")
     return frame.dropna(subset=["site_no", "time", "discharge_cfs"]).sort_values(["site_no", "time"])
 
-
 def _streamflow_plot_site(records, members, site_no=None):
     if site_no is not None:
         return str(site_no)
@@ -1318,7 +1260,6 @@ def _streamflow_plot_site(records, members, site_no=None):
     if not counts.empty:
         return str(counts.index[0])
     return str(records["site_no"].astype(str).iloc[0])
-
 
 def _streamflow_site_threshold(records, members, site_no, threshold_quantile):
     member_thresholds = pd.to_numeric(
@@ -1333,7 +1274,6 @@ def _streamflow_site_threshold(records, members, site_no, threshold_quantile):
     if site_records.empty:
         return np.nan
     return float(site_records.quantile(float(threshold_quantile)))
-
 
 def plot_streamflow_pot_extraction(records, members, *, threshold_quantile=0.98, site_no=None, window_slice=None):
     records = _streamflow_record_frame(records)
@@ -1353,7 +1293,6 @@ def plot_streamflow_pot_extraction(records, members, *, threshold_quantile=0.98,
     window = site_records.loc[window_slice[0]:window_slice[1]]
     peak_window = site_peaks.loc[window_slice[0]:window_slice[1]]
     threshold = _streamflow_site_threshold(records, members, selected_site, threshold_quantile)
-
     fig, axes = plt.subplots(1, 2, figsize=(14, 4))
     axes[0].plot(window.index, window.values, lw=1.0, label="raw discharge")
     axes[0].scatter(peak_window.index, peak_window.values, color="crimson", s=22, zorder=3, label="POT peaks")
@@ -1375,7 +1314,6 @@ def plot_streamflow_pot_extraction(records, members, *, threshold_quantile=0.98,
     fig.tight_layout()
     return fig
 
-
 def plot_streamflow_pot_members(members):
     frame = _streamflow_member_frame(members)
     fig, ax = plt.subplots(figsize=(12, 4.5))
@@ -1388,7 +1326,6 @@ def plot_streamflow_pot_members(members):
         ax.legend(loc="best", fontsize=8)
     fig.tight_layout()
     return fig
-
 
 def plot_streamflow_return_period_distribution(members):
     frame = _streamflow_member_frame(members).dropna(subset=["sample_rp_years"])
@@ -1410,7 +1347,6 @@ def plot_streamflow_return_period_distribution(members):
     fig.tight_layout()
     return fig
 
-
 def plot_coastal_forcing_joint(catalog, members, forcing, *, value_column=None):
     axis = _return_period_axis_context(catalog)
     joined = _selected_forcing_values(catalog, members, forcing, value_column=value_column)
@@ -1428,7 +1364,6 @@ def plot_coastal_forcing_joint(catalog, members, forcing, *, value_column=None):
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     return fig
-
 
 # Stage 4.4: synthetic-vs-historical descriptor distributions for QC acceptance.
 def plot_acceptance_descriptors(template_frame, summary):
@@ -1448,7 +1383,6 @@ def plot_acceptance_descriptors(template_frame, summary):
     fig.suptitle("Stage 4.4 — Acceptance: synthetic descriptors vs historical templates", y=1.02)
     fig.tight_layout()
     return fig
-
 
 def plot_distinct_oscillatory_proxies(
     member_dataset,
@@ -1540,7 +1474,6 @@ def plot_distinct_oscillatory_proxies(
     )
     return fig, selected
 
-
 def plot_msl_shift_scenario_comparison(
     scenario_datasets,
     marginal_ci,
@@ -1628,7 +1561,6 @@ def plot_msl_shift_scenario_comparison(
     fig.tight_layout()
     return fig
 
-
 # --- Copula-Joint compound-dependence figures ------------------------------------------
 # These visualize the production copula_joint method: the paired co-occurrence sample,
 # the fitted vine, AND joint-exceedance isolines, the tail-enrichment budget, and the
@@ -1653,7 +1585,6 @@ def plot_driver_cooccurrence(paired, x, y, *, ax=None):
     if fig is not None:
         fig.tight_layout()
     return fig
-
 
 def plot_copula_fit_diagnostics(model, paired, *, n=5000, seed=11):
     """Observed vs simulated dependence on the uniform (pseudo-observation) scale."""
@@ -1682,7 +1613,6 @@ def plot_copula_fit_diagnostics(model, paired, *, n=5000, seed=11):
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     return fig
-
 
 def plot_and_joint_isolines(
     model,
@@ -1767,7 +1697,6 @@ def plot_and_joint_isolines(
         fig.tight_layout()
     return fig
 
-
 def plot_tide_ntr_decomposition(components, window_slice=("2018-01-01", "2018-03-31")):
     """CORA total water level split into MSL + tide + non-tidal residual (Fix 2)."""
     sub = components.loc[slice(*window_slice)] if window_slice else components
@@ -1788,7 +1717,6 @@ def plot_tide_ntr_decomposition(components, window_slice=("2018-01-01", "2018-03
     fig.tight_layout()
     return fig
 
-
 def plot_storm_type_cooccurrence(paired, x, y, *, ax=None):
     """Scatter the co-occurrence sample colored by storm-type population (Fix 3)."""
     fig = None
@@ -1806,7 +1734,6 @@ def plot_storm_type_cooccurrence(paired, x, y, *, ax=None):
     if fig is not None:
         fig.tight_layout()
     return fig
-
 
 def plot_population_copula_fits(model, paired, *, n=4000, seed=11):
     """Per-population observed vs fitted dependence on the uniform scale (small multiples)."""
@@ -1830,7 +1757,6 @@ def plot_population_copula_fits(model, paired, *, n=4000, seed=11):
     fig.suptitle("Per-storm-type vine fits: observed pseudo-obs (red) vs fitted sample (grey)")
     fig.tight_layout()
     return fig
-
 
 def plot_combined_and_isolines(model, *, return_periods=(10, 50, 100, 500), grid=60, n_sample=4000, seed=11, paired=None, catalog=None, ax=None):
     """Combined AND isolines across storm-type populations."""
@@ -1858,7 +1784,6 @@ def plot_combined_and_isolines(model, *, return_periods=(10, 50, 100, 500), grid
     finite = rp_grid[np.isfinite(rp_grid)]
     fill = float(finite.max()) if finite.size else rp_cap
     rp_smooth = 10.0 ** gaussian_filter(np.log10(np.clip(np.where(np.isfinite(rp_grid), rp_grid, fill), 1e-3, rp_cap)), sigma=1.2)
-
     fig = None
     if ax is None:
         fig, ax = plt.subplots(figsize=(7.0, 5.6))
@@ -1879,7 +1804,6 @@ def plot_combined_and_isolines(model, *, return_periods=(10, 50, 100, 500), grid
     if fig is not None:
         fig.tight_layout()
     return fig
-
 
 def plot_joint_tail_budget(catalog, stress_settings, *, severity_bands=None, band_order=None):
     """Compare the fitted candidate pool against the selected design/stress set."""
@@ -1938,7 +1862,6 @@ def plot_joint_tail_budget(catalog, stress_settings, *, severity_bands=None, ban
     fig.tight_layout()
     return fig
 
-
 def plot_realization_scaling(catalog, driver, *, ax=None):
     """Field-Preserving Realization diagnostics: scale-factor spread + analog diversity."""
     scale_col, member_col = f"{driver}_scale_factor", f"{driver}_template_member_id"
@@ -1957,7 +1880,6 @@ def plot_realization_scaling(catalog, driver, *, ax=None):
     if fig is not None:
         fig.tight_layout()
     return fig
-
 
 # Short notebook-facing plot names.
 plot_rainfall = plot_rainfall_member_distribution

@@ -178,24 +178,54 @@ def plot_flood_response_diagnostics(response: FloodResponseDiagnostics):
     }
     fig, axes = plt.subplots(1, 3, figsize=(17, 4))
 
+    rp_limits = _resolvable_log_limits(flood)
     plotted = False
     present_bands = list(flood["severity_band"].dropna().unique())
     plot_order = [b for b in severity_order if b in present_bands] + [b for b in present_bands if b not in severity_order]
+    offscale_count = 0
     for severity_band in plot_order:
         group = flood[flood["severity_band"] == severity_band]
         x = pd.to_numeric(group["sample_rp_years"], errors="coerce")
         y = pd.to_numeric(group["anytime_incremental_flooded_area_km2"], errors="coerce")
         mask = np.isfinite(x) & (x > 0) & np.isfinite(y)
         if mask.any():
-            axes[0].scatter(x[mask], y[mask], s=28, alpha=0.70, label=severity_band, color=severity_colors.get(severity_band))
+            in_bounds = mask
+            if rp_limits is not None:
+                in_bounds = in_bounds & (x <= rp_limits[1])
+            if in_bounds.any():
+                axes[0].scatter(x[in_bounds], y[in_bounds], s=28, alpha=0.70, label=severity_band, color=severity_colors.get(severity_band))
+                plotted = True
+            offscale = mask & ~in_bounds
+            if rp_limits is not None and offscale.any():
+                marker_x = _right_edge_log_marker(rp_limits)
+                axes[0].scatter(
+                    np.full(int(offscale.sum()), marker_x),
+                    y[offscale],
+                    s=42,
+                    alpha=0.80,
+                    marker=">",
+                    color=severity_colors.get(severity_band),
+                    edgecolor="black",
+                    linewidth=0.35,
+                )
+                offscale_count += int(offscale.sum())
             plotted = True
     axes[0].set_xscale("log")
-    limits = _positive_log_limits(flood["sample_rp_years"])
-    if limits is not None:
-        axes[0].set_xlim(*limits)
+    if rp_limits is not None:
+        axes[0].set_xlim(*rp_limits)
+    if offscale_count:
+        axes[0].text(
+            0.98,
+            0.96,
+            f"{offscale_count} off-scale reference",
+            ha="right",
+            va="top",
+            transform=axes[0].transAxes,
+            fontsize=8,
+        )
     axes[0].set_xlabel("sampled joint return period (years)")
     axes[0].set_ylabel("anytime incremental flooded area (km2)")
-    axes[0].legend(title="severity", fontsize=8) if plotted else _axis_message(axes[0], "No finite area metrics available")
+    axes[0].legend(title="severity", fontsize=8, frameon=False) if plotted else _axis_message(axes[0], "No finite area metrics available")
 
     box_data = [
         pd.to_numeric(flood.loc[flood["severity_band"] == band, "peak_incremental_flooded_area_km2"], errors="coerce").dropna()
@@ -223,7 +253,7 @@ def plot_flood_response_diagnostics(response: FloodResponseDiagnostics):
             plotted = True
     axes[2].set_xlabel("72h mean rainfall (mm)")
     axes[2].set_ylabel(coastal_label)
-    axes[2].legend(title="storm type", fontsize=8) if plotted else _axis_message(axes[2], "No finite paired driver metrics available")
+    axes[2].legend(title="storm type", fontsize=8, frameon=False) if plotted else _axis_message(axes[2], "No finite paired driver metrics available")
 
     fig.tight_layout()
     return fig
@@ -301,8 +331,8 @@ def driver_response_diagnostics(
         "peak_incremental_land_depth_m", "peak_incremental_flooded_area_km2",
         "anytime_incremental_flooded_area_km2", "longest_incremental_flood_duration_h",
     ]
-    drivers = [c for c in drivers if c in outcomes]
-    response = [c for c in response if c in outcomes]
+    drivers = _usable_numeric_columns(outcomes, drivers)
+    response = _usable_numeric_columns(outcomes, response, min_unique=1)
     associations = weighted_standardized_associations(outcomes, drivers=drivers, outcomes=response, min_rows=min_rows)
     out_path = Path(outdir) / "driver_flood_response_diagnostic_associations.csv"
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -312,10 +342,23 @@ def driver_response_diagnostics(
 
 def plot_driver_response_matrix(outcomes: pd.DataFrame, response: DriverResponseDiagnostics):
     """Scatter the main driver/outcome pairs used to sanity-check associations."""
-    drivers = [
-        c for c in ["coastal_water_level", "rainfall", "soil_moisture_metric", "rainfall_pairing_lag_hours"]
-        if c in response.driver_columns
-    ]
+    drivers = _usable_numeric_columns(
+        outcomes,
+        [
+            c
+            for c in [
+                "coastal_water_level",
+                "coastal_peak_m",
+                "coastal_absolute_peak_m",
+                "rainfall",
+                "rainfall_metric_mm",
+                "soil_moisture_metric",
+                "initial_soil_moisture_fraction",
+                "rainfall_pairing_lag_hours",
+            ]
+            if c in response.driver_columns
+        ],
+    )
     outcomes_cols = [
         c for c in [
             "peak_incremental_land_depth_m",
@@ -339,6 +382,35 @@ def _positive_log_limits(values):
     if np.isclose(low, high):
         return low / np.sqrt(10.0), high * np.sqrt(10.0)
     return low * 0.9, high * 1.1
+
+
+def _usable_numeric_columns(data: pd.DataFrame, columns: list[str], *, min_unique: int = 2) -> list[str]:
+    usable = []
+    for column in columns:
+        if column not in data:
+            continue
+        values = pd.to_numeric(data[column], errors="coerce").dropna()
+        if len(values) and values.nunique() >= int(min_unique):
+            usable.append(column)
+    return usable
+
+
+def _resolvable_log_limits(flood: pd.DataFrame):
+    rp = pd.to_numeric(flood.get("sample_rp_years"), errors="coerce")
+    mask = np.isfinite(rp) & (rp > 0)
+    if "probability_weight" in flood:
+        weighted = pd.to_numeric(flood["probability_weight"], errors="coerce").notna()
+        if weighted.any():
+            mask &= weighted
+    if "severity_band" in flood:
+        mask &= ~flood["severity_band"].astype(str).eq("beyond_design")
+    limits = _positive_log_limits(rp[mask])
+    return limits or _positive_log_limits(rp)
+
+
+def _right_edge_log_marker(limits):
+    low, high = limits
+    return 10 ** (np.log10(low) + 0.985 * (np.log10(high) - np.log10(low)))
 
 
 def completed_sfincs_runs(storage_root) -> pd.DataFrame:
@@ -658,8 +730,12 @@ def _weighted_corr(x: np.ndarray, y: np.ndarray, weights: np.ndarray) -> float:
 
 _PRETTY_AXIS_LABELS = {
     "coastal_water_level": "Coastal Water Level (m)",
+    "coastal_peak_m": "Coastal NTR / Surge Peak (m)",
+    "coastal_absolute_peak_m": "Coastal Absolute Peak (m)",
     "rainfall": "Rainfall (mm)",
+    "rainfall_metric_mm": "72h Mean Rainfall (mm)",
     "soil_moisture_metric": "Soil Moisture Metric",
+    "initial_soil_moisture_fraction": "Initial Soil Moisture Fraction",
     "rainfall_pairing_lag_hours": "Rainfall Pairing Lag (hours)",
     "peak_incremental_land_depth_m": "Peak Incremental Land Depth (m)",
     "peak_incremental_flooded_area_km2": "Peak Incremental Flooded Area (km²)",
@@ -707,16 +783,15 @@ def plot_driver_outcome_matrix(
 ):
     """Maduwantha-style scatter panels linking drivers to flood outcomes.
 
-    Kendall tau is reported pooled (labelled diagnostic-only — the catalogue is a
-    tail-enriched importance sample, so pooled unweighted tau is not climatology) and
-    stratified by storm type, mirroring how the joint copula itself is fit (ADR-0011).
+    Kendall tau is reported pooled (labelled diagnostic-only: the catalogue is a
+    tail-enriched importance sample, so pooled unweighted tau is not climatology).
     The probability-weighted association table is the headline; these tau values are a
     visual cross-check.
     """
     from matplotlib.ticker import MaxNLocator, ScalarFormatter
 
-    drivers = [d for d in drivers if d in data]
-    outcomes = [o for o in outcomes if o in data]
+    drivers = _usable_numeric_columns(data, [d for d in drivers if d in data])
+    outcomes = _usable_numeric_columns(data, [o for o in outcomes if o in data], min_unique=1)
     if not drivers or not outcomes:
         raise ValueError("no requested drivers/outcomes are present in data")
     palette = {"nor_easter": "#4c78a8", "other_non_tropical": "#54a24b", "tc": "#e45756", "unresolved": "#bab0ac"}
@@ -744,13 +819,10 @@ def plot_driver_outcome_matrix(
             pooled = _tau_with_ci(data[driver], data[outcome])
             if pooled is not None:
                 tau, lo, hi, p, n = pooled
-                lines = [f"pooled τ={tau:+.2f} [{lo:+.2f},{hi:+.2f}]", f"p={p:.2g}, n={n} (diagnostic-only)"]
-                for storm_type in [s for s in palette if s in set(storm_values)]:
-                    sub = data[storm_values == storm_type]
-                    strat = _tau_with_ci(sub[driver], sub[outcome])
-                    if strat is not None:
-                        s_tau, s_lo, s_hi, _s_p, s_n = strat
-                        lines.append(f"  {storm_type}: τ={s_tau:+.2f} (n={s_n})")
+                lines = [
+                    f"τ={tau:+.2f} [{lo:+.2f},{hi:+.2f}] {_p_stars(p)}".rstrip(),
+                    f"p={_format_p(p)}, n={n}",
+                ]
                 ax.text(0.04, 0.96, "\n".join(lines), transform=ax.transAxes, va="top", fontsize=6.5,
                         bbox=dict(boxstyle="round", fc="white", alpha=0.85))
             ax.set_xlabel(_pretty_axis_label(driver))
@@ -764,11 +836,31 @@ def plot_driver_outcome_matrix(
                 ax.xaxis.set_major_formatter(fmt)
                 ax.ticklabel_format(axis="x", style="sci", scilimits=(-3, 3))
             ax.grid(True, alpha=0.3)
+            if not plotted:
+                _axis_message(ax, "No paired finite data")
             if plotted and row_idx == 0 and col_idx == len(drivers) - 1:
-                ax.legend(loc="best", fontsize=8)
+                ax.legend(loc="best", fontsize=8, frameon=False)
     fig.suptitle("Driver/flood-response diagnostic associations (not causal attribution)", y=1.01)
     fig.tight_layout()
     return fig
+
+
+def _p_stars(p: float) -> str:
+    if not np.isfinite(p):
+        return ""
+    if p < 0.001:
+        return "***"
+    if p < 0.01:
+        return "**"
+    if p < 0.05:
+        return "*"
+    return ""
+
+
+def _format_p(p: float) -> str:
+    if not np.isfinite(p):
+        return "NA"
+    return f"{p:.1e}" if p < 0.001 else f"{p:.2g}"
 
 
 def _spatial_time_stats(da) -> pd.DataFrame:
