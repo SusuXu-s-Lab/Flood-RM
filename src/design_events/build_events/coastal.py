@@ -27,15 +27,9 @@ def sample_return_periods(n, settings, seed):
     return rng.permutation(samples)
 
 def bootstrap_body_sample(data, n_samples, seed):
-    # Body sampler: bootstrap with replacement from historical peaks.
-    # - Every body sample is an exact unmodified observed historical peak.
-    #   No interpolation, no smoothing, no convex blending of neighbors.
-    # - The empirical marginal of the synthetic body converges to the
-    #   empirical marginal of the input peaks as n_samples grows. Sample
-    #   variance matches the historical record's variance (no shrinkage
-    #   toward neighborhood means, which a k-NN convex blend would induce).
-    # - All samples lie in [min(data), max(data)]. A reviewer can trace any
-    #   body sample back to a specific historical storm in the catalog.
+    # Body sampler: bootstrap with replacement from historical peaks. Each sample is an exact
+    # observed peak (no interpolation/smoothing/blending), so the synthetic body's empirical
+    # marginal and variance converge to the input record's and every sample is traceable.
     rng = np.random.default_rng(seed)
     data = np.asarray(data, dtype=float)
     data = data[np.isfinite(data)]
@@ -127,11 +121,9 @@ def hybrid_peak_sample(peaks, n_samples, settings, marginal, seed):
 
 
 def hybrid_peak_sample_frame(peaks, n_samples, settings, marginal, seed):
-    # common peaks are bootstrap resamples of the historical record below
-    # the splice threshold; rare peaks come from the fitted return-period
-    # curve, drawn uniformly in log-RP space above the splice threshold.
-    # If the tail is oversampled, sampling weights preserve the target
-    # body/tail probability mass implied by the splice threshold.
+    # Common peaks are bootstrap resamples below the splice threshold; rare peaks come from the
+    # fitted return-period curve, drawn uniformly in log-RP space above it. Sampling weights
+    # preserve the body/tail probability mass implied by the splice threshold.
     peaks = np.asarray(peaks, dtype=float)
     peaks = peaks[np.isfinite(peaks)]
     if len(peaks) == 0:
@@ -165,10 +157,8 @@ def hybrid_peak_sample_frame(peaks, n_samples, settings, marginal, seed):
     else:
         tail_count = 0
     body_count = n_samples - tail_count
-    # Synthetic body marginal == empirical marginal
-    # of the truncated record (in expectation), so the only modeling
-    # assumption in the body region is "future common storms resemble
-    # past common storms" 
+    # Synthetic body marginal == empirical marginal of the truncated record (in expectation):
+    # the only body-region assumption is "future common storms resemble past common storms".
     body = bootstrap_body_sample(body_candidates, body_count, seed)
     rows = pd.DataFrame(
         {

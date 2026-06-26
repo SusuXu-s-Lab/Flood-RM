@@ -27,10 +27,8 @@ def load_hourly_waterlevel(path):
     return pd.to_numeric(frame["value"], errors="coerce").sort_index()
 
 def _run_eva(waterlevel, peak_settings, fit_rps):
-    # Single EVA pass: peak extraction + marginal fit. Factored out so the
-    # detrend workflow can call it twice -- once on raw data to estimate
-    # the secular trend, then again on detrended data to produce the
-    # production fit.
+    # Single EVA pass: peak extraction + marginal fit. Called twice by the detrend
+    # workflow -- once on raw data to estimate the trend, then on detrended data.
     method = str(peak_settings.get("method", "pot")).strip().lower()
     period = normalize_time_frequency(peak_settings.get("hydrological_year_start", "YS-AUG"))
     selection = str(peak_settings.get("selection_criterion", "AIC"))
@@ -75,16 +73,9 @@ def _years_since(index, ref_year):
     return years - float(ref_year)
 
 def detrend_hourly_to_reference_epoch(waterlevel, slope, ref_year):
-    # Translate the hourly water level to its reference-epoch equivalent
-    # by subtracting a linear secular trend.
-    #
+    # Translate hourly water level to its reference-epoch equivalent by subtracting a
+    # linear secular trend (storm anomalies are preserved):
     #   H_detrended(t) = H(t) - slope * (year(t) - reference_epoch_year)
-    #
-    # After this transformation, the record has zero linear trend in
-    # expectation and represents what hourly water level WOULD have looked
-    # like across 1979-2022 if mean sea level had been pinned to its
-    # reference-epoch value the whole time. Storm anomalies are preserved
-    # because the trend is removed uniformly across all hours.
     if slope == 0.0:
         return waterlevel
     series = waterlevel.dropna()
@@ -92,9 +83,7 @@ def detrend_hourly_to_reference_epoch(waterlevel, slope, ref_year):
     return waterlevel.subtract(pd.Series(delta, index=series.index), fill_value=0.0)
 
 def _resolve_reference_epoch(detrend_cfg, waterlevel):
-    # "midpoint" (default) -> auto-derive from record start/end. Anything
-    # else is parsed as an integer year. Auto-derivation keeps the choice
-    # data-dependent and removes a magic number.
+    # "midpoint" (default) -> auto-derive from record start/end; anything else is an integer year.
     raw = detrend_cfg.get("reference_epoch", "midpoint")
     if isinstance(raw, str) and raw.strip().lower() == "midpoint":
         idx = waterlevel.dropna().index
@@ -109,10 +98,8 @@ def _theil_sen_slope(peaks_series):
     return float(stats.theilslopes(series.to_numpy(dtype=float), t, 0.95).slope)
 
 def _boundary_cora_annual_mean_slope(waterlevel):
-    # Estimate secular MSL trend from the same CORA boundary-node series
-    # used as forcing, not from storm peaks and not from a distant gauge.
-    # Annual means suppress tide phase and storm weather enough for a
-    # transparent local trend estimate.
+    # Estimate secular MSL trend from the CORA boundary-node series used as forcing.
+    # Annual means suppress tide phase and storm weather for a local trend estimate.
     series = waterlevel.dropna().sort_index()
     if len(series) < 3 or not isinstance(series.index, pd.DatetimeIndex):
         return 0.0, 0
@@ -149,14 +136,12 @@ def _resolve_detrend_slope(detrend_cfg, raw_peaks, waterlevel=None):
 def fit_historical_peaks(config, waterlevel):
     # Step 2a: select historical peaks and fit their return-period curve.
     #
-    # If MSL detrending is enabled (extremes.detrend.enabled = true), a
-    # two-pass workflow runs:
+    # If MSL detrending is enabled (extremes.detrend.enabled = true), a two-pass workflow runs:
     #   pass 1: extract peaks on RAW hourly to estimate the secular slope.
     #   detrend: subtract slope * (year - reference_epoch) from hourly.
     #   pass 2: re-extract on DETRENDED hourly and fit the production curve.
-    # The marginal returned represents peaks at the reference epoch, so
-    # MSL-shift scenario offsets in config.yaml are unambiguously
-    # relative to that epoch.
+    # The returned marginal represents peaks at the reference epoch, so MSL-shift scenario
+    # offsets in config.yaml are relative to that epoch.
     peak_settings = config.get("extremes", {})
     detrend_cfg = peak_settings.get("detrend", {}) or {}
     rps = np.array(peak_settings.get("return_periods", rps_default), dtype=float)
@@ -192,12 +177,8 @@ def fit_historical_peaks(config, waterlevel):
     return peaks, marginal, fit_rps, detrend_meta
 
 def stationarity_report(peaks_series, detrend_meta=None):
-    # Interpretation rule of thumb (NOT a gate):
-    #   Mann-Kendall p < 0.05 -> trend is statistically detectable. The
-    #   reviewer should compare the Theil-Sen slope to the local SLR rate
-    #   and decide whether to (a) accept the trend as physical and detrend,
-    #   (b) shorten the record to a stationary window, or (c) accept the
-    #   trend as small relative to peak variance and document the residual.
+    # Interpretation rule of thumb (not a gate): Mann-Kendall p < 0.05 -> trend is
+    # statistically detectable; the reviewer compares the Theil-Sen slope to the local SLR rate.
     series = peaks_series.dropna()
     if len(series) < 3 or not isinstance(series.index, pd.DatetimeIndex):
         return {
@@ -257,11 +238,8 @@ def _interpret_trend(p, slope, detrend_meta=None):
             "stationary fit may OVERSTATE forward risk (recent peaks lower "
             "than pooled mean). Review against local storm climatology."
         )
-    # Detrending was applied but a residual trend remains. The most
-    # common cause is that the slope source (e.g. theil_sen on POT peaks)
-    # underestimates the true MSL trend at the gauge. Switching to an
-    # external slope (e.g. NOAA published Boston Harbor mean trend)
-    # typically eliminates the residual.
+    # Detrending applied but a residual trend remains -- usually the slope source
+    # underestimates the true MSL trend; an external published slope typically removes it.
     direction = "positive" if slope > 0 else "negative"
     return (
         f"Residual {direction} trend detectable at alpha=0.05 after "
@@ -272,12 +250,8 @@ def _interpret_trend(p, slope, detrend_meta=None):
     )
 
 def write_stationarity_report(paths, peaks_series, detrend_meta=None):
-    # Persist the stationarity diagnostic next to the marginal fit.
-    # The file is intentionally JSON, not embedded in marginal_params.csv,
-    # to keep the test-statistic reporting separate from the fitted curve
-    # parameters that downstream samplers actually consume. When
-    # detrending has been applied, the report runs on the DETRENDED peak
-    # series and exists to verify the detrend was effective.
+    # Persist the stationarity diagnostic next to the marginal fit, as separate JSON so the
+    # test statistics stay out of the fitted-curve params downstream samplers consume.
     report = stationarity_report(peaks_series, detrend_meta)
     paths["stationarity_report_json"].parent.mkdir(parents=True, exist_ok=True)
     with paths["stationarity_report_json"].open("w", encoding="utf-8") as f:
@@ -286,18 +260,15 @@ def write_stationarity_report(paths, peaks_series, detrend_meta=None):
 
 def write_catalog(paths, peaks, marginal, fit_rps, detrend_meta=None):
     # Step 2b: save selected peaks and fitted curve for event building.
-    # historical_peaks.csv stores the DETRENDED peaks (i.e. peaks at the
-    # reference epoch), to match the marginal that the sampler will load.
+    # historical_peaks.csv stores DETRENDED peaks (at the reference epoch) to match the marginal.
     paths["catalog_root"].mkdir(parents=True, exist_ok=True)
     peaks.rename_axis("time").to_frame().to_csv(paths["historical_peaks_csv"])
     write_historical_peak_marginal(marginal, paths["marginal_params_csv"], detrend_meta)
     marginal_rps_frame(marginal, fit_rps).round(4).to_csv(paths["marginal_rps_csv"])
 
 def write_return_value_plot(paths, peaks, marginal, rps, bootstrap=None):
-    # Diagnostic plot: historical peaks vs fitted return-period curve.
-    # If a bootstrap result is supplied, overlay a shaded confidence band
-    # around the fitted curve so a reviewer can see distributional
-    # uncertainty alongside the point estimate.
+    # Diagnostic plot: historical peaks vs fitted return-period curve, with an optional
+    # shaded bootstrap confidence band around the curve.
     import matplotlib.pyplot as plt
     fig, ax = plt.subplots(figsize=(10, 4))
     x = peaks.dropna().values.astype(float)
@@ -343,11 +314,8 @@ def write_marginal_rps_ci(paths, marginal, rps, bootstrap):
     df.round(4).to_csv(paths["marginal_rps_ci_csv"])
 
 def write_marginal_bootstrap_meta(paths, bootstrap):
-    # Persist non-tabular bootstrap metadata: confidence level, replicate
-    # counts, and the empirical distribution-selection frequencies. The
-    # last item answers "did AIC actually prefer the same family across
-    # resamples, or is the family choice itself uncertain?" -- which a
-    # reviewer should weigh when reading the CI.
+    # Persist non-tabular bootstrap metadata: confidence level, replicate counts, and the
+    # distribution-selection frequencies (whether AIC preferred the same family across resamples).
     payload = {
         "confidence_level": bootstrap["confidence_level"],
         "n_replicates": bootstrap["n_replicates"],
@@ -359,9 +327,8 @@ def write_marginal_bootstrap_meta(paths, bootstrap):
         json.dump(payload, f, indent=2)
 
 def _bootstrap_settings(config, marginal):
-    # Resolve bootstrap settings + the candidate distribution list that
-    # MUST match what the production fit used, so the bootstrap exercises
-    # the same model-selection step rather than locking in the chosen family.
+    # Resolve bootstrap settings + candidate distribution list, which must match the production
+    # fit so the bootstrap re-runs the same model-selection step instead of locking the family.
     extremes = config.get("extremes", {})
     bootstrap_cfg = extremes.get("bootstrap", {})
     if marginal.method == "pot":
@@ -389,15 +356,11 @@ def build_catalog(config, paths):
             f"{detrend_meta['slope_m_per_year']*1000:+.2f} mm/yr, "
             f"reference epoch = {detrend_meta['reference_epoch_year']:.1f}"
         )
-    # Stationarity diagnostic: runs on the DETRENDED peak series and is
-    # the validation that detrending worked. After successful detrending,
-    # Mann-Kendall p should rise above 0.05 (no remaining trend).
+    # Stationarity diagnostic on the DETRENDED peaks: validates detrending worked
+    # (Mann-Kendall p should rise above 0.05).
     report = write_stationarity_report(paths, peaks, detrend_meta)
-    # Distributional uncertainty: nonparametric bootstrap of the return-
-    # period curve. Runs the SAME model-selection step inside each
-    # replicate so the resulting CI captures both parameter variance and
-    # family-selection variance. Sampler is unchanged (still uses the
-    # point estimate); the CI is a review artifact.
+    # Distributional uncertainty: nonparametric bootstrap of the return-period curve, re-running
+    # model selection per replicate. Review artifact only -- the sampler uses the point estimate.
     bs_cfg = _bootstrap_settings(config, marginal)
     bootstrap = bootstrap_return_values(
         peaks.dropna().to_numpy(dtype=float),

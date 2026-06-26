@@ -40,6 +40,5 @@ runs/*
 !runs/debug/.gitkeep
 
 # unfinished
-locations/*/02_flood/06*
 locations/*/02_flood/07*
 locations/*/02_flood/08*

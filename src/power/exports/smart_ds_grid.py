@@ -18,36 +18,42 @@ rows for inspection only.
 
 from __future__ import annotations
 
+import csv
+import hashlib
+import importlib.metadata
 import json
+import math
 import platform
+import random
 import sys
-from collections import defaultdict
-from datetime import datetime, timezone
+import warnings
+from collections import Counter, defaultdict
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+import pandas as pd
+import pyarrow as pa
 
 from power.artifacts import count_by
 from power.artifacts import finite_lon_lat
 from power.artifacts import git_info
+from power.artifacts import location_id
 from power.artifacts import maybe_sha256
 from power.artifacts import parse_float
-from power.artifacts import read_csv
-from power.artifacts import require_pyarrow
+from power.artifacts import parse_int
 from power.artifacts import sha256
 from power.artifacts import short_hash
 from power.artifacts import stable_asset_id
 from power.artifacts import stable_control_unit_id
 from power.artifacts import validation_error
-from power.artifacts import write_debug_csv
 from power.artifacts import write_parquet
-from power.artifacts import PROTOCOL_VERSION
-from power.artifacts import SANDBOX_ID
-from power.artifacts import POWER_GRID
+from power.artifacts import protocol_version
+from power.artifacts import power_grid
 
-DEFAULT_REGISTRY_DIR = POWER_GRID / "asset_registry"
-DEFAULT_OUTPUT_DIR = POWER_GRID / "augmented"
-SCHEMA_VERSION = "stage_a1.v0.1"
+default_registry_dir = power_grid / "asset_registry"
+default_output_dir = power_grid / "augmented"
+schema_version = "stage_a1.v0.1"
 
 
 def midpoint(a: float | None, b: float | None) -> float | None:
@@ -109,7 +115,7 @@ def base_asset(
     source_row: dict[str, str],
 ) -> dict[str, Any]:
     return {
-        "sandbox_id": SANDBOX_ID,
+        "sandbox_id": location_id,
         "asset_id": stable_asset_id(source_table, source_name),
         "asset_type": asset_type,
         "source_asset_table": source_table,
@@ -122,7 +128,7 @@ def base_asset(
         "rated_kv": rated_kv,
         "rated_kva": rated_kva,
         "source_provenance": source_provenance(source_table, source_row),
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": schema_version,
     }
 
 
@@ -270,10 +276,10 @@ def build_line_assets(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
 
 def build_assets(registry_dir: Path) -> list[dict[str, Any]]:
     rows = []
-    rows.extend(build_transformer_assets(read_csv(registry_dir / "transformers.csv")))
-    rows.extend(build_source_assets(read_csv(registry_dir / "sources.csv")))
-    rows.extend(build_load_bus_assets(read_csv(registry_dir / "load_buses.csv")))
-    rows.extend(build_line_assets(read_csv(registry_dir / "lines.csv")))
+    rows.extend(build_transformer_assets(pd.read_csv(registry_dir / "transformers.csv", keep_default_na=False).to_dict("records")))
+    rows.extend(build_source_assets(pd.read_csv(registry_dir / "sources.csv", keep_default_na=False).to_dict("records")))
+    rows.extend(build_load_bus_assets(pd.read_csv(registry_dir / "load_buses.csv", keep_default_na=False).to_dict("records")))
+    rows.extend(build_line_assets(pd.read_csv(registry_dir / "lines.csv", keep_default_na=False).to_dict("records")))
     rows.sort(key=lambda row: row["asset_id"])
     return rows
 
@@ -281,7 +287,7 @@ def build_assets(registry_dir: Path) -> list[dict[str, Any]]:
 def build_control_units(
     registry_dir: Path, assets: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    feeders = read_csv(registry_dir / "feeders.csv")
+    feeders = pd.read_csv(registry_dir / "feeders.csv", keep_default_na=False).to_dict("records")
     assets_by_feeder: dict[str, list[str]] = defaultdict(list)
     sources_by_feeder: dict[str, list[str]] = defaultdict(list)
     for asset in assets:
@@ -296,7 +302,7 @@ def build_control_units(
         feeder_id = feeder["feeder_id"]
         control_units.append(
             {
-                "sandbox_id": SANDBOX_ID,
+                "sandbox_id": location_id,
                 "control_unit_id": stable_control_unit_id(feeder_id),
                 "control_unit_type": "feeder",
                 "control_unit_stage": "stage_a",
@@ -315,7 +321,7 @@ def build_control_units(
                     {"source_table": "feeders", "feeder_id": feeder_id},
                     sort_keys=True,
                 ),
-                "schema_version": SCHEMA_VERSION,
+                "schema_version": schema_version,
             }
         )
     control_units.sort(key=lambda row: row["control_unit_id"])
@@ -323,7 +329,6 @@ def build_control_units(
 
 
 def assets_schema() -> Any:
-    pa, _ = require_pyarrow()
     return pa.schema(
         [
             ("sandbox_id", pa.string()),
@@ -351,7 +356,6 @@ def assets_schema() -> Any:
 
 
 def control_units_schema() -> Any:
-    pa, _ = require_pyarrow()
     return pa.schema(
         [
             ("sandbox_id", pa.string()),
@@ -381,7 +385,7 @@ def validate_assets(assets: list[dict[str, Any]], report: dict[str, Any]) -> Non
         validation_error(report, "asset_id values are not unique")
     for row in assets:
         asset_id = row["asset_id"]
-        if not asset_id.startswith(f"{SANDBOX_ID}:asset:"):
+        if not asset_id.startswith(f"{location_id}:asset:"):
             validation_error(report, f"{asset_id}: invalid asset namespace")
         if row["is_flood_relevant"] and row["coordinate_status"] != "valid":
             validation_error(report, f"{asset_id}: flood-relevant asset lacks valid coordinates")
@@ -412,7 +416,7 @@ def validate_control_units(
     control_units: list[dict[str, Any]],
     report: dict[str, Any],
 ) -> None:
-    feeder_ids = {row["feeder_id"] for row in read_csv(registry_dir / "feeders.csv")}
+    feeder_ids = set(pd.read_csv(registry_dir / "feeders.csv", keep_default_na=False)["feeder_id"].astype(str))
     asset_ids = {row["asset_id"] for row in assets}
     unit_ids = [row["control_unit_id"] for row in control_units]
     if len(unit_ids) != len(set(unit_ids)):
@@ -426,7 +430,7 @@ def validate_control_units(
         validation_error(report, f"unexpected Feeder Control Units: {extra}")
     for unit in control_units:
         unit_id = unit["control_unit_id"]
-        if not unit_id.startswith(f"{SANDBOX_ID}:control_unit:"):
+        if not unit_id.startswith(f"{location_id}:control_unit:"):
             validation_error(report, f"{unit_id}: invalid control unit namespace")
         if unit["control_unit_type"] != "feeder" or unit["control_unit_stage"] != "stage_a":
             validation_error(report, f"{unit_id}: Stage A1 supports feeder control units only")
@@ -455,12 +459,12 @@ def _build_static_grid_manifest(
             "sha256": sha256(registry_summary),
         }
     return {
-        "run_id": f"{SANDBOX_ID}:run:{PROTOCOL_VERSION}:stage_a1:{short_hash(registry_inputs)}",
+        "run_id": f"{location_id}:run:{protocol_version}:stage_a1:{short_hash(registry_inputs)}",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "sandbox_id": SANDBOX_ID,
+        "sandbox_id": location_id,
         "stage": "stage_a1",
-        "schema_version": SCHEMA_VERSION,
-        "protocol_version": PROTOCOL_VERSION,
+        "schema_version": schema_version,
+        "protocol_version": protocol_version,
         "python": sys.version,
         "platform": platform.platform(),
         "git": git_info(),
@@ -489,8 +493,10 @@ def export_base(registry_dir: Path, output_dir: Path, *, debug_csv: bool) -> dic
     if debug_csv:
         assets_debug = output_dir / "assets.debug.csv"
         control_units_debug = output_dir / "control_units.debug.csv"
-        write_debug_csv(assets_debug, assets, [field.name for field in assets_schema()])
-        write_debug_csv(control_units_debug, control_units, [field.name for field in control_units_schema()])
+        pd.DataFrame(assets, columns=[field.name for field in assets_schema()]).to_csv(assets_debug, index=False)
+        pd.DataFrame(control_units, columns=[field.name for field in control_units_schema()]).to_csv(
+            control_units_debug, index=False
+        )
         debug_outputs = {
             "assets.debug.csv": assets_debug,
             "control_units.debug.csv": control_units_debug,
@@ -498,7 +504,7 @@ def export_base(registry_dir: Path, output_dir: Path, *, debug_csv: bool) -> dic
 
     report: dict[str, Any] = {
         "stage": "stage_a1",
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": schema_version,
         "passed": False,
         "errors": [],
         "checks": {},
@@ -531,44 +537,16 @@ Reads validated Stage A1 artifacts and writes:
     locations/marshfield/data/power_grid/augmented/validation_report_stage_a2.json
 """
 
-
-import csv
-import hashlib
-import importlib.metadata
-import json
-import math
-import platform
-import random
-import sys
-import warnings
-from collections import defaultdict
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from typing import Any, Iterable
-
-from power.artifacts import count_by
-from power.artifacts import finite_lon_lat
-from power.artifacts import git_info
-from power.artifacts import maybe_sha256
-from power.artifacts import read_parquet
-from power.artifacts import require_pyarrow
-from power.artifacts import sha256
-from power.artifacts import short_hash
-from power.artifacts import validation_error
-from power.artifacts import write_debug_csv
-from power.artifacts import write_parquet
-from power.artifacts import PROTOCOL_VERSION
-from power.artifacts import SANDBOX_ID
 from power.impact import failure_probability
 
-ASSET_STATES_SCHEMA_VERSION = "stage_a2_asset_states.v0.1"
-TELEMETRY_SCHEMA_VERSION = "stage_a2_telemetry_observations.v0.1"
-DEFAULT_EVENT_ID = "marshfield_synthetic_coastal_001"
-DEFAULT_ROOT_SEED = 20260509
-DEFAULT_MC_DRAWS = 50
-DEFAULT_SYNTHETIC_PEAK_DEPTH_M = 1.25
-DEFAULT_EVENT_TIMESTAMP = "2026-01-01T00:00:00+00:00"
-DEFAULT_MAX_SAMPLE_DISTANCE_M = 150.0
+asset_states_schema_version = "stage_a2_asset_states.v0.1"
+telemetry_schema_version = "stage_a2_telemetry_observations.v0.1"
+default_event_id = "marshfield_synthetic_coastal_001"
+default_root_seed = 20260509
+default_mc_draws = 50
+default_synthetic_peak_depth_m = 1.25
+default_event_timestamp = "2026-01-01T00:00:00+00:00"
+default_max_sample_distance_m = 150.0
 
 
 def parse_utc_timestamp(value: str) -> datetime:
@@ -580,7 +558,6 @@ def parse_utc_timestamp(value: str) -> datetime:
 
 
 def asset_states_schema() -> Any:
-    pa, _ = require_pyarrow()
     return pa.schema(
         [
             ("sandbox_id", pa.string()),
@@ -601,7 +578,6 @@ def asset_states_schema() -> Any:
 
 
 def telemetry_observations_schema() -> Any:
-    pa, _ = require_pyarrow()
     return pa.schema(
         [
             ("sandbox_id", pa.string()),
@@ -767,7 +743,7 @@ def sfincs_peak_depth_grid(dataset: Any) -> Any:
     raise RuntimeError("sfincs_map.nc must contain hmax, zsmax+zb, or zs+zb")
 
 
-OUT_OF_MESH_DEPTH_M = 0.0
+out_of_mesh_depth_m = 0.0
 
 
 def clip_out_of_mesh_depths(depths):
@@ -784,7 +760,7 @@ def clip_out_of_mesh_depths(depths):
 
     array = np.asarray(depths, dtype=float)
     nan_mask = ~np.isfinite(array)
-    cleaned = np.where(nan_mask, OUT_OF_MESH_DEPTH_M, array)
+    cleaned = np.where(nan_mask, out_of_mesh_depth_m, array)
     return cleaned, int(nan_mask.sum())
 
 
@@ -822,7 +798,7 @@ def build_sfincs_event_samples(
     depths = flat_depth[nearest]
     depths = np.where(distances <= float(max_sample_distance_m), depths, np.nan)
     depths, out_of_mesh_count = clip_out_of_mesh_depths(depths)
-    timestamp = parse_utc_timestamp(DEFAULT_EVENT_TIMESTAMP)
+    timestamp = parse_utc_timestamp(default_event_timestamp)
 
     samples: dict[str, list[dict[str, Any]]] = {}
     for asset, depth_m in zip(assets, depths, strict=True):
@@ -842,7 +818,7 @@ def build_sfincs_event_samples(
         "sfincs_model_crs_assumption": "EPSG:26919",
         "timestamp": timestamp.isoformat(),
         "out_of_mesh_asset_count": out_of_mesh_count,
-        "out_of_mesh_depth_m": OUT_OF_MESH_DEPTH_M,
+        "out_of_mesh_depth_m": out_of_mesh_depth_m,
         "description": (
             "Nearest-cell peak flood depth sampled from a completed SFINCS "
             "sfincs_map.nc output. Assets farther than max_sample_distance_m "
@@ -888,7 +864,7 @@ def build_asset_states(
                 binary_state_by_key[(mc_draw, timestamp, asset_id)] = int(failed)
                 rows.append(
                     {
-                        "sandbox_id": SANDBOX_ID,
+                        "sandbox_id": location_id,
                         "event_id": event_id,
                         "mc_draw": mc_draw,
                         "timestamp": timestamp,
@@ -900,7 +876,7 @@ def build_asset_states(
                         "failure_model_version": "erad_v0.1.11_mapping_v0.1",
                         "rng_seed": seed,
                         "source_provenance": asset_state_provenance(asset, event_metadata),
-                        "schema_version": ASSET_STATES_SCHEMA_VERSION,
+                        "schema_version": asset_states_schema_version,
                     }
                 )
     return rows, binary_state_by_key
@@ -946,7 +922,7 @@ def build_telemetry_observations(
                 delivered = timestamp + observation_delay(seed)
                 rows.append(
                     {
-                        "sandbox_id": SANDBOX_ID,
+                        "sandbox_id": location_id,
                         "event_id": event_id,
                         "mc_draw": mc_draw,
                         "timestamp_observed": timestamp,
@@ -962,7 +938,7 @@ def build_telemetry_observations(
                         "observability_tier": "tier_1_scada_oms",
                         "rng_seed": seed,
                         "source_provenance": telemetry_provenance("direct_asset_state", [asset_id]),
-                        "schema_version": TELEMETRY_SCHEMA_VERSION,
+                        "schema_version": telemetry_schema_version,
                     }
                 )
             for unit in control_units:
@@ -980,7 +956,7 @@ def build_telemetry_observations(
                 delivered = timestamp + observation_delay(seed)
                 rows.append(
                     {
-                        "sandbox_id": SANDBOX_ID,
+                        "sandbox_id": location_id,
                         "event_id": event_id,
                         "mc_draw": mc_draw,
                         "timestamp_observed": timestamp,
@@ -996,7 +972,7 @@ def build_telemetry_observations(
                         "observability_tier": "tier_2_feeder_summary",
                         "rng_seed": seed,
                         "source_provenance": telemetry_provenance("control_unit_fraction", member_ids),
-                        "schema_version": TELEMETRY_SCHEMA_VERSION,
+                        "schema_version": telemetry_schema_version,
                     }
                 )
     return rows
@@ -1126,14 +1102,14 @@ def _build_event_conditioned_grid_manifest(
         }
     )
     return {
-        "run_id": f"{SANDBOX_ID}:run:{PROTOCOL_VERSION}:{event_id}:seed_{root_seed}:{run_hash}",
+        "run_id": f"{location_id}:run:{protocol_version}:{event_id}:seed_{root_seed}:{run_hash}",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "sandbox_id": SANDBOX_ID,
+        "sandbox_id": location_id,
         "stage": "stage_a2",
-        "protocol_version": PROTOCOL_VERSION,
+        "protocol_version": protocol_version,
         "schema_versions": {
-            "asset_states.parquet": ASSET_STATES_SCHEMA_VERSION,
-            "telemetry_observations.parquet": TELEMETRY_SCHEMA_VERSION,
+            "asset_states.parquet": asset_states_schema_version,
+            "telemetry_observations.parquet": telemetry_schema_version,
         },
         "event_id": event_id,
         "root_seed": root_seed,
@@ -1164,18 +1140,18 @@ def _build_event_conditioned_grid_manifest(
 def export_stage_a2(
     output_dir: Path,
     *,
-    event_id: str = DEFAULT_EVENT_ID,
-    root_seed: int = DEFAULT_ROOT_SEED,
-    mc_draws: int = DEFAULT_MC_DRAWS,
+    event_id: str = default_event_id,
+    root_seed: int = default_root_seed,
+    mc_draws: int = default_mc_draws,
     event_depth_csv: Path | None = None,
     sfincs_event_dir: Path | None = None,
-    max_sample_distance_m: float = DEFAULT_MAX_SAMPLE_DISTANCE_M,
-    synthetic_peak_depth_m: float = DEFAULT_SYNTHETIC_PEAK_DEPTH_M,
-    event_timestamp: str = DEFAULT_EVENT_TIMESTAMP,
+    max_sample_distance_m: float = default_max_sample_distance_m,
+    synthetic_peak_depth_m: float = default_synthetic_peak_depth_m,
+    event_timestamp: str = default_event_timestamp,
     debug_csv: bool = False,
 ) -> dict[str, Any]:
-    assets = read_parquet(output_dir / "assets.parquet")
-    control_units = read_parquet(output_dir / "control_units.parquet")
+    assets = pd.read_parquet(output_dir / "assets.parquet").to_dict("records")
+    control_units = pd.read_parquet(output_dir / "control_units.parquet").to_dict("records")
     flood_assets = flood_relevant_assets(assets)
     if event_depth_csv and sfincs_event_dir:
         raise ValueError("Use either --event-depth-csv or --sfincs-event-dir, not both")
@@ -1220,8 +1196,12 @@ def export_stage_a2(
     if debug_csv:
         asset_states_debug = output_dir / "asset_states.debug.csv"
         telemetry_debug = output_dir / "telemetry_observations.debug.csv"
-        write_debug_csv(asset_states_debug, asset_states, [field.name for field in asset_states_schema()])
-        write_debug_csv(telemetry_debug, telemetry, [field.name for field in telemetry_observations_schema()])
+        pd.DataFrame(asset_states, columns=[field.name for field in asset_states_schema()]).to_csv(
+            asset_states_debug, index=False
+        )
+        pd.DataFrame(telemetry, columns=[field.name for field in telemetry_observations_schema()]).to_csv(
+            telemetry_debug, index=False
+        )
         debug_outputs = {
             "asset_states.debug.csv": asset_states_debug,
             "telemetry_observations.debug.csv": telemetry_debug,
@@ -1230,8 +1210,8 @@ def export_stage_a2(
     report: dict[str, Any] = {
         "stage": "stage_a2",
         "schema_versions": {
-            "asset_states.parquet": ASSET_STATES_SCHEMA_VERSION,
-            "telemetry_observations.parquet": TELEMETRY_SCHEMA_VERSION,
+            "asset_states.parquet": asset_states_schema_version,
+            "telemetry_observations.parquet": telemetry_schema_version,
         },
         "event_id": event_id,
         "root_seed": root_seed,
@@ -1278,25 +1258,15 @@ def export_stage_a2(
     return report
 
 
-# Control sandbox registry
+# Control registry
 
-"""Control-sandbox filtering for Marshfield Asset Registry exports."""
+"""Control filtering for Marshfield Asset Registry exports."""
 
-
-import csv
-import json
-import math
-from collections import Counter
-from collections import defaultdict
-from pathlib import Path
-from typing import Iterable
-
-from power.artifacts import parse_float as _as_float, parse_int
 from power.baseline_network.build_asset_registry import build_feeders
 
-CONTROL_SANDBOX_FILTER_SCHEMA_VERSION = "marshfield_control_sandbox_filter.v0.1"
+control_sandbox_filter_schema_version = "marshfield_control_sandbox_filter.v0.1"
 
-REGISTRY_CSV_NAMES = (
+registry_csv_names = (
     "buses.csv",
     "lines.csv",
     "transformers.csv",
@@ -1306,7 +1276,7 @@ REGISTRY_CSV_NAMES = (
     "feeders.csv",
 )
 
-FEEDER_FIELDS = [
+feeder_fields = [
     "feeder_id",
     "bus_count",
     "line_count",
@@ -1398,8 +1368,8 @@ def _component_groups_from_tie_candidates(
         if row.get("bus") in bus_to_component
         and row.get("feeder_id")
         and _as_int(row.get("line_degree"), default=0) >= min_line_degree
-        and _as_float(row.get("lon")) is not None
-        and _as_float(row.get("lat")) is not None
+        and parse_float(row.get("lon")) is not None
+        and parse_float(row.get("lat")) is not None
     ]
     if not candidate_rows:
         return [{component} for component in sorted(components)]
@@ -1489,7 +1459,7 @@ def control_registry(
     max_tie_distance_m: float = 100.0,
     min_tie_bus_line_degree: int = 2,
 ) -> dict[str, int]:
-    """Write the canonical Marshfield control-sandbox registry.
+    """Write the canonical Marshfield control registry.
 
     The raw SHIFT/DiTTo registry may contain source-backed feeder components
     outside the networked-microgrid reconfiguration graph. This filter retains
@@ -1502,7 +1472,7 @@ def control_registry(
     output_dir = Path(output_dir)
     tables: dict[str, list[dict[str, str]]] = {}
     fields: dict[str, list[str]] = {}
-    for name in REGISTRY_CSV_NAMES:
+    for name in registry_csv_names:
         rows, header = _read_csv(raw_registry_dir / name)
         tables[name] = rows
         fields[name] = header
@@ -1569,9 +1539,9 @@ def control_registry(
         name: _write_csv(
             output_dir / name,
             filtered[name],
-            FEEDER_FIELDS if name == "feeders.csv" else fields[name],
+            feeder_fields if name == "feeders.csv" else fields[name],
         )
-        for name in REGISTRY_CSV_NAMES
+        for name in registry_csv_names
     }
 
     raw_summary_path = raw_registry_dir / "summary.json"
@@ -1587,12 +1557,12 @@ def control_registry(
         if component in excluded_components
     }
     summary = {
-        "method": "canonical Marshfield control-sandbox filter over raw Asset Registry",
-        "schema_version": CONTROL_SANDBOX_FILTER_SCHEMA_VERSION,
+        "method": "canonical Marshfield control filter over raw Asset Registry",
+        "schema_version": control_sandbox_filter_schema_version,
         "raw_asset_registry_summary": raw_summary,
         "outputs": outputs,
         "control_sandbox_filter": {
-            "schema_version": CONTROL_SANDBOX_FILTER_SCHEMA_VERSION,
+            "schema_version": control_sandbox_filter_schema_version,
             "input_registry_dir": str(raw_registry_dir),
             "max_tie_distance_m": float(max_tie_distance_m),
             "min_tie_bus_line_degree": int(min_tie_bus_line_degree),

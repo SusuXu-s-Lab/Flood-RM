@@ -1,47 +1,30 @@
 # Load profile assignments
 
-"""Stage B load profile assignment: ComStock/ResStock archetypes per facility.
-
-Methodology: each configured critical facility is mapped to a ComStock or
-ResStock archetype keyed by the configured ASHRAE climate zone.
-The archetype metadata feeds `load_profile_assignments.parquet` v0.1 and
-selects the schedule overlay used to shape per-facility 8760 placeholder
-profiles for REopt sizing. Real ComStock/ResStock CSV pulls are deferred to
-a later sub-slice; this module assigns the archetype and emits the
-provenance so the assignment artifact is auditable now.
-
-NLR-Distribution-Suite handoff: the protocol-locked
-`load_profile_assignments.parquet` is the canonical assignment record. When
-the assignment feeds a gdm ``DistributionSystem`` (for example at the
-OpenDSS export / PowerModelsONM settings slice), per-load time series are
-attached via the infrasys ``SingleTimeSeries`` API on each
-``DistributionLoad`` component, which is the NLR-native time-series
-mechanism. Archetype mapping itself has no NLR-native equivalent because it
-is a sandbox-specific domain decision.
-"""
-
-
+import hashlib
 import json
 import math
+import urllib.request
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Mapping
 from typing import Any
 
+import pandas as pd
 
-LOAD_PROFILE_ASSIGNMENTS_SCHEMA_VERSION = "stage_b_load_profile_assignments.v0.1"
-HOURS_PER_YEAR = 8760
+
+load_profile_assignments_schema_version = "stage_b_load_profile_assignments.v0.1"
+hours_per_year = 8760
 
 # School-calendar approximation: classes in session Mon-Fri Sep-mid Jun.
 # Day-of-year boundaries (0-indexed) for summer break.
-_SUMMER_BREAK_START_DOY = 165  # ~Jun 14
-_SUMMER_BREAK_END_DOY = 245    # ~Sep 2
+_summer_break_start_doy = 165  # ~Jun 14
+_summer_break_end_doy = 245    # ~Sep 2
 
 
-DEFAULT_ASHRAE_CLIMATE_ZONE = "ASHRAE_5A"
+default_ashrae_climate_zone = "ASHRAE_5A"
 
-CUSTOMER_CLASS_CRITICAL = "critical_facility"
-CUSTOMER_CLASS_RESIDENTIAL = "residential"
+customer_class_critical = "critical_facility"
+customer_class_residential = "residential"
 
 # Facility class -> archetype assignment.
 #
@@ -50,44 +33,44 @@ CUSTOMER_CLASS_RESIDENTIAL = "residential"
 # pattern used to shape the placeholder 8760 until real ComStock/ResStock
 # pulls land. Allowed overlays: "24x7", "business_hours", "school_calendar",
 # "extended_residential", "industrial_continuous".
-_FACILITY_CLASS_ARCHETYPE: "dict[str, tuple[str, str, str, str]]" = {
+_facility_class_archetype: "dict[str, tuple[str, str, str, str]]" = {
     # 24x7 emergency / response sites.
-    "police_eoc": ("comstock", "SmallOffice", "24x7", CUSTOMER_CLASS_CRITICAL),
-    "fire_station": ("comstock", "SmallOffice", "24x7", CUSTOMER_CLASS_CRITICAL),
-    "communications_exchange": ("comstock", "SmallOffice", "24x7", CUSTOMER_CLASS_CRITICAL),
-    "responder_radio": ("comstock", "SmallOffice", "24x7", CUSTOMER_CLASS_CRITICAL),
+    "police_eoc": ("comstock", "SmallOffice", "24x7", customer_class_critical),
+    "fire_station": ("comstock", "SmallOffice", "24x7", customer_class_critical),
+    "communications_exchange": ("comstock", "SmallOffice", "24x7", customer_class_critical),
+    "responder_radio": ("comstock", "SmallOffice", "24x7", customer_class_critical),
     # Business-hours municipal facilities.
-    "municipal_facility": ("comstock", "SmallOffice", "business_hours", CUSTOMER_CLASS_CRITICAL),
-    "senior_center": ("comstock", "MediumOffice", "business_hours", CUSTOMER_CLASS_CRITICAL),
-    "school_administration": ("comstock", "SmallOffice", "business_hours", CUSTOMER_CLASS_CRITICAL),
-    "post_office": ("comstock", "SmallOffice", "business_hours", CUSTOMER_CLASS_CRITICAL),
-    "animal_shelter": ("comstock", "RetailStandalone", "business_hours", CUSTOMER_CLASS_CRITICAL),
-    "public_library_shelter": ("comstock", "SmallOffice", "business_hours", CUSTOMER_CLASS_CRITICAL),
-    "harbor_master": ("comstock", "SmallOffice", "business_hours", CUSTOMER_CLASS_CRITICAL),
-    "municipal_airport": ("comstock", "SmallOffice", "business_hours", CUSTOMER_CLASS_CRITICAL),
-    "public_works": ("comstock", "Warehouse", "business_hours", CUSTOMER_CLASS_CRITICAL),
+    "municipal_facility": ("comstock", "SmallOffice", "business_hours", customer_class_critical),
+    "senior_center": ("comstock", "MediumOffice", "business_hours", customer_class_critical),
+    "school_administration": ("comstock", "SmallOffice", "business_hours", customer_class_critical),
+    "post_office": ("comstock", "SmallOffice", "business_hours", customer_class_critical),
+    "animal_shelter": ("comstock", "RetailStandalone", "business_hours", customer_class_critical),
+    "public_library_shelter": ("comstock", "SmallOffice", "business_hours", customer_class_critical),
+    "harbor_master": ("comstock", "SmallOffice", "business_hours", customer_class_critical),
+    "municipal_airport": ("comstock", "SmallOffice", "business_hours", customer_class_critical),
+    "public_works": ("comstock", "Warehouse", "business_hours", customer_class_critical),
     # K-12 schools follow school-calendar schedule.
-    "school": ("comstock", "PrimarySchool", "school_calendar", CUSTOMER_CLASS_CRITICAL),
+    "school": ("comstock", "PrimarySchool", "school_calendar", customer_class_critical),
     # Residential housing (multi-family).
-    "public_housing": ("resstock", "MultiFamily", "extended_residential", CUSTOMER_CLASS_RESIDENTIAL),
+    "public_housing": ("resstock", "MultiFamily", "extended_residential", customer_class_residential),
     "healthcare_residential": (
         "comstock",
         "Outpatient",
         "extended_residential",
-        CUSTOMER_CLASS_CRITICAL,
+        customer_class_critical,
     ),
     # Industrial / process loads.
     "wastewater_treatment_plant": (
         "comstock",
         "Warehouse",
         "industrial_continuous",
-        CUSTOMER_CLASS_CRITICAL,
+        customer_class_critical,
     ),
 }
 
-_DEFAULT_ARCHETYPE = ("comstock", "SmallOffice", "business_hours", CUSTOMER_CLASS_CRITICAL)
+_default_archetype = ("comstock", "SmallOffice", "business_hours", customer_class_critical)
 
-SYNTHETIC_PEAK_KW_BY_CLASS = {
+synthetic_peak_kw_by_class = {
     "municipal_facility": 50.0,
     "police_eoc": 75.0,
     "fire_station": 60.0,
@@ -107,7 +90,7 @@ SYNTHETIC_PEAK_KW_BY_CLASS = {
     "municipal_airport": 50.0,
 }
 
-TIER_INT_TO_STRING = {
+tier_int_to_string = {
     0: "tier_0_life_safety",
     1: "tier_1_response",
     2: "tier_2_lifeline_support",
@@ -135,15 +118,15 @@ def assign_archetype(facility: Mapping[str, Any]) -> dict[str, Any]:
     """
 
     facility_class = facility.get("facility_class")
-    source, building_type, schedule, customer_class = _FACILITY_CLASS_ARCHETYPE.get(
-        facility_class, _DEFAULT_ARCHETYPE
+    source, building_type, schedule, customer_class = _facility_class_archetype.get(
+        facility_class, _default_archetype
     )
     return {
         "profile_source": source,
         "source_building_type": building_type,
         "schedule_overlay": schedule,
         "customer_class": customer_class,
-        "source_geography": DEFAULT_ASHRAE_CLIMATE_ZONE,
+        "source_geography": default_ashrae_climate_zone,
         "facility_class": facility_class,
     }
 
@@ -157,7 +140,7 @@ def build_load_profile_assignment_row(
     *,
     load_asset_id: str,
     peak_kw: float,
-    sandbox_id: str,
+    location_id: str,
     weather_year: int = 2018,
     rng_seed: int = 0,
     p_scale_factor: float = 1.0,
@@ -181,9 +164,11 @@ def build_load_profile_assignment_row(
 
     archetype = assign_archetype(facility)
     facility_token = _load_profile_facility_token(facility["facility_id"])
-    municipality_id = municipality_id or facility.get("municipality_id") or f"{sandbox_id}:municipality:{sandbox_id}"
+    municipality_id = (
+        municipality_id or facility.get("municipality_id") or f"{location_id}:municipality:{location_id}"
+    )
     loadshape_id = (
-        f"{sandbox_id}:loadshape:{facility_token}:"
+        f"{location_id}:loadshape:{facility_token}:"
         f"{archetype['profile_source']}:{archetype['source_building_type']}:"
         f"{archetype['schedule_overlay']}"
     )
@@ -210,7 +195,7 @@ def build_load_profile_assignment_row(
         provenance["profile_provenance"] = dict(profile_provenance)
 
     return {
-        "sandbox_id": sandbox_id,
+        "sandbox_id": location_id,
         "load_asset_id": load_asset_id,
         "loadshape_id": loadshape_id,
         "municipality_id": municipality_id,
@@ -223,7 +208,7 @@ def build_load_profile_assignment_row(
         "source_building_type": archetype["source_building_type"],
         "weather_year": weather_year,
         "time_step_minutes": 60,
-        "npts": HOURS_PER_YEAR,
+        "npts": hours_per_year,
         "p_scale_factor": p_scale_factor,
         "q_scale_factor": q_scale_factor,
         "annual_energy_kwh": None,
@@ -232,7 +217,7 @@ def build_load_profile_assignment_row(
         "diversity_group_id": diversity_group_id or facility_token,
         "rng_seed": rng_seed,
         "source_provenance": json.dumps(provenance, sort_keys=True),
-        "schema_version": LOAD_PROFILE_ASSIGNMENTS_SCHEMA_VERSION,
+        "schema_version": load_profile_assignments_schema_version,
     }
 
 
@@ -240,7 +225,7 @@ def build_archetype_load_profile(
     archetype: Mapping[str, Any],
     *,
     peak_kw: float,
-    hours: int = HOURS_PER_YEAR,
+    hours: int = hours_per_year,
 ) -> list[float]:
     """Generate a placeholder 8760 profile shaped by ``archetype['schedule_overlay']``.
 
@@ -250,7 +235,7 @@ def build_archetype_load_profile(
     """
 
     overlay = archetype.get("schedule_overlay", "business_hours")
-    shape_fn = _OVERLAY_SHAPE_FNS.get(overlay, _shape_business_hours)
+    shape_fn = _overlay_shape_fns.get(overlay, _shape_business_hours)
     return [round(peak_kw * shape_fn(hour), 6) for hour in range(hours)]
 
 
@@ -294,7 +279,7 @@ def _shape_school_calendar(hour: int) -> float:
     day_of_year = (hour // 24) % 365
     hour_of_day = hour % 24
 
-    summer_break = _SUMMER_BREAK_START_DOY <= day_of_year < _SUMMER_BREAK_END_DOY
+    summer_break = _summer_break_start_doy <= day_of_year < _summer_break_end_doy
     weekend = day_of_week >= 5
 
     if weekend or summer_break:
@@ -334,7 +319,7 @@ def _shape_industrial_continuous(hour: int) -> float:
     return max(0.85, min(1.0, 0.92 + swing))
 
 
-_OVERLAY_SHAPE_FNS = {
+_overlay_shape_fns = {
     "24x7": _shape_24x7,
     "business_hours": _shape_business_hours,
     "school_calendar": _shape_school_calendar,
@@ -345,7 +330,7 @@ _OVERLAY_SHAPE_FNS = {
 
 def load_inputs(
     critical_facility_records: list[Mapping[str, Any]],
-    critical_load_assignment_by_facility: Mapping[str, Mapping[str, Any]],
+    load_match_by_facility: Mapping[str, Mapping[str, Any]],
     *,
     load_profile_assignments_path: Path,
     oedi_profile_cache_dir: Path,
@@ -372,15 +357,15 @@ def load_inputs(
     for facility in critical_facility_records:
         normalized = dict(facility)
         raw_tier = normalized.get("criticality_tier")
-        normalized["criticality_tier"] = TIER_INT_TO_STRING.get(raw_tier, raw_tier)
+        normalized["criticality_tier"] = tier_int_to_string.get(raw_tier, raw_tier)
         facility_id = str(normalized["facility_id"])
         facility_lookup[facility_id] = normalized
-        critical_assignment = critical_load_assignment_by_facility.get(facility_id)
-        if critical_assignment is None:
+        load_match = load_match_by_facility.get(facility_id)
+        if load_match is None:
             continue
 
         facility_class = normalized.get("facility_class") or "municipal_facility"
-        peak_kw = SYNTHETIC_PEAK_KW_BY_CLASS.get(str(facility_class), 50.0)
+        peak_kw = synthetic_peak_kw_by_class.get(str(facility_class), 50.0)
         archetype = assign_archetype(normalized)
         tariff_selection = select_eversource_south_shore_tariff(
             normalized,
@@ -419,9 +404,9 @@ def load_inputs(
 
         row = build_load_profile_assignment_row(
             normalized,
-            load_asset_id=str(critical_assignment["load_asset_id"]),
+            load_asset_id=str(load_match["load_asset_id"]),
             peak_kw=peak_kw,
-            sandbox_id=str(normalized.get("sandbox_id") or facility_id.split(":", 1)[0]),
+            location_id=str(normalized.get("sandbox_id") or facility_id.split(":", 1)[0]),
             profile_source_version=profile_source_version,
             synthetic_placeholder=not use_oedi_load_profiles,
             profile_provenance=load_profile_provenance_by_facility[facility_id],
@@ -430,7 +415,7 @@ def load_inputs(
         assignment_rows.append(row)
         load_profiles_kw[facility_id] = profile
 
-    schema = load_profile_assignments_pyarrow_schema()
+    schema = load_profile_schema()
     columns = {field.name: [row.get(field.name) for row in assignment_rows] for field in schema}
     load_profile_assignments_path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.table(columns, schema=schema), load_profile_assignments_path)
@@ -445,14 +430,8 @@ def load_inputs(
     )
 
 
-def load_profile_assignments_pyarrow_schema() -> Any:
-    """Return the pyarrow schema for `load_profile_assignments.parquet` v0.1.
-
-    Field types and nullability mirror `simulated_data_protocol.md` so rows
-    produced by :func:`build_load_profile_assignment_row` serialise without
-    coercion. `annual_energy_kwh` is nullable until the actual 8760 series is
-    integrated to produce the value.
-    """
+def load_profile_schema() -> Any:
+    """Return the schema for `load_profile_assignments.parquet` v0.1."""
 
     import pyarrow as pa
 
@@ -485,28 +464,14 @@ def load_profile_assignments_pyarrow_schema() -> Any:
     )
 
 
-# Nodal load profile support
+eversource_ma_residential_peak_kw_ceiling = 10.0
+eversource_ma_industrial_peak_kw_floor = 200.0
 
-"""Nodal demand assignment for non-critical loads."""
+customer_class_commercial = "commercial"
+customer_class_industrial_proxy = "industrial_proxy"
 
-
-import hashlib
-import json
-from collections.abc import Mapping, Sequence
-from typing import Any
-
-
-
-EVERSOURCE_MA_RESIDENTIAL_PEAK_KW_CEILING = 10.0
-EVERSOURCE_MA_INDUSTRIAL_PEAK_KW_FLOOR = 200.0
-
-CUSTOMER_CLASS_RESIDENTIAL = "residential"
-CUSTOMER_CLASS_COMMERCIAL = "commercial"
-CUSTOMER_CLASS_INDUSTRIAL_PROXY = "industrial_proxy"
-
-_HOURS_PER_YEAR = 8760
-_DEFAULT_WEATHER_YEAR = 2018
-_DEFAULT_POWER_FACTOR_POLICY = "static_load_pf"
+_default_weather_year = 2018
+_default_power_factor_policy = "static_load_pf"
 
 
 def classify_eversource_customer_class(*, peak_kw: float) -> str:
@@ -515,11 +480,11 @@ def classify_eversource_customer_class(*, peak_kw: float) -> str:
     Returns one of ``residential``, ``commercial``, or ``industrial_proxy``.
     """
 
-    if peak_kw < EVERSOURCE_MA_RESIDENTIAL_PEAK_KW_CEILING:
-        return CUSTOMER_CLASS_RESIDENTIAL
-    if peak_kw < EVERSOURCE_MA_INDUSTRIAL_PEAK_KW_FLOOR:
-        return CUSTOMER_CLASS_COMMERCIAL
-    return CUSTOMER_CLASS_INDUSTRIAL_PROXY
+    if peak_kw < eversource_ma_residential_peak_kw_ceiling:
+        return customer_class_residential
+    if peak_kw < eversource_ma_industrial_peak_kw_floor:
+        return customer_class_commercial
+    return customer_class_industrial_proxy
 
 
 def assign_nodal_load_profiles(
@@ -527,10 +492,10 @@ def assign_nodal_load_profiles(
     *,
     profile_pool: Mapping[str, Sequence[Mapping[str, Any]]],
     root_seed: int,
-    sandbox_id: str,
+    location_id: str,
     municipality_id: str | None = None,
-    weather_year: int = _DEFAULT_WEATHER_YEAR,
-    power_factor_policy: str = _DEFAULT_POWER_FACTOR_POLICY,
+    weather_year: int = _default_weather_year,
+    power_factor_policy: str = _default_power_factor_policy,
 ) -> list[dict[str, Any]]:
     """Assign one ``load_profile_assignments.parquet`` row per nodal load.
 
@@ -542,7 +507,7 @@ def assign_nodal_load_profiles(
     The returned rows are ordered to match ``loads``.
     """
 
-    municipality_id = municipality_id or f"{sandbox_id}:municipality:{sandbox_id}"
+    municipality_id = municipality_id or f"{location_id}:municipality:{location_id}"
     rows: list[dict[str, Any]] = []
     for record in loads:
         peak_kw = float(record["kw"])
@@ -567,7 +532,7 @@ def assign_nodal_load_profiles(
         archetype = candidates[selection_seed % len(candidates)]
 
         loadshape_id = (
-            f"{sandbox_id}:loadshape:nodal:{feeder_id}:{customer_class}:"
+            f"{location_id}:loadshape:nodal:{feeder_id}:{customer_class}:"
             f"{archetype['profile_source']}:{archetype['source_building_type']}:{load_name}"
         )
 
@@ -587,8 +552,8 @@ def assign_nodal_load_profiles(
 
         rows.append(
             {
-                "sandbox_id": sandbox_id,
-                "load_asset_id": f"{sandbox_id}:asset:loads:{load_name}",
+                "sandbox_id": location_id,
+                "load_asset_id": f"{location_id}:asset:loads:{load_name}",
                 "loadshape_id": loadshape_id,
                 "municipality_id": municipality_id,
                 "tile_id": None,
@@ -602,7 +567,7 @@ def assign_nodal_load_profiles(
                 "source_building_type": archetype["source_building_type"],
                 "weather_year": weather_year,
                 "time_step_minutes": 60,
-                "npts": _HOURS_PER_YEAR,
+                "npts": hours_per_year,
                 "p_scale_factor": peak_kw,
                 "q_scale_factor": kvar,
                 "annual_energy_kwh": None,
@@ -611,7 +576,7 @@ def assign_nodal_load_profiles(
                 "diversity_group_id": diversity_group_id,
                 "rng_seed": selection_seed,
                 "source_provenance": json.dumps(provenance, sort_keys=True),
-                "schema_version": LOAD_PROFILE_ASSIGNMENTS_SCHEMA_VERSION,
+                "schema_version": load_profile_assignments_schema_version,
             }
         )
 
@@ -626,21 +591,7 @@ def _deterministic_selection_seed(
     return int.from_bytes(digest[:8], "big", signed=False)
 
 
-# Tariff selection
-
-"""Tariff selection for Marshfield REopt sizing.
-
-The current Marshfield sandbox is in Eversource/NSTAR South Shore territory.
-REopt should consume URDB labels, not project-local blended placeholders, when
-we are making API-backed sizing runs.
-"""
-
-
-from dataclasses import dataclass
-from typing import Any
-
-
-EVERSOURCE_SOUTH_SHORE_RATE_SOURCE = (
+eversource_south_shore_rate_source = (
     "https://www.eversource.com/docs/default-source/rates-tariffs/"
     "ema-south-shore-rates.pdf?sfvrsn=f6b2b9ce_16"
 )
@@ -677,25 +628,25 @@ class UrdbTariffSelection:
         }
 
 
-SOUTH_SHORE_RESIDENTIAL_R1_STANDARD_OFFER = UrdbTariffSelection(
+south_shore_residential_r1_standard_offer = UrdbTariffSelection(
     urdb_label="698931e6d9dd764bf1013fef",
     utility="NSTAR Electric Company",
     rate_name="South Shore Residential R-1 Annual BS (32)",
     sector="Residential",
     service_type="Delivery with Standard Offer",
-    source_url=EVERSOURCE_SOUTH_SHORE_RATE_SOURCE,
+    source_url=eversource_south_shore_rate_source,
     effective_date="2026-02-01",
     applicability_status="selected_by_customer_class",
     applicability_note="Residential/public-housing fallback for resilience sizing.",
 )
 
-SOUTH_SHORE_GENERAL_G1_STANDARD_OFFER = UrdbTariffSelection(
+south_shore_general_g1_standard_offer = UrdbTariffSelection(
     urdb_label="698a2ef6918cc43ffc02be98",
     utility="NSTAR Electric Company",
     rate_name="South Shore General-G-1 (33)",
     sector="Industrial",
     service_type="Delivery with Standard Offer",
-    source_url=EVERSOURCE_SOUTH_SHORE_RATE_SOURCE,
+    source_url=eversource_south_shore_rate_source,
     effective_date="2026-02-01",
     applicability_status="needs_account_rate_confirmation",
     applicability_note=(
@@ -704,25 +655,25 @@ SOUTH_SHORE_GENERAL_G1_STANDARD_OFFER = UrdbTariffSelection(
     ),
 )
 
-SOUTH_SHORE_MEDIUM_G2_STANDARD_OFFER = UrdbTariffSelection(
+south_shore_medium_g2_standard_offer = UrdbTariffSelection(
     urdb_label="698a2c5679616684990babe8",
     utility="NSTAR Electric Company",
     rate_name="South Shore Medium General Time-of-Use G-2 BS (84)",
     sector="Commercial",
     service_type="Delivery with Standard Offer",
-    source_url=EVERSOURCE_SOUTH_SHORE_RATE_SOURCE,
+    source_url=eversource_south_shore_rate_source,
     effective_date="2026-02-01",
     applicability_status="selected_by_peak_kw",
     applicability_note="Selected for nonresidential critical facilities with 100 <= peak_kw < 500.",
 )
 
-SOUTH_SHORE_LARGE_G3_STANDARD_OFFER = UrdbTariffSelection(
+south_shore_large_g3_standard_offer = UrdbTariffSelection(
     urdb_label="698a2df2fd2dc68d090eef78",
     utility="NSTAR Electric Company",
     rate_name="South Shore Large General Time-of-Use G-3 BS (24)",
     sector="Industrial",
     service_type="Delivery with Standard Offer",
-    source_url=EVERSOURCE_SOUTH_SHORE_RATE_SOURCE,
+    source_url=eversource_south_shore_rate_source,
     effective_date="2026-02-01",
     applicability_status="selected_by_peak_kw",
     applicability_note="Selected for nonresidential critical facilities with peak_kw >= 500.",
@@ -744,38 +695,24 @@ def select_eversource_south_shore_tariff(
     """
 
     if customer_class == "residential" or facility.get("facility_class") == "public_housing":
-        return SOUTH_SHORE_RESIDENTIAL_R1_STANDARD_OFFER
+        return south_shore_residential_r1_standard_offer
     if peak_kw >= 500.0:
-        return SOUTH_SHORE_LARGE_G3_STANDARD_OFFER
+        return south_shore_large_g3_standard_offer
     if peak_kw >= 100.0:
-        return SOUTH_SHORE_MEDIUM_G2_STANDARD_OFFER
-    return SOUTH_SHORE_GENERAL_G1_STANDARD_OFFER
+        return south_shore_medium_g2_standard_offer
+    return south_shore_general_g1_standard_offer
 
 
-# OEDI stock profile support
-
-"""OEDI ResStock/ComStock profile access for REopt load inputs."""
-
-
-import hashlib
-import urllib.request
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
-
-import pandas as pd
-
-
-OEDI_BUCKET_HTTPS_ROOT = "https://oedi-data-lake.s3.amazonaws.com"
-EULP_DATASET_PREFIX = (
+oedi_bucket_https_root = "https://oedi-data-lake.s3.amazonaws.com"
+eulp_dataset_prefix = (
     "nrel-pds-building-stock/end-use-load-profiles-for-us-building-stock/2021"
 )
-EULP_RELEASE_BY_SOURCE = {
+eulp_release_by_source = {
     "comstock": "comstock_amy2018_release_1",
     "resstock": "resstock_amy2018_release_1",
 }
-PLYMOUTH_COUNTY_GEOID = "G2500230"
-EULP_TOTAL_ELECTRICITY_COLUMN = "out.electricity.total.energy_consumption"
+plymouth_county_geoid = "G2500230"
+eulp_total_electricity_column = "out.electricity.total.energy_consumption"
 
 
 @dataclass(frozen=True)
@@ -807,14 +744,14 @@ class OediProfileSelection:
 
 
 def metadata_url(profile_source: str) -> str:
-    release = EULP_RELEASE_BY_SOURCE[profile_source]
-    return f"{OEDI_BUCKET_HTTPS_ROOT}/{EULP_DATASET_PREFIX}/{release}/metadata/metadata.parquet"
+    release = eulp_release_by_source[profile_source]
+    return f"{oedi_bucket_https_root}/{eulp_dataset_prefix}/{release}/metadata/metadata.parquet"
 
 
 def profile_url(profile_source: str, *, county_id: str, building_id: str) -> str:
-    release = EULP_RELEASE_BY_SOURCE[profile_source]
+    release = eulp_release_by_source[profile_source]
     return (
-        f"{OEDI_BUCKET_HTTPS_ROOT}/{EULP_DATASET_PREFIX}/{release}/"
+        f"{oedi_bucket_https_root}/{eulp_dataset_prefix}/{release}/"
         "timeseries_individual_buildings/by_county/upgrade=0/"
         f"county={county_id}/{building_id}-0.parquet"
     )
@@ -839,13 +776,13 @@ def select_oedi_profile(
     archetype: dict[str, Any],
     *,
     cache_dir: Path,
-    county_id: str = PLYMOUTH_COUNTY_GEOID,
+    county_id: str = plymouth_county_geoid,
     selection_token: str,
 ) -> OediProfileSelection:
     """Select a deterministic EULP individual-building profile."""
 
     profile_source = str(archetype["profile_source"])
-    release = EULP_RELEASE_BY_SOURCE[profile_source]
+    release = eulp_release_by_source[profile_source]
     source_building_type = str(archetype["source_building_type"])
     metadata = load_oedi_metadata(profile_source, cache_dir=cache_dir)
 
@@ -885,8 +822,8 @@ def load_oedi_8760_profile_kw(
         f"{selection.building_id}-0.parquet"
     )
     download_if_missing(selection.profile_url, path)
-    frame = pd.read_parquet(path, columns=[EULP_TOTAL_ELECTRICITY_COLUMN])
-    values = frame[EULP_TOTAL_ELECTRICITY_COLUMN].astype(float).to_list()
+    frame = pd.read_parquet(path, columns=[eulp_total_electricity_column])
+    values = frame[eulp_total_electricity_column].astype(float).to_list()
     if len(values) % 4 != 0:
         raise ValueError(f"Expected 15-minute EULP profile length divisible by 4; got {len(values)}")
     hourly_kw = [sum(values[idx : idx + 4]) for idx in range(0, len(values), 4)]

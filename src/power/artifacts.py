@@ -1,17 +1,5 @@
-
-
-# Artifact IO, parsing, stable IDs, and provenance
-
-"""Shared Grid Dataset kernel: IO, value parsing, Stable Grid IDs, provenance.
-
-The primitives every Grid Dataset Stage leans on live here so the stages never
-reach sideways into each other for a float parser, a CSV reader, or a Stable
-Grid ID. Kept dependency-light (stdlib only) so importing it is cheap.
-"""
-
 from __future__ import annotations
 
-import csv
 import hashlib
 import json
 import math
@@ -24,60 +12,36 @@ from typing import Any, Iterable
 
 # Repo root, computed locally so artifact helpers stay cheap to import.
 # src/power/artifacts.py -> parents[2].
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+_repo_root = Path(__file__).resolve().parents[2]
 
-_SOURCE_ROOT = Path(__file__).resolve().parents[1]
-if (_SOURCE_ROOT / "study_location.py").exists():
-    sys.path = [entry for entry in sys.path if entry != str(_SOURCE_ROOT)]
-    sys.path.insert(0, str(_SOURCE_ROOT))
+_source_root = Path(__file__).resolve().parents[1]
+if (_source_root / "study_location.py").exists():
+    sys.path = [entry for entry in sys.path if entry != str(_source_root)]
+    sys.path.insert(0, str(_source_root))
 
 from study_location import default_location_config_path, define_location  # noqa: E402
 
 
 def _configured_location_id() -> str:
-    try:
-        definition = define_location(default_location_config_path(_REPO_ROOT))
-    except ValueError:
-        return "study_location"
+    definition = define_location(default_location_config_path(_repo_root))
     return str(definition.config.get("project", {}).get("name") or definition.root.name)
 
+
 # Stable Grid ID namespace (CONTEXT.md: "<location>:*").
-SANDBOX_ID = os.environ.get("FLOOD_RM_SANDBOX_ID") or _configured_location_id()
-PROTOCOL_VERSION = "v0.1"
-
-
-def require_pyarrow():
-    try:
-        import pyarrow as pa
-        import pyarrow.parquet as pq
-    except ModuleNotFoundError as exc:  # pragma: no cover - environment guard
-        raise SystemExit(
-            "Canonical sandbox artifact IO requires pyarrow. "
-            "Install project dependencies first, then rerun this workflow."
-        ) from exc
-    return pa, pq
-
-
-def read_csv(path: Path) -> list[dict[str, str]]:
-    with path.open(newline="", encoding="utf-8") as fh:
-        return list(csv.DictReader(fh))
-
-
-def write_debug_csv(path: Path, rows: list[dict[str, Any]], fields: list[str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=fields, extrasaction="raise")
-        writer.writeheader()
-        for row in rows:
-            out = {}
-            for field in fields:
-                value = row.get(field)
-                out[field] = json.dumps(value, sort_keys=True) if isinstance(value, list) else value
-            writer.writerow(out)
+location_id = (
+    os.environ.get("FLOOD_RM_LOCATION_ID")
+    or os.environ.get("FLOOD_RM_SANDBOX_ID")
+    or _configured_location_id()
+)
+# Legacy alias while published artifact schemas still contain sandbox_id fields.
+sandbox_id = location_id
+protocol_version = "v0.1"
 
 
 def write_parquet(path: Path, rows: list[dict[str, Any]], schema: Any) -> None:
-    pa, pq = require_pyarrow()
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
     path.parent.mkdir(parents=True, exist_ok=True)
     columns = {
         field.name: [row.get(field.name) for row in rows]
@@ -85,11 +49,6 @@ def write_parquet(path: Path, rows: list[dict[str, Any]], schema: Any) -> None:
     }
     table = pa.table(columns, schema=schema)
     pq.write_table(table, path)
-
-
-def read_parquet(path: Path) -> list[dict[str, Any]]:
-    _, pq = require_pyarrow()
-    return pq.read_table(path).to_pylist()
 
 
 def sha256(path: Path) -> str:
@@ -186,11 +145,11 @@ def stable_token(*parts: object, max_len: int = 48) -> str:
 
 
 def stable_asset_id(source_table: str, source_name: str) -> str:
-    return f"{SANDBOX_ID}:asset:{slug(source_table)}:{slug(source_name)}"
+    return f"{location_id}:asset:{slug(source_table)}:{slug(source_name)}"
 
 
 def stable_control_unit_id(feeder_id: str) -> str:
-    return f"{SANDBOX_ID}:control_unit:feeder:{slug(feeder_id)}"
+    return f"{location_id}:control_unit:feeder:{slug(feeder_id)}"
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +159,7 @@ def stable_control_unit_id(feeder_id: str) -> str:
 def git_info() -> dict[str, Any]:
     def run(args: list[str]) -> str:
         try:
-            return subprocess.check_output(args, cwd=_REPO_ROOT, text=True).strip()
+            return subprocess.check_output(args, cwd=_repo_root, text=True).strip()
         except Exception:
             return ""
 
@@ -222,11 +181,11 @@ def validation_error(report: dict[str, Any], message: str) -> None:
 
 
 # src/power/artifacts.py -> repo root.
-REPO_ROOT = Path(__file__).resolve().parents[2]
+repo_root = Path(__file__).resolve().parents[2]
 
 
 def default_location_config() -> Path:
-    return default_location_config_path(REPO_ROOT)
+    return default_location_config_path(repo_root)
 
 
 def power_grid_root(config_path=None) -> Path:
@@ -238,4 +197,4 @@ def power_grid_root(config_path=None) -> Path:
     return definition.root / path
 
 
-POWER_GRID = power_grid_root()
+power_grid = power_grid_root()

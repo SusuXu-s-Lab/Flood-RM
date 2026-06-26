@@ -9,10 +9,10 @@ import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
+import pandas as pd
+
 from power.artifacts import finite_float as _finite_float
-from power.artifacts import read_csv as _read_csv
-from power.artifacts import read_parquet
-from power.artifacts import POWER_GRID
+from power.artifacts import power_grid
 from power.impact.fragility import (
     failure_probability,
     line_local_asset_type,
@@ -20,13 +20,13 @@ from power.impact.fragility import (
     load_flood_depth_curves,
 )
 
-SMART_DS_COMPAT = POWER_GRID / "augmented"
-IMPACTS_DIR = POWER_GRID / "figures" / "impacts"
-DEFAULT_EVENT_DIR = (
-    POWER_GRID / "sfincs_truth" / "run_outputs" / "single_event_tests" / "riley_90m"
+smart_ds_compat = power_grid / "augmented"
+impacts_dir = power_grid / "figures" / "impacts"
+default_event_dir = (
+    power_grid / "sfincs_truth" / "run_outputs" / "single_event_tests" / "riley_90m"
 )
-DEFAULT_PROBABILITY_THRESHOLD = 0.50
-DEFAULT_MAX_SAMPLE_DISTANCE_M = 150.0
+default_probability_threshold = 0.50
+default_max_sample_distance_m = 150.0
 
 
 @dataclass(frozen=True)
@@ -39,7 +39,7 @@ class AssetPoint:
     label: str
 
 
-def load_asset_points(registry_dir: Path = SMART_DS_COMPAT, *, include_lines: bool = False) -> list[AssetPoint]:
+def load_asset_points(registry_dir: Path = smart_ds_compat, *, include_lines: bool = False) -> list[AssetPoint]:
     """Load flood-relevant point assets from the Asset Registry."""
     assets_parquet = registry_dir / "assets.parquet"
     if assets_parquet.exists():
@@ -47,7 +47,7 @@ def load_asset_points(registry_dir: Path = SMART_DS_COMPAT, *, include_lines: bo
 
     points: list[AssetPoint] = []
 
-    for row in _read_csv(registry_dir / "load_buses.csv"):
+    for row in pd.read_csv(registry_dir / "load_buses.csv", keep_default_na=False).to_dict("records"):
         lon = _finite_float(row.get("lon"))
         lat = _finite_float(row.get("lat"))
         if lon is None or lat is None:
@@ -63,7 +63,7 @@ def load_asset_points(registry_dir: Path = SMART_DS_COMPAT, *, include_lines: bo
             )
         )
 
-    for row in _read_csv(registry_dir / "transformers.csv"):
+    for row in pd.read_csv(registry_dir / "transformers.csv", keep_default_na=False).to_dict("records"):
         lon = _finite_float(row.get("location_lon"))
         lat = _finite_float(row.get("location_lat"))
         if lon is None or lat is None:
@@ -79,7 +79,7 @@ def load_asset_points(registry_dir: Path = SMART_DS_COMPAT, *, include_lines: bo
             )
         )
 
-    for row in _read_csv(registry_dir / "sources.csv"):
+    for row in pd.read_csv(registry_dir / "sources.csv", keep_default_na=False).to_dict("records"):
         lon = _finite_float(row.get("lon"))
         lat = _finite_float(row.get("lat"))
         if lon is None or lat is None:
@@ -96,7 +96,7 @@ def load_asset_points(registry_dir: Path = SMART_DS_COMPAT, *, include_lines: bo
         )
 
     if include_lines:
-        for row in _read_csv(registry_dir / "lines.csv"):
+        for row in pd.read_csv(registry_dir / "lines.csv", keep_default_na=False).to_dict("records"):
             from_lon = _finite_float(row.get("from_lon"))
             from_lat = _finite_float(row.get("from_lat"))
             to_lon = _finite_float(row.get("to_lon"))
@@ -120,7 +120,7 @@ def load_asset_points(registry_dir: Path = SMART_DS_COMPAT, *, include_lines: bo
 def _load_stage_a1_asset_points(assets_parquet: Path, *, include_lines: bool) -> list[AssetPoint]:
     points: list[AssetPoint] = []
     line_types = {"line", "overhead_line", "underground_line_proxy"}
-    for row in read_parquet(assets_parquet):
+    for row in pd.read_parquet(assets_parquet).to_dict("records"):
         lon = _finite_float(row.get("lon"))
         lat = _finite_float(row.get("lat"))
         if lon is None or lat is None or row.get("coordinate_status") != "valid":
@@ -192,10 +192,10 @@ def compute_asset_impacts(
     event_dir: Path,
     *,
     event_id: str | None = None,
-    probability_threshold: float = DEFAULT_PROBABILITY_THRESHOLD,
-    max_sample_distance_m: float | None = DEFAULT_MAX_SAMPLE_DISTANCE_M,
+    probability_threshold: float = default_probability_threshold,
+    max_sample_distance_m: float | None = default_max_sample_distance_m,
     include_lines: bool = False,
-    registry_dir: Path = SMART_DS_COMPAT,
+    registry_dir: Path = smart_ds_compat,
 ) -> tuple[list[dict[str, object]], dict[str, object]]:
     """Compute per-asset flood exposure and fragility-driven impact rows."""
     assets = load_asset_points(registry_dir, include_lines=include_lines)
@@ -285,13 +285,13 @@ def run_asset_impacts(
     *,
     event_id: str | None = None,
     output_dir: Path | None = None,
-    probability_threshold: float = DEFAULT_PROBABILITY_THRESHOLD,
-    max_sample_distance_m: float = DEFAULT_MAX_SAMPLE_DISTANCE_M,
+    probability_threshold: float = default_probability_threshold,
+    max_sample_distance_m: float = default_max_sample_distance_m,
     include_lines: bool = False,
 ) -> tuple[list[dict], dict]:
     """Compute fragility-based asset impacts and write CSV/summary outputs."""
     event_id = event_id or event_dir.name
-    output_dir = output_dir or IMPACTS_DIR / event_id
+    output_dir = output_dir or impacts_dir / event_id
     rows, summary = compute_asset_impacts(
         event_dir,
         event_id=event_id,

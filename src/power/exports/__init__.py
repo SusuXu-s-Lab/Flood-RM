@@ -1,7 +1,7 @@
 """Notebook-facing exports for grid simulation and restoration artifacts."""
 
-from power.exports.smart_ds_grid import DEFAULT_OUTPUT_DIR
-from power.exports.smart_ds_grid import DEFAULT_REGISTRY_DIR
+from power.exports.smart_ds_grid import default_output_dir
+from power.exports.smart_ds_grid import default_registry_dir
 from power.exports.smart_ds_grid import control_registry
 from power.exports.smart_ds_grid import export_base
 from power.exports.smart_ds_grid import export_stage_a2
@@ -18,8 +18,8 @@ from power.exports.restoration import slice_annual_profile_to_event_window
 
 
 __all__ = [
-    "DEFAULT_OUTPUT_DIR",
-    "DEFAULT_REGISTRY_DIR",
+    "default_output_dir",
+    "default_registry_dir",
     "control_registry",
     "export_base",
     "export_stage_a2",

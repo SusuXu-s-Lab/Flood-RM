@@ -1,7 +1,7 @@
 """Audit Marshfield synthetic grid artifacts against synthetic-grid validation criteria.
 
 The audit uses statistical, operational, and expert validation categories. It
-does not certify the Marshfield Control Sandbox as SMART-DS or as a utility
+does not certify the Marshfield Grid Dataset as SMART-DS or as a utility
 model; it records which validation checks the current artifacts can support.
 """
 
@@ -17,11 +17,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+import pandas as pd
+
+from power.artifacts import location_id
 from power.artifacts import parse_float
-from power.artifacts import read_csv as _read_csv
-from power.artifacts import read_parquet
-from power.artifacts import REPO_ROOT
-from power.artifacts import POWER_GRID
+from power.artifacts import repo_root
+from power.artifacts import power_grid
 
 
 # SMART-DS reference helpers used by the Synthetic Validation Audit
@@ -203,21 +204,20 @@ def smart_ds_download_plan(
     )
 
 
-SANDBOX_ID = "marshfield"
-VALIDATION_REFERENCE_LABEL = "synthetic_distribution_validation_criteria"
-METERS_PER_MILE = 1609.344
+validation_reference_label = "synthetic_distribution_validation_criteria"
+meters_per_mile = 1609.344
 
-DEFAULT_REGISTRY_DIR = POWER_GRID / "asset_registry"
-DEFAULT_SMART_DS_COMPAT_DIR = POWER_GRID / "augmented"
-DEFAULT_GRID_NETWORK_DIR = REPO_ROOT / "locations" / "marshfield" / "01_grid"
-DEFAULT_REPORT_DIR = DEFAULT_GRID_NETWORK_DIR / "outputs" / "validation_audit"
-DEFAULT_POWER_FLOW_REPORT = DEFAULT_GRID_NETWORK_DIR / "outputs" / "power_flow_validation.json"
-DEFAULT_SHORT_CIRCUIT_REPORT = DEFAULT_GRID_NETWORK_DIR / "outputs" / "short_circuit_validation.json"
-SMART_DS_REFERENCE_REGIONS = ("sfo", "austin", "greensboro")
-SMART_DS_REFERENCE_YEAR = 2016
-SMART_DS_REFERENCE_SCENARIO = "base_timeseries"
-SMART_DS_REFERENCE_MODEL_FORMAT = "opendss_no_loadshapes"
-STANDARD_DISTRIBUTION_TRANSFORMER_KVA_CATALOG = (
+default_registry_dir = power_grid / "asset_registry"
+default_smart_ds_compat_dir = power_grid / "augmented"
+default_grid_network_dir = repo_root / "locations" / "marshfield" / "01_grid"
+default_report_dir = default_grid_network_dir / "outputs" / "validation_audit"
+default_power_flow_report = default_grid_network_dir / "outputs" / "power_flow_validation.json"
+default_short_circuit_report = default_grid_network_dir / "outputs" / "short_circuit_validation.json"
+smart_ds_reference_regions = ("sfo", "austin", "greensboro")
+smart_ds_reference_year = 2016
+smart_ds_reference_scenario = "base_timeseries"
+smart_ds_reference_model_format = "opendss_no_loadshapes"
+standard_distribution_transformer_kva_catalog = (
     15.0,
     25.0,
     37.5,
@@ -242,7 +242,7 @@ class ValidationRegion:
     uncommon: tuple[tuple[float, float], ...] = ()
 
 
-TABLE_IV_TARGETS: dict[str, ValidationRegion] = {
+table_iv_targets: dict[str, ValidationRegion] = {
     "distribution_transformer_mva_per_feeder": ValidationRegion(
         typical=((0.0, 1.73),),
         uncommon=((1.73, 4.94), (4.94, 31.0), (31.0, 38.629)),
@@ -352,7 +352,7 @@ def _in_ranges(value: float, ranges: tuple[tuple[float, float], ...]) -> bool:
 
 
 def _grade_values(metric_id: str, values: list[float], *, notes: list[str] | None = None) -> dict[str, Any]:
-    target = TABLE_IV_TARGETS[metric_id]
+    target = table_iv_targets[metric_id]
     typical = sum(1 for value in values if _in_ranges(value, target.typical))
     uncommon = sum(1 for value in values if _in_ranges(value, target.uncommon))
     rare = max(len(values) - typical - uncommon, 0)
@@ -394,7 +394,7 @@ def _line_length_miles(row: dict[str, str]) -> float:
     length = _float(row.get("length"))
     units = (row.get("units") or "").lower()
     if units in {"m", "meter", "meters"}:
-        return length / METERS_PER_MILE
+        return length / meters_per_mile
     if units in {"mi", "mile", "miles"}:
         return length
     if units in {"km", "kilometer", "kilometers"}:
@@ -526,8 +526,8 @@ def _safe_read_parquet(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     try:
-        return read_parquet(path)
-    except SystemExit:
+        return pd.read_parquet(path).to_dict("records")
+    except ImportError:
         return []
 
 
@@ -568,10 +568,10 @@ def _effective_load_rows(
 
 
 def _nearest_standard_transformer_kva(required_kva: float) -> float:
-    for rating in STANDARD_DISTRIBUTION_TRANSFORMER_KVA_CATALOG:
+    for rating in standard_distribution_transformer_kva_catalog:
         if required_kva <= rating:
             return rating
-    return STANDARD_DISTRIBUTION_TRANSFORMER_KVA_CATALOG[-1]
+    return standard_distribution_transformer_kva_catalog[-1]
 
 
 def _effective_transformer_rows(
@@ -602,15 +602,15 @@ def _effective_transformer_rows(
 
 def summarize_smart_ds_reference_set(
     *,
-    year: int = SMART_DS_REFERENCE_YEAR,
-    scenario: str = SMART_DS_REFERENCE_SCENARIO,
-    model_format: str = SMART_DS_REFERENCE_MODEL_FORMAT,
+    year: int = smart_ds_reference_year,
+    scenario: str = smart_ds_reference_scenario,
+    model_format: str = smart_ds_reference_model_format,
 ) -> dict[str, Any]:
     """Summarize local availability of the synthetic SMART-DS validation references."""
 
     regions: dict[str, Any] = {}
     models: list[dict[str, Any]] = []
-    for region_id in SMART_DS_REFERENCE_REGIONS:
+    for region_id in smart_ds_reference_regions:
         cfg = get_region_config(region_id)
         plan = smart_ds_download_plan(
             region_id,
@@ -618,7 +618,7 @@ def summarize_smart_ds_reference_set(
             scenario=scenario,
             model_format=model_format,
             all_subregions=True,
-            output_root=POWER_GRID / "smart_ds_reference" / region_id,
+            output_root=power_grid / "smart_ds_reference" / region_id,
         )
         region_available = 0
         for item in plan:
@@ -882,7 +882,7 @@ def build_power_flow_validation_report(network_dss: Path | str) -> dict[str, Any
     }
 
 
-def write_power_flow_validation_report(report: dict[str, Any], path: Path = DEFAULT_POWER_FLOW_REPORT) -> Path:
+def write_power_flow_validation_report(report: dict[str, Any], path: Path = default_power_flow_report) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
@@ -1018,7 +1018,7 @@ def build_short_circuit_validation_report(
 
 def write_short_circuit_validation_report(
     report: dict[str, Any],
-    path: Path = DEFAULT_SHORT_CIRCUIT_REPORT,
+    path: Path = default_short_circuit_report,
 ) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -1097,16 +1097,16 @@ def _validation_prongs(
 
 def build_synthetic_validation_report(
     *,
-    registry_dir: Path = DEFAULT_REGISTRY_DIR,
-    smart_ds_compat_dir: Path = DEFAULT_SMART_DS_COMPAT_DIR,
-    grid_network_dir: Path = DEFAULT_GRID_NETWORK_DIR,
+    registry_dir: Path = default_registry_dir,
+    smart_ds_compat_dir: Path = default_smart_ds_compat_dir,
+    grid_network_dir: Path = default_grid_network_dir,
 ) -> dict[str, Any]:
-    feeders = _read_csv(registry_dir / "feeders.csv")
-    buses = _read_csv(registry_dir / "buses.csv")
-    lines = _read_csv(registry_dir / "lines.csv")
-    loads = _read_csv(registry_dir / "loads.csv")
-    transformers = _read_csv(registry_dir / "transformers.csv")
-    sources = _read_csv(registry_dir / "sources.csv")
+    feeders = pd.read_csv(registry_dir / "feeders.csv", keep_default_na=False).to_dict("records")
+    buses = pd.read_csv(registry_dir / "buses.csv", keep_default_na=False).to_dict("records")
+    lines = pd.read_csv(registry_dir / "lines.csv", keep_default_na=False).to_dict("records")
+    loads = pd.read_csv(registry_dir / "loads.csv", keep_default_na=False).to_dict("records")
+    transformers = pd.read_csv(registry_dir / "transformers.csv", keep_default_na=False).to_dict("records")
+    sources = pd.read_csv(registry_dir / "sources.csv", keep_default_na=False).to_dict("records")
 
     feeder_ids = sorted(row["feeder_id"] for row in feeders)
     line_classes = dict(sorted(Counter(row.get("line_class", "") for row in lines).items()))
@@ -1350,11 +1350,11 @@ def build_synthetic_validation_report(
         recommended_next_tests.append("Add OH/UG line class provenance or mark all current line-class metrics as unavailable.")
 
     report = {
-        "sandbox_id": SANDBOX_ID,
-        "validation_reference": VALIDATION_REFERENCE_LABEL,
+        "sandbox_id": location_id,
+        "validation_reference": validation_reference_label,
         "overall_status": "partial",
         "scope_note": (
-            "This is an audit of the Marshfield Control Sandbox against synthetic-grid "
+            "This is an audit of the Marshfield Grid Dataset against synthetic-grid "
             "validation criteria using SMART-DS Austin, SFO, and Greensboro synthetic reference cases. "
             "It is not a real-utility validation claim or a SMART-DS regional validation claim."
         ),
@@ -1514,11 +1514,11 @@ def build_validation_compliance_gate(report: dict[str, Any]) -> dict[str, Any]:
         }
 
     return {
-        "gate_id": f"{SANDBOX_ID}:synthetic_validation:validation_compliance",
+        "gate_id": f"{location_id}:synthetic_validation:validation_compliance",
         "target": "synthetic_distribution_validation",
         "compliant": not blockers,
         "scope_note": (
-            "This gate checks validation evidence for the Marshfield Control Sandbox; "
+            "This gate checks validation evidence for the Marshfield Grid Dataset; "
             "its statistical references are synthetic SMART-DS reference cases, not real utility data. "
             "It is not a utility certification or SMART-DS regional claim."
         ),
@@ -1564,7 +1564,7 @@ def render_validation_compliance_gate_markdown(gate: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_validation_compliance_gate(gate: dict[str, Any], output_dir: Path = DEFAULT_REPORT_DIR) -> dict[str, Path]:
+def write_validation_compliance_gate(gate: dict[str, Any], output_dir: Path = default_report_dir) -> dict[str, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / "marshfield_validation_compliance_gate.json"
     markdown_path = output_dir / "marshfield_validation_compliance_gate.md"
@@ -1646,7 +1646,7 @@ def render_markdown_report(report: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_synthetic_validation_report(report: dict[str, Any], output_dir: Path = DEFAULT_REPORT_DIR) -> dict[str, Path]:
+def write_synthetic_validation_report(report: dict[str, Any], output_dir: Path = default_report_dir) -> dict[str, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / "marshfield_synthetic_validation_audit.json"
     markdown_path = output_dir / "marshfield_synthetic_validation_audit.md"
@@ -1679,7 +1679,7 @@ def _infer_smart_ds_compat_dir(registry_dir: Path) -> Path:
         registry_dir.parent / "augmented",
         registry_dir.parent / "smart_ds_compat",
         registry_dir.parent.parent / "static" / "power_grid" / "smart_ds_compat",
-        DEFAULT_SMART_DS_COMPAT_DIR,
+        default_smart_ds_compat_dir,
     ]
     for candidate in candidates:
         if candidate.exists():
@@ -1689,11 +1689,11 @@ def _infer_smart_ds_compat_dir(registry_dir: Path) -> Path:
 
 def run_stats(
     *,
-    registry_dir: Path = DEFAULT_REGISTRY_DIR,
+    registry_dir: Path = default_registry_dir,
     smart_ds_reference_dir: Path | None = None,
     smart_ds_compat_dir: Path | None = None,
-    grid_network_dir: Path = DEFAULT_GRID_NETWORK_DIR,
-    output_dir: Path = DEFAULT_REPORT_DIR,
+    grid_network_dir: Path = default_grid_network_dir,
+    output_dir: Path = default_report_dir,
 ) -> dict[str, dict[str, Any]]:
     """Notebook-facing statistical audit runner.
 
@@ -1733,8 +1733,8 @@ def _operational_report_status(report: dict[str, Any] | None) -> str:
 def run_ops(
     *,
     opendss_root: Path,
-    registry_dir: Path = DEFAULT_REGISTRY_DIR,
-    output_dir: Path = DEFAULT_REPORT_DIR,
+    registry_dir: Path = default_registry_dir,
+    output_dir: Path = default_report_dir,
 ) -> dict[str, Any]:
     """Summarize available operational-validation evidence without a long solve.
 
@@ -1747,9 +1747,9 @@ def run_ops(
     root = Path(opendss_root)
     masters = sorted(root.glob("*/Master.dss")) if root.exists() else []
     output = Path(output_dir)
-    power_flow = _load_optional_json(output / "power_flow_validation.json") or _load_optional_json(DEFAULT_POWER_FLOW_REPORT)
+    power_flow = _load_optional_json(output / "power_flow_validation.json") or _load_optional_json(default_power_flow_report)
     short_circuit = _load_optional_json(output / "short_circuit_validation.json") or _load_optional_json(
-        DEFAULT_SHORT_CIRCUIT_REPORT
+        default_short_circuit_report
     )
     power_flow_status = _operational_report_status(power_flow)
     short_circuit_status = _operational_report_status(short_circuit)

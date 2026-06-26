@@ -9,7 +9,7 @@ from __future__ import annotations
 import pandas as pd
 
 
-ONM_SETTINGS_SCHEMA_VERSION = "stage_b_onm_settings.v0.1"
+onm_settings_schema_version = "stage_b_onm_settings.v0.1"
 
 
 def render_switches_dss(controllable_switches: pd.DataFrame) -> str:
@@ -70,7 +70,7 @@ def render_onm_settings(controllable_switches: pd.DataFrame) -> dict:
             "switch_id": str(row.switch_id),
         }
     return {
-        "schema_version": ONM_SETTINGS_SCHEMA_VERSION,
+        "schema_version": onm_settings_schema_version,
         "infrastructure_step": "controllable_switch_synthesis",
         "settings": {
             "switch": switch_section,
@@ -206,8 +206,8 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 
-LOAD_UNCERTAINTY_SCHEMA_VERSION = "marshfield_load_uncertainty.v0.1"
-DEFAULT_LOAD_UNCERTAINTY_BAND_FRACTION = 0.20
+load_uncertainty_schema_version = "marshfield_load_uncertainty.v0.1"
+default_load_uncertainty_band_fraction = 0.20
 
 
 def build_load_uncertainty_bounds(
@@ -215,7 +215,7 @@ def build_load_uncertainty_bounds(
     *,
     event_id: str,
     mc_draw: int,
-    band_fraction: float = DEFAULT_LOAD_UNCERTAINTY_BAND_FRACTION,
+    band_fraction: float = default_load_uncertainty_band_fraction,
 ) -> list[dict[str, Any]]:
     """Build per-(load, timestep) uncertainty bounds for the RPOP solver.
 
@@ -247,7 +247,7 @@ def build_load_uncertainty_bounds(
                     "lower_kw": nominal * (1.0 - band_fraction),
                     "upper_kw": nominal * (1.0 + band_fraction),
                     "band_fraction": band_fraction,
-                    "schema_version": LOAD_UNCERTAINTY_SCHEMA_VERSION,
+                    "schema_version": load_uncertainty_schema_version,
                 }
             )
     return rows
@@ -278,8 +278,8 @@ from power.artifacts import slug as _slug
 from power.resilience import build_archetype_load_profile
 
 
-DEFAULT_FEMA_LIFELINES_HORIZON_HOURS = 72
-HOURS_PER_YEAR = 8760
+default_fema_lifelines_horizon_hours = 72
+hours_per_year = 8760
 
 
 @dataclass(frozen=True)
@@ -319,7 +319,7 @@ def slice_annual_profile_to_event_window(
     *,
     event_start_utc: datetime,
     weather_year: int,
-    horizon_hours: int = DEFAULT_FEMA_LIFELINES_HORIZON_HOURS,
+    horizon_hours: int = default_fema_lifelines_horizon_hours,
 ) -> EventWindow:
     """Slice an 8760-hour profile to ``horizon_hours`` starting at the event.
 
@@ -329,9 +329,9 @@ def slice_annual_profile_to_event_window(
 
     if event_start_utc.tzinfo is None:
         raise ValueError("event_start_utc must be timezone-aware (UTC)")
-    if len(annual_profile) != HOURS_PER_YEAR:
+    if len(annual_profile) != hours_per_year:
         raise ValueError(
-            f"annual_profile must have length {HOURS_PER_YEAR}; "
+            f"annual_profile must have length {hours_per_year}; "
             f"got {len(annual_profile)}"
         )
     if horizon_hours <= 0:
@@ -339,13 +339,13 @@ def slice_annual_profile_to_event_window(
 
     start_hour = hour_of_year(event_start_utc)
     raw_end_hour = start_hour + horizon_hours
-    wrapped = raw_end_hour > HOURS_PER_YEAR
+    wrapped = raw_end_hour > hours_per_year
 
     if not wrapped:
         values = list(annual_profile[start_hour:raw_end_hour])
     else:
-        tail = list(annual_profile[start_hour:HOURS_PER_YEAR])
-        head = list(annual_profile[0 : raw_end_hour - HOURS_PER_YEAR])
+        tail = list(annual_profile[start_hour:hours_per_year])
+        head = list(annual_profile[0 : raw_end_hour - hours_per_year])
         values = tail + head
 
     return EventWindow(
@@ -554,8 +554,8 @@ class OnmRunBundle:
     run_manifest_path: Path
 
 
-_BUS_FIELDS = ("Bus1", "Bus2", "Bus")
-_FAULT_STUDY_SOURCE_IMPEDANCE = "Z1=[0.25, 0.25] Z0=[0.25, 0.25]"
+_bus_fields = ("Bus1", "Bus2", "Bus")
+_fault_study_source_impedance = "Z1=[0.25, 0.25] Z0=[0.25, 0.25]"
 
 
 def _prefix_bus_token(token: str, feeder_id: str) -> str:
@@ -575,7 +575,7 @@ def _prefix_bus_value(value: str, feeder_id: str) -> str:
 
 
 def _prefix_bus_references(line: str, feeder_id: str) -> str:
-    for field in _BUS_FIELDS:
+    for field in _bus_fields:
         line = re.sub(
             rf"\b{field}=([^\s]+)",
             lambda match: f"{field}={_prefix_bus_value(match.group(1), feeder_id)}",
@@ -995,14 +995,14 @@ def build_powermodels_onm_export(
             "New Circuit.marshfield_onm "
             f"Bus1={first_source['bus']} BasekV={float(first_source['basekv'])} "
             f"pu={float(first_source['pu'])} Angle={float(first_source['angle'])} "
-            f"Phases={int(first_source['phases'])} {_FAULT_STUDY_SOURCE_IMPEDANCE}"
+            f"Phases={int(first_source['phases'])} {_fault_study_source_impedance}"
         ),
     ]
     for row in sources.iloc[1:].itertuples(index=False):
         network_lines.append(
             f"New Vsource.{row.source_name} Bus1={row.bus} BasekV={float(row.basekv)} "
             f"pu={float(row.pu)} Angle={float(row.angle)} Phases={int(row.phases)} "
-            f"{_FAULT_STUDY_SOURCE_IMPEDANCE}"
+            f"{_fault_study_source_impedance}"
         )
     network_lines.extend(
         [
@@ -1166,7 +1166,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-ONM_EVENTS_SCHEMA_VERSION = "marshfield_onm_events.v0.1"
+onm_events_schema_version = "marshfield_onm_events.v0.1"
 
 
 @dataclass(frozen=True)
@@ -1192,7 +1192,7 @@ class OnmEventsResult:
     event_id: str
     mc_draw: int
     event_start_utc: datetime
-    schema_version: str = ONM_EVENTS_SCHEMA_VERSION
+    schema_version: str = onm_events_schema_version
     skipped_asset_ids: list[str] = field(default_factory=list)
 
 
@@ -1335,10 +1335,10 @@ def materialize_onm_run_bundle(
     event_id: str,
     mc_draw: int,
     event_start: datetime,
-    horizon_hours: int = DEFAULT_FEMA_LIFELINES_HORIZON_HOURS,
+    horizon_hours: int = default_fema_lifelines_horizon_hours,
     asset_states: pd.DataFrame | Iterable[AssetStateRow] | None = None,
     asset_to_dss_element: Mapping[str, str] | None = None,
-    uncertainty_band: float = DEFAULT_LOAD_UNCERTAINTY_BAND_FRACTION,
+    uncertainty_band: float = default_load_uncertainty_band_fraction,
 ) -> OnmRunBundle:
     """Write the event-window sidecar files consumed by PMONM/DynaGrid runs."""
 

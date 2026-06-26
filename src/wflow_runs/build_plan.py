@@ -2015,7 +2015,7 @@ def build_wflow_submodel(
     if (
         _is_built_wflow_model(model_root)
         and not force
-        and _sfincs_gauge_layer_matches(model_root, submodel)
+        and _sfincs_gauge_layer_matches(model_root, submodel, config=config, paths=paths)
         and _observation_gauge_layer_matches(model_root, submodel, config)
     ):
         _assert_wflow_reservoir_staticmaps_current(config, model_root, selected_id)
@@ -3087,13 +3087,23 @@ def _is_built_wflow_model(model_root: Path) -> bool:
     return bool(files & {"wflow_sbm.toml", "staticmaps.nc", "staticgeoms.nc"})
 
 
-def _sfincs_gauge_layer_matches(model_root: Path, submodel: dict) -> bool:
+def _sfincs_gauge_layer_matches(
+    model_root: Path,
+    submodel: dict,
+    *,
+    config: dict | None = None,
+    paths: dict | None = None,
+) -> bool:
     expected = {str(value) for value in submodel.get("sfincs_handoff_ids", ()) if value}
     if not expected:
         return True
     gauges_path = model_root / "staticgeoms" / "gauges_sfincs.geojson"
     if not gauges_path.exists():
         return False
+    if config is not None and paths is not None:
+        for source_path in _sfincs_handoff_source_paths(config, paths, submodel):
+            if source_path.stat().st_mtime > gauges_path.stat().st_mtime:
+                return False
     try:
         gauges = gpd.read_file(gauges_path)
     except Exception:
@@ -3105,6 +3115,32 @@ def _sfincs_gauge_layer_matches(model_root: Path, submodel: dict) -> bool:
     else:
         return False
     return actual == expected
+
+
+def _sfincs_handoff_source_paths(config: dict, paths: dict, submodel: dict) -> list[Path]:
+    """Return current SFINCS handoff source files feeding a Wflow submodel."""
+    location_root = _location_root(paths)
+    expected_domains = {str(value) for value in submodel.get("sfincs_domain_ids", ()) if value}
+    expected_handoffs = {str(value) for value in submodel.get("sfincs_handoff_ids", ()) if value}
+    manifest_value = (
+        (config.get("sfincs_domain_set", {}) or {}).get("domain_manifest")
+        or "data/sfincs/domains/domain_set.yaml"
+    )
+    manifest_path = _location_path(location_root, manifest_value)
+    candidates: list[Path] = []
+    if manifest_path.exists():
+        payload = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
+        for domain in payload.get("domains", []) or []:
+            domain_id = str(domain.get("sfincs_domain_id", ""))
+            handoff_ids = {str(value) for value in domain.get("handoff_source_ids", ()) if value}
+            if expected_domains and domain_id not in expected_domains and not (expected_handoffs & handoff_ids):
+                continue
+            base_root = domain.get("base_model_root")
+            if base_root:
+                candidates.append(_location_path(location_root, base_root) / "gis/wflow_handoff_sources.geojson")
+    if not candidates:
+        candidates = sorted(location_root.glob("data/sfincs/domains/*/base/gis/wflow_handoff_sources.geojson"))
+    return [path for path in candidates if path.exists()]
 
 
 def _observation_gauge_layer_matches(model_root: Path, submodel: dict, config: dict) -> bool:

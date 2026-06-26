@@ -29,13 +29,12 @@ def apply_same_frequency_amplification(
     discharge_nc,
     submodel_runs,
 ) -> dict:
-    """ADR-0016 Same-Frequency Amplification of Wflow-generated handoff discharge.
+    """Same-Frequency Amplification of Wflow-generated handoff discharge.
 
     Scales every handoff hydrograph in ``discharge_nc`` by a single event-level factor
     ``K = streamflow_target / Q_wflow_peak`` evaluated at the Primary Reference Gage, so the
     routed flow honors the observed streamflow-frequency target while preserving hydrograph
-    shape, timing, and inter-tributary structure. This is an empirical bias/frequency
-    correction on model output, never a prescribed boundary forcing.
+    shape, timing, and inter-tributary structure.
 
     No-op (``K=1``) unless a ``primary_reference_gage`` is configured and the catalog row
     carries a streamflow target and the reference gage's simulated peak can be read. Writes
@@ -63,11 +62,8 @@ def apply_same_frequency_amplification(
         _write_amplification_provenance(provenance_path, provenance)
         return provenance
 
-    # Response-based (ADR-0016): discharge is the Wflow response; K is an empirical
-    # calibration BIAS correction, not a per-event streamflow return period. A configured
-    # ``k_calibration`` constant (derived from Wflow calibration/validation against the
-    # Primary Reference Gage) is applied uniformly; absent that, K=1 (unbiased) unless the
-    # catalog carries an explicit per-event ``streamflow_target_cfs``.
+    # A configured ``k_calibration`` constant is applied uniformly; absent that, K=1 unless
+    # the catalog carries an explicit per-event ``streamflow_target_cfs``.
     k_calibration = _finite_float(amp_cfg.get("k_calibration"))
     if k_calibration and k_calibration > 0 and not amp_cfg.get("prefer_per_event_target", False):
         k = float(k_calibration)
@@ -134,11 +130,11 @@ def _write_amplification_provenance(path: Path, provenance: dict) -> None:
 def _event_streamflow_target_cms(row: pd.Series) -> float | None:
     """Per-event streamflow target peak at the Primary Reference Gage, in m3/s.
 
-    Reads ONLY the ADR-0016 catalog column ``streamflow_target_cfs`` — the POT target at the
-    Primary Reference Gage produced by 03's in-domain anchor. The legacy ``streamflow_cfs`` /
-    ``streamflow`` columns are deliberately NOT used: they hold the retired cross-basin
-    max-envelope magnitude (~mainstem scale), which would massively over-amplify. Until 03 is
-    migrated, this returns None and amplification safely no-ops (status ``no_target``).
+    Reads the catalog column ``streamflow_target_cfs`` — the POT target at the Primary
+    Reference Gage produced by 03's in-domain anchor. The legacy ``streamflow_cfs`` /
+    ``streamflow`` columns are not used: they hold the cross-basin max-envelope magnitude,
+    which would over-amplify. Returns None (amplification no-ops, status ``no_target``) when
+    the target column is absent.
     """
     value = _finite_float(row.get("streamflow_target_cfs"))
     if value and value > 0:
@@ -313,9 +309,9 @@ def validate_wflow_streamflow_realization(
     event_model_root=None,
     raise_on_error: bool = True,
 ) -> pd.DataFrame:
-    """ADR-0016: validate the rainfall-driven inland event is ready for Wflow generation.
+    """Validate the rainfall-driven inland event is ready for Wflow generation.
 
-    Discharge is the Wflow *response*, not an injected streamflow member, so readiness now
+    Discharge is the Wflow *response*, not an injected streamflow member, so readiness
     checks the rainfall-driven design contract: a rainfall member is wired, and the
     Same-Frequency Amplification / baseflow Primary Reference Gage is configured. When an
     event model is supplied it confirms precip forcing is present and that NO external river

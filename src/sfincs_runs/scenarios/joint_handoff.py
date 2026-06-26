@@ -55,17 +55,23 @@ def write_handoff(joint_catalog, components, *, config, paths):
         absolute_peak = float(h.max())
         target_peak = float(_optional(row, "coastal_water_level", absolute_peak))
         rainfall_time = _optional_timestamp(row, "rainfall_member_time")
-        rainfall_lag_hours = (
-            float((rainfall_time - analog_time) / pd.Timedelta(hours=1))
-            if rainfall_time is not None
-            else pd.NA
+        # Compound lag is the within-event offset of the rainfall peak relative to the coastal
+        # peak (bounded by the pairing window), carried from the catalogue's
+        # rainfall_peak_offset_hours / rainfall_pairing_lag_hours. Do NOT difference the two
+        # independently sampled analog calendar times (rainfall_member_time vs the coastal
+        # analog_time) -- those span the historical record (decades) and are a provenance
+        # artifact, never a physical compound lag.
+        rainfall_lag_hours = _optional(
+            row,
+            "rainfall_peak_offset_hours",
+            _optional(row, "rainfall_pairing_lag_hours", pd.NA),
         )
         snapwave_start = analog_time + pd.Timedelta(hours=start_hour)
         snapwave_end = analog_time + pd.Timedelta(hours=end_hour)
 
-        # Soil moisture is the post-sampling antecedent state (ADR-0011): when a row carries a
-        # paired soil member, advertise it in event_drivers and switch infiltration on so the
-        # scenario builder restages sfincs.seff instead of running with dry initial conditions.
+        # Soil moisture is the post-sampling antecedent state: when a row carries a paired soil
+        # member, advertise it in event_drivers and switch infiltration on so the scenario
+        # builder restages sfincs.seff instead of running with dry initial conditions.
         soil_present = not _is_missing(_optional(row, "soil_moisture_member_id", pd.NA))
         event_drivers_value = _event_drivers_value(row, configured_drivers, soil_present)
         infiltration_treatment_value = (

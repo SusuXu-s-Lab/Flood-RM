@@ -584,6 +584,12 @@ def require_handoff(*args, **kwargs):
     return require_handoff(*args, **kwargs)
 
 
+def ensure_dynamic_handoff(*args, **kwargs):
+    from wflow_runs.dynamic_handoff import ensure_dynamic_handoff
+
+    return ensure_dynamic_handoff(*args, **kwargs)
+
+
 def run_handoffs(*args, **kwargs):
     from wflow_runs.dynamic_handoff_batch import run_handoffs
 

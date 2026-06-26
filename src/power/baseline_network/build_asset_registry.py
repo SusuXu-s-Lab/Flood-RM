@@ -32,21 +32,21 @@ from typing import Iterable, Iterator
 
 
 from power.artifacts import parse_float, parse_int
-from power.artifacts import POWER_GRID
+from power.artifacts import power_grid
 
-DSS_DIR = POWER_GRID / "derived_opendss"
-DEFAULT_OUTPUT_DIR = POWER_GRID / "asset_registry"
+dss_dir = power_grid / "derived_opendss"
+default_output_dir = power_grid / "asset_registry"
 
-OBJECT_RE = re.compile(r"^New\s+([A-Za-z]+)\.([^ ]+)", re.IGNORECASE)
-PROPERTY_RE = re.compile(r"(?<!%)\b([A-Za-z][A-Za-z0-9_]*)=([^ ]+)")
-PERCENT_PROPERTY_RE = re.compile(r"\B(%[A-Za-z][A-Za-z0-9_]*)=([^ ]+)")
-LIST_PROPERTY_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9_]*)=([\(\[])([^\)\]]*)[\)\]]")
-SETBUSXY_RE = re.compile(r"^SetBusXY\s+(\S+)\s+(\S+)\s+(\S+)", re.IGNORECASE)
+object_re = re.compile(r"^New\s+([A-Za-z]+)\.([^ ]+)", re.IGNORECASE)
+property_re = re.compile(r"(?<!%)\b([A-Za-z][A-Za-z0-9_]*)=([^ ]+)")
+percent_property_re = re.compile(r"\B(%[A-Za-z][A-Za-z0-9_]*)=([^ ]+)")
+list_property_re = re.compile(r"\b([A-Za-z][A-Za-z0-9_]*)=([\(\[])([^\)\]]*)[\)\]]")
+setbusxy_re = re.compile(r"^SetBusXY\s+(\S+)\s+(\S+)\s+(\S+)", re.IGNORECASE)
 
 # Feeder-scope prefix; chosen to be DSS-safe-ish and visually distinct.
-FEEDER_SEP = "__"
+feeder_sep = "__"
 
-DITTO_FILE_NAMES = {
+ditto_file_names = {
     "master": "Master.dss",
     "lines": "Lines.dss",
     "loads": "Loads.dss",
@@ -74,7 +74,7 @@ class DssObject:
 
 
 def qualify_bus(feeder_id: str, bus: str) -> str:
-    return f"{feeder_id}{FEEDER_SEP}{bus}" if bus else ""
+    return f"{feeder_id}{feeder_sep}{bus}" if bus else ""
 
 
 def split_bus_ref(bus_ref: str | None) -> tuple[str, str]:
@@ -112,7 +112,7 @@ def parse_properties(line: str) -> tuple[dict[str, str], dict[str, list[str]]]:
     """
     repeated: dict[str, list[str]] = defaultdict(list)
     masked = list(line)
-    for match in LIST_PROPERTY_RE.finditer(line):
+    for match in list_property_re.finditer(line):
         key = match.group(1).lower()
         inner = match.group(3)
         items = [item.strip() for item in inner.split(",") if item.strip()]
@@ -120,9 +120,9 @@ def parse_properties(line: str) -> tuple[dict[str, str], dict[str, list[str]]]:
         for i in range(match.start(), match.end()):
             masked[i] = " "
     masked_line = "".join(masked)
-    for key, value in PROPERTY_RE.findall(masked_line):
+    for key, value in property_re.findall(masked_line):
         repeated[key.lower()].append(value.strip(","))
-    for key, value in PERCENT_PROPERTY_RE.findall(masked_line):
+    for key, value in percent_property_re.findall(masked_line):
         repeated[key.lower()].append(value.strip(","))
     props = {key: values[-1] for key, values in repeated.items()}
     return props, dict(repeated)
@@ -136,7 +136,7 @@ def parse_dss_file(path: Path, class_names: set[str] | None = None) -> list[DssO
         line = raw.strip()
         if not line or line.startswith("!"):
             continue
-        match = OBJECT_RE.search(line)
+        match = object_re.search(line)
         if match is None:
             continue
         class_name = match.group(1)
@@ -163,7 +163,7 @@ def read_buscoords_dss(path: Path, feeder_id: str) -> dict[str, Coord]:
     if not path.exists():
         return coords
     for raw in path.read_text().splitlines():
-        match = SETBUSXY_RE.match(raw.strip())
+        match = setbusxy_re.match(raw.strip())
         if match is None:
             continue
         bus_raw, x, y = match.group(1), match.group(2), match.group(3)
@@ -183,7 +183,7 @@ def iter_feeder_dirs(root: Path) -> Iterator[tuple[str, Path]]:
     if not root.is_dir():
         return
     for child in sorted(root.iterdir()):
-        if child.is_dir() and (child / DITTO_FILE_NAMES["master"]).exists():
+        if child.is_dir() and (child / ditto_file_names["master"]).exists():
             yield child.name, child
 
 
@@ -215,7 +215,7 @@ def build_lines_for_region(
 ) -> tuple[list[dict[str, str]], Counter[str]]:
     rows: list[dict[str, str]] = []
     degree: Counter[str] = Counter()
-    for obj in parse_dss_file(region_dir / DITTO_FILE_NAMES["lines"], {"line"}):
+    for obj in parse_dss_file(region_dir / ditto_file_names["lines"], {"line"}):
         bus1_raw, nodes1 = split_bus_ref(obj.properties.get("bus1"))
         bus2_raw, nodes2 = split_bus_ref(obj.properties.get("bus2"))
         bus1 = qualify_bus(feeder_id, bus1_raw)
@@ -259,7 +259,7 @@ def build_loads_for_region(
     by_bus: dict[str, dict[str, float | int]] = defaultdict(
         lambda: {"load_count": 0, "total_kw": 0.0, "total_kvar": 0.0}
     )
-    for obj in parse_dss_file(region_dir / DITTO_FILE_NAMES["loads"], {"load"}):
+    for obj in parse_dss_file(region_dir / ditto_file_names["loads"], {"load"}):
         bus_raw, nodes = split_bus_ref(obj.properties.get("bus1"))
         bus = qualify_bus(feeder_id, bus_raw)
         coord = coords.get(bus)
@@ -338,7 +338,7 @@ def transformer_windings_from_text(
     """Test helper: parse a Transformer line plus optional XfmrCode lines."""
     xfmrcode_index: dict[str, DssObject] = {}
     for line in xfmrcode_lines or []:
-        match = OBJECT_RE.search(line)
+        match = object_re.search(line)
         if match is None:
             continue
         props, repeated = parse_properties(line)
@@ -351,7 +351,7 @@ def transformer_windings_from_text(
             source_line=0,
             raw=line,
         )
-    match = OBJECT_RE.search(transformer_line)
+    match = object_re.search(transformer_line)
     assert match is not None, f"transformer line did not match: {transformer_line!r}"
     props, repeated = parse_properties(transformer_line)
     obj = DssObject(
@@ -374,10 +374,10 @@ def build_transformers_for_region(
     # Transformers.dss also defines the XfmrCode entries that carry the
     # actual kV/kVA values; index them so transformer_windings can resolve.
     xfmrcode_objs = parse_dss_file(
-        region_dir / DITTO_FILE_NAMES["transformers"], {"xfmrcode"}
+        region_dir / ditto_file_names["transformers"], {"xfmrcode"}
     )
     xfmrcode_index = {obj.name.lower(): obj for obj in xfmrcode_objs}
-    for obj in parse_dss_file(region_dir / DITTO_FILE_NAMES["transformers"], {"transformer"}):
+    for obj in parse_dss_file(region_dir / ditto_file_names["transformers"], {"transformer"}):
         windings = transformer_windings(obj, xfmrcode_index=xfmrcode_index)
         buses = [qualify_bus(feeder_id, str(w["bus"])) for w in windings if w["bus"]]
         for bus in set(buses):
@@ -417,7 +417,7 @@ def build_sources_for_region(
     """Sources (Circuit / Vsource) are declared inside each Master.dss."""
     rows: list[dict[str, str]] = []
     by_bus: Counter[str] = Counter()
-    for obj in parse_dss_file(region_dir / DITTO_FILE_NAMES["master"], {"circuit", "vsource"}):
+    for obj in parse_dss_file(region_dir / ditto_file_names["master"], {"circuit", "vsource"}):
         bus_raw, nodes = split_bus_ref(obj.properties.get("bus1"))
         bus = qualify_bus(feeder_id, bus_raw)
         coord = coords.get(bus)
@@ -615,7 +615,7 @@ def build_registry(dss_dir: Path, output_dir: Path) -> dict[str, int]:
 
     for feeder_id, region_dir in feeders:
         region_coords = read_buscoords_dss(
-            region_dir / DITTO_FILE_NAMES["buscoords"], feeder_id
+            region_dir / ditto_file_names["buscoords"], feeder_id
         )
         coords.update(region_coords)
         for bus in region_coords:
@@ -646,7 +646,7 @@ def build_registry(dss_dir: Path, output_dir: Path) -> dict[str, int]:
         sources_by_bus.update(region_sources_by_bus)
 
         for key in ("master", "lines", "loads", "transformers", "buscoords", "linecodes"):
-            p = region_dir / DITTO_FILE_NAMES[key]
+            p = region_dir / ditto_file_names[key]
             if p.exists():
                 feeder_files.append(p)
 

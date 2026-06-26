@@ -1,17 +1,4 @@
-# DER inventory and REopt payloads
-
-"""Stage B DER inventory builders.
-
-Layer 1 (evidence-anchored): one DER row per MHMP-anchored critical facility
-with documented or planned-authorized backup power. Layer 2 (REopt) fills
-capacities and resilience-sizing fields later; Layer 1 emits the
-placement-and-evidence skeleton only.
-
-Methodology: docs/power/methodology/der_placement_methodology.md
-Schema: docs/power/methodology/simulated_data_protocol.md
-(`stage_b_der_inventory.v0.1`).
-"""
-
+"""Stage B DER inventory builders."""
 
 import hashlib
 import json
@@ -26,39 +13,36 @@ import pandas as pd
 
 from power.artifacts import present as _present
 
-SCHEMA_VERSION = "stage_b_der_inventory.v0.1"
-PLACEMENT_RULE_LAYER_1 = "evidence_anchored_mhmp"
-PLACEMENT_RULE_LAYER_2 = "reopt_resilience_sizing"
+der_version = "stage_b_der_inventory.v0.1"
+placement_rule_layer_1 = "evidence_anchored_mhmp"
+placement_rule_layer_2 = "reopt_resilience_sizing"
 
-MHMP_BACKED_STATUSES = frozenset({"documented_present", "planned_authorized"})
+mhmp_backed_statuses = frozenset({"documented_present", "planned_authorized"})
 
-DEFAULT_TIER_CLF_MAP: "dict[str, float]" = {
+default_tier_clf_map: "dict[str, float]" = {
     "tier_0_life_safety": 1.00,
     "tier_1_response": 0.50,
     "tier_2_lifeline_support": 0.25,
 }
 
-DEFAULT_ELECTRIC_TARIFF = {
+default_electric_tariff = {
     "blended_annual_energy_rate": 0.20,
     "blended_annual_demand_rate": 0.0,
 }
 
-DEFAULT_REOPT_LOAD_YEAR = 2024
+default_reopt_load_year = 2024
 
-FEMA_COMMUNITY_LIFELINES_OUTAGE_HOURS = 72
+fema_community_lifelines_outage_hours = 72
 
-HOURS_PER_YEAR = 8760
-
+hours_per_year = 8760
 
 class DERAssignmentViolation(ValueError):
     """Raised when DER assignment completeness is not explicit enough."""
 
-
 class ReoptSizingInputViolation(ValueError):
     """Raised when rows are not ready for live REopt resilience sizing."""
 
-
-def validate_der_assignment_completeness(
+def validate_der_assignments(
     rows: Iterable[Mapping[str, Any]],
     *,
     valid_buses: Iterable[str] | None = None,
@@ -119,11 +103,11 @@ def validate_reopt_sizing_inputs(
     facility_lookup: Mapping[str, Mapping[str, Any]],
     load_profiles_kw: Mapping[str, list[float]],
     tier_clf_map: "Mapping[str, float] | None" = None,
-    expected_hours: int = HOURS_PER_YEAR,
+    expected_hours: int = hours_per_year,
 ) -> dict[str, int]:
     """Validate rows that will be sent to REopt are operationally complete."""
 
-    clf_map = dict(tier_clf_map if tier_clf_map is not None else DEFAULT_TIER_CLF_MAP)
+    clf_map = dict(tier_clf_map if tier_clf_map is not None else default_tier_clf_map)
     checked = 0
     skipped_missing_profile = 0
     skipped_tier = 0
@@ -166,8 +150,8 @@ def validate_reopt_sizing_inputs(
     }
 
 
-def der_inventory_pyarrow_schema() -> Any:
-    """Return the pyarrow schema for `der_inventory.parquet` v0.1.
+def der_schema() -> Any:
+    """Return the schema for `der_inventory.parquet` v0.1.
 
     All capacity, REopt-input, and bus-binding fields are nullable so that
     Layer 1 rows (which Layer 2 has not yet sized) round-trip cleanly through
@@ -214,7 +198,7 @@ def build_synthetic_commercial_load_profile(
     business_end_hour: int = 18,
     overnight_floor_fraction: float = 0.18,
     weekend_fraction: float = 0.35,
-    hours: int = HOURS_PER_YEAR,
+    hours: int = hours_per_year,
 ) -> list[float]:
     """Placeholder commercial-archetype 8760 load profile.
 
@@ -258,43 +242,43 @@ def _der_facility_token(facility_id: str) -> str:
     return facility_id.rsplit(":", 1)[-1]
 
 
-def _assigned_critical_load_by_facility(
+def _load_match_by_facility(
     rows: Iterable[Mapping[str, Any]] | None,
 ) -> dict[str, Mapping[str, Any]]:
     if rows is None:
         return {}
-    assignments: dict[str, Mapping[str, Any]] = {}
+    matches: dict[str, Mapping[str, Any]] = {}
     for row in rows:
         if row.get("assignment_status") != "assigned":
             continue
         facility_id = row.get("facility_id")
         if not _present(facility_id):
             continue
-        assignments[str(facility_id)] = row
-    return assignments
+        matches[str(facility_id)] = row
+    return matches
 
 
-def build_inventory(
+def build_der_inventory(
     facility_rows: Iterable[Mapping[str, Any]],
     *,
-    sandbox_id: str,
-    critical_load_assignments: Iterable[Mapping[str, Any]] | None = None,
+    location_id: str,
+    load_matches: Iterable[Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Emit Layer 1 evidence-anchored DER rows from critical-facility rows."""
 
-    assigned_loads = _assigned_critical_load_by_facility(critical_load_assignments)
+    matches = _load_match_by_facility(load_matches)
     rows: list[dict[str, Any]] = []
     for facility in facility_rows:
-        if facility.get("backup_power_status") not in MHMP_BACKED_STATUSES:
+        if facility.get("backup_power_status") not in mhmp_backed_statuses:
             continue
         facility_id = facility["facility_id"]
         token = _der_facility_token(facility_id)
-        assignment = assigned_loads.get(str(facility_id))
-        if assignment:
-            load_asset_id = assignment.get("load_asset_id")
-            bus = assignment.get("matched_bus")
-            phases = assignment.get("phases")
-            nominal_voltage_kv = assignment.get("nominal_voltage_kv")
+        match = matches.get(str(facility_id))
+        if match:
+            load_asset_id = match.get("load_asset_id")
+            bus = match.get("matched_bus")
+            phases = match.get("phases")
+            nominal_voltage_kv = match.get("nominal_voltage_kv")
             assignment_status = "assigned"
             unassigned_reason = None
         else:
@@ -303,9 +287,9 @@ def build_inventory(
             phases = None
             nominal_voltage_kv = None
             assignment_status = "unassigned"
-            unassigned_reason = "pending_critical_load_assignment"
+            unassigned_reason = "pending_load_match"
         provenance = {
-            "placement_rule": PLACEMENT_RULE_LAYER_1,
+            "placement_rule": placement_rule_layer_1,
             "facility_token": token,
             "facility_id": facility_id,
             "facility_name": facility.get("facility_name"),
@@ -315,12 +299,12 @@ def build_inventory(
             "source_resilience_asset_type": facility.get("resilience_asset_type"),
             "assignment_status": assignment_status,
             "unassigned_reason": unassigned_reason,
-            "critical_load_assignment": assignment.get("assignment_id") if assignment else None,
+            "load_match_id": match.get("assignment_id") if match else None,
         }
         rows.append(
             {
-                "sandbox_id": sandbox_id,
-                "der_id": f"{sandbox_id}:asset:der:{token}:genset",
+                "sandbox_id": location_id,
+                "der_id": f"{location_id}:asset:der:{token}:genset",
                 "facility_id": facility_id,
                 "load_asset_id": load_asset_id,
                 "bus": bus,
@@ -335,17 +319,34 @@ def build_inventory(
                 "bess_kwh": None,
                 "genset_kw": None,
                 "gfm_capable": True,
-                "placement_rule": PLACEMENT_RULE_LAYER_1,
+                "placement_rule": placement_rule_layer_1,
                 "evidence_rank": facility.get("evidence_rank", "town_plan_primary"),
                 "confidence": facility.get("confidence", "medium"),
                 "outage_duration_hours": None,
                 "critical_load_fraction": None,
                 "reopt_feasible": None,
                 "source_provenance": json.dumps(provenance, sort_keys=True),
-                "schema_version": SCHEMA_VERSION,
+                "schema_version": der_version,
             }
         )
     return rows
+
+
+def write_der_inventory(rows: Iterable[Mapping[str, Any]], output_path: Path) -> None:
+    """Write DER inventory rows to the canonical parquet artifact."""
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    schema = der_schema()
+    row_list = list(rows)
+    columns = {
+        field.name: [_clean_missing(row.get(field.name)) for row in row_list]
+        for field in schema
+    }
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.table(columns, schema=schema), output_path)
 
 
 def build_reopt_request_payload(
@@ -371,9 +372,9 @@ def build_reopt_request_payload(
         "ElectricLoad": {
             "loads_kw": list(load_profile_kw),
             "critical_load_fraction": critical_load_fraction,
-            "year": DEFAULT_REOPT_LOAD_YEAR,
+            "year": default_reopt_load_year,
         },
-        "ElectricTariff": dict(electric_tariff or DEFAULT_ELECTRIC_TARIFF),
+        "ElectricTariff": dict(electric_tariff or default_electric_tariff),
         "ElectricUtility": {
             "outage_start_time_step": outage_start_hour,
             "outage_end_time_step": outage_end_time_step,
@@ -422,7 +423,7 @@ def apply_layer_2_reopt_sizing(
     electric_tariff_provenance: "Mapping[str, Mapping[str, Any]] | None" = None,
     load_profile_provenance: "Mapping[str, Mapping[str, Any]] | None" = None,
     tier_clf_map: "Mapping[str, float] | None" = None,
-    outage_duration_hours: int = FEMA_COMMUNITY_LIFELINES_OUTAGE_HOURS,
+    outage_duration_hours: int = fema_community_lifelines_outage_hours,
     outage_start_hour: int = 4392,
 ) -> list[dict[str, Any]]:
     """Apply REopt resilience sizing to Layer 1 rows.
@@ -435,7 +436,7 @@ def apply_layer_2_reopt_sizing(
     """
 
     layer_1_list = [dict(row) for row in layer_1_rows]
-    clf_map = dict(tier_clf_map if tier_clf_map is not None else DEFAULT_TIER_CLF_MAP)
+    clf_map = dict(tier_clf_map if tier_clf_map is not None else default_tier_clf_map)
     validate_reopt_sizing_inputs(
         layer_1_list,
         facility_lookup=facility_lookup,
@@ -475,12 +476,12 @@ def apply_layer_2_reopt_sizing(
 
         upgraded = dict(row)
         upgraded.update(parsed)
-        upgraded["placement_rule"] = PLACEMENT_RULE_LAYER_2
+        upgraded["placement_rule"] = placement_rule_layer_2
         upgraded["critical_load_fraction"] = clf
         upgraded["outage_duration_hours"] = outage_duration_hours
 
         layer_2_provenance = {
-            "placement_rule": PLACEMENT_RULE_LAYER_2,
+            "placement_rule": placement_rule_layer_2,
             "reopt_status": response.get("status"),
             "reopt_run_uuid": response.get("run_uuid"),
             "reopt_api_version": response.get("api_version"),
@@ -489,7 +490,7 @@ def apply_layer_2_reopt_sizing(
             "reopt_cache_policy": "redacted_full_response_by_payload_digest",
             "tier": tier,
             "critical_load_fraction": clf,
-            "electric_load_year": DEFAULT_REOPT_LOAD_YEAR,
+            "electric_load_year": default_reopt_load_year,
             "load_profile_hours": len(load_profile),
             "load_profile_provenance": (
                 dict(load_profile_provenance.get(facility_id))
@@ -538,10 +539,10 @@ from pathlib import Path
 from typing import Any
 
 
-REOPT_BASE_URL = "https://developer.nlr.gov/api/reopt/stable"
+reopt_base_url = "https://developer.nlr.gov/api/reopt/stable"
 
 # REopt v3 returns these statuses; "Optimizing..." is the in-flight token.
-TERMINAL_STATUSES = frozenset({"optimal", "Infeasible", "error", "Error"})
+terminal_statuses = frozenset({"optimal", "Infeasible", "error", "Error"})
 
 
 class ReoptError(RuntimeError):
@@ -553,20 +554,20 @@ def build_job_submit_request(
 ) -> tuple[str, dict[str, Any]]:
     """Return ``(submit_url, body)`` for POSTing a REopt job."""
 
-    url = f"{REOPT_BASE_URL}/job/?api_key={api_key}"
+    url = f"{reopt_base_url}/job/?api_key={api_key}"
     return url, dict(payload)
 
 
 def build_results_poll_request(run_uuid: str, *, api_key: str) -> str:
     """Return the GET URL for polling REopt job results."""
 
-    return f"{REOPT_BASE_URL}/job/{run_uuid}/results/?api_key={api_key}"
+    return f"{reopt_base_url}/job/{run_uuid}/results/?api_key={api_key}"
 
 
 def is_terminal_status(status: str) -> bool:
     """``True`` if the REopt status no longer requires polling."""
 
-    return status in TERMINAL_STATUSES
+    return status in terminal_statuses
 
 
 def load_nlr_api_key(
@@ -695,7 +696,7 @@ def _default_sleep(seconds: float) -> None:
     time.sleep(seconds)
 
 
-DEFAULT_NLR_API_KEY_FILE = Path("artifacts/credentials/nlr_api.txt")
+default_nlr_api_key_file = Path("artifacts/credentials/nlr_api.txt")
 
 
 def default_reopt_client(
@@ -704,7 +705,7 @@ def default_reopt_client(
     cache_dir: Path | None = None,
     poll_interval_s: float = 5.0,
     max_poll_attempts: int = 240,
-    fallback_key_path: Path = DEFAULT_NLR_API_KEY_FILE,
+    fallback_key_path: Path = default_nlr_api_key_file,
 ) -> ReoptClient:
     """Wire a ``ReoptClient`` against stdlib HTTP transport.
 
@@ -788,7 +789,7 @@ def _http_error_message(exc: Any) -> str:
 """Artifact-level Layer 2 REopt sizing for the DER inventory."""
 
 from power.resilience.profiles import (
-    TIER_INT_TO_STRING,
+    tier_int_to_string,
     build_archetype_load_profile,
     select_eversource_south_shore_tariff,
 )
@@ -907,7 +908,7 @@ def size_der(
     *,
     smart_ds_compat_dir: Path,
     reopt_client: Any,
-    outage_duration_hours: int = FEMA_COMMUNITY_LIFELINES_OUTAGE_HOURS,
+    outage_duration_hours: int = fema_community_lifelines_outage_hours,
     outage_start_hour: int = 4392,
     live_limit: int | None = None,
 ) -> ReoptSizingResult:
@@ -929,14 +930,14 @@ def size_der(
         electric_tariffs=inputs["electric_tariffs_by_facility"],
         electric_tariff_provenance=inputs["electric_tariff_provenance_by_facility"],
         load_profile_provenance=inputs["load_profile_provenance_by_facility"],
-        tier_clf_map=DEFAULT_TIER_CLF_MAP,
+        tier_clf_map=default_tier_clf_map,
         outage_duration_hours=outage_duration_hours,
         outage_start_hour=outage_start_hour,
     )
     sized_by_der_id = {row["der_id"]: row for row in sized_subset}
     sized_rows = [sized_by_der_id.get(row["der_id"], dict(row)) for row in der_rows]
 
-    _write_der_inventory(der_inventory_path, sized_rows)
+    write_der_inventory(sized_rows, der_inventory_path)
     reopt_sized_rows = sum(
         1 for row in sized_rows if row.get("placement_rule") == "reopt_resilience_sizing"
     )
@@ -952,7 +953,7 @@ def size_der(
 def run_layer_2_offline_reopt_surrogate_sizing(
     *,
     smart_ds_compat_dir: Path,
-    outage_duration_hours: int = FEMA_COMMUNITY_LIFELINES_OUTAGE_HOURS,
+    outage_duration_hours: int = fema_community_lifelines_outage_hours,
     outage_start_hour: int = 4392,
     reserve_margin: float = 0.15,
     capacity_step_kw: float = 5.0,
@@ -985,7 +986,7 @@ def _load_reopt_inputs(smart_ds_compat_dir: Path) -> dict[str, Any]:
     for row in facilities.to_dict(orient="records"):
         normalized = dict(row)
         raw_tier = normalized.get("criticality_tier")
-        normalized["criticality_tier"] = TIER_INT_TO_STRING.get(raw_tier, raw_tier)
+        normalized["criticality_tier"] = tier_int_to_string.get(raw_tier, raw_tier)
         facility_lookup[str(normalized["facility_id"])] = normalized
 
     load_profiles_kw: dict[str, list[float]] = {}
@@ -1032,15 +1033,7 @@ def _load_reopt_inputs(smart_ds_compat_dir: Path) -> dict[str, Any]:
 
 
 def _write_der_inventory(path: Path, rows: list[dict[str, Any]]) -> None:
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
-    schema = der_inventory_pyarrow_schema()
-    columns = {
-        field.name: [_clean_missing(row.get(field.name)) for row in rows]
-        for field in schema
-    }
-    pq.write_table(pa.table(columns, schema=schema), path)
+    write_der_inventory(rows, path)
 
 
 def _clean_missing(value: Any) -> Any:

@@ -45,6 +45,15 @@ class InlandCoupledExamplePlan:
     issues: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class InlandCoupledForcingStage:
+    """Notebook result for one staged inland Wflow-SFINCS example."""
+
+    scenario_report: pd.DataFrame
+    sfincs_report: pd.DataFrame
+    sim: dict
+
+
 def stage_scenarios(
     config,
     paths,
@@ -369,7 +378,9 @@ def stage_inland_coupled_scenario_forcing(
     event_ids=None,
     force=False,
     write_reports=True,
-) -> pd.DataFrame:
+    return_sim=False,
+    scenario_staging="05_create_scenarios.ipynb",
+) -> pd.DataFrame | InlandCoupledForcingStage:
     """Stage native HydroMT-SFINCS rainfall, discharge, and initial conditions.
 
     ``stage_scenarios`` creates event/domain folders from the
@@ -404,10 +415,11 @@ def stage_inland_coupled_scenario_forcing(
     direct_rainfall_cfg = (config.get("inland_coupling", {}) or {}).get("direct_rainfall", {}) or {}
     stage_direct_rainfall = bool(direct_rainfall_cfg.get("enabled", False))
     rows = []
+    sim = {}
     for scenario in scenario_report.to_dict("records"):
         event_id = str(scenario["event_id"])
         run_dir = Path(scenario["run_root"])
-        acceptance = require_handoff(config, location_root, event_id)
+        acceptance = require_handoff(config, location_root, event_id, catalog_path=catalog_path)
         discharge_nc = Path(str(acceptance["sfincs_discharge_forcing"]))
         if not discharge_nc.exists():
             raise FileNotFoundError(discharge_nc)
@@ -488,17 +500,23 @@ def stage_inland_coupled_scenario_forcing(
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         manifest.update(
             {
-                "scenario_staging": "05_create_scenarios.ipynb",
+                "example_notebook": scenario_staging if "c_run_example" in str(scenario_staging) else "",
+                "scenario_staging": scenario_staging,
                 "run_start": t_start.strftime("%Y-%m-%d %H:%M:%S"),
                 "run_stop": t_stop.strftime("%Y-%m-%d %H:%M:%S"),
                 "sfincs_run_executed": False,
                 "wflow_discharge_forcing": str(discharge_nc),
+                "wflow_source_variable": config["wflow"].get("handoff", {}).get("source_variable", "river_q"),
                 "direct_rainfall_enabled": bool(stage_direct_rainfall),
                 "direct_rainfall_source": str(event_precip_nc) if stage_direct_rainfall else "",
                 "prepared_precip": str(prepared_precip) if prepared_precip else "",
                 "netamprfile": netamprfile,
                 "sfincs_initial_condition": initial_condition,
                 "dynamic_handoff_acceptance": str(acceptance["dynamic_handoff_acceptance"]),
+                "direct_rainfall_note": (
+                    "SFINCS netampr rainfall staged from the same event precipitation used by Wflow."
+                    if stage_direct_rainfall else "Direct SFINCS rainfall disabled by config."
+                ),
             }
         )
         manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -516,12 +534,62 @@ def stage_inland_coupled_scenario_forcing(
                 "inifile": initial_condition.get("inifile", ""),
             }
         )
+        if return_sim:
+            domain_id = str(scenario.get("sfincs_domain_id"))
+            sim[domain_id] = {
+                "run_dir": run_dir,
+                "result": None,
+                "dis": sf.discharge_points.data["dis"],
+                "t_start": t_start,
+            }
 
     report = pd.DataFrame(rows)
     if write_reports:
         scenarios_root = _location_path(location_root, config.get("paths", {}).get("scenarios_root", "data/sfincs/scenarios"))
         report.to_csv(scenarios_root / "scenario_forcing_report.csv", index=False)
+    if return_sim:
+        return InlandCoupledForcingStage(scenario_report=scenario_report, sfincs_report=report, sim=sim)
     return report
+
+
+def stage_inland_coupled_example_forcing(
+    config,
+    paths,
+    *,
+    example_plan: InlandCoupledExamplePlan,
+    event_id=None,
+    force=False,
+) -> InlandCoupledForcingStage:
+    """Stage SFINCS forcing for the one-event example notebook."""
+    location_root = _location_root(paths)
+    selected_event_id = str(event_id or example_plan.event_id)
+    if not selected_event_id or selected_event_id == "None":
+        raise ValueError("Example plan does not identify an event_id.")
+
+    if example_plan.wflow_discharge_forcing:
+        discharge_nc = _location_path(location_root, example_plan.wflow_discharge_forcing)
+        if not discharge_nc.exists():
+            raise FileNotFoundError(
+                f"Missing Wflow discharge forcing: {discharge_nc}. "
+                "Run `b_prepare_wflow_dynamic_handoff.ipynb` before staging SFINCS."
+            )
+
+    scenario_report = stage_scenarios(
+        config,
+        paths,
+        catalog_path=example_plan.catalog_path,
+        event_ids=[selected_event_id],
+        force=force,
+    )
+    return stage_inland_coupled_scenario_forcing(
+        config,
+        paths,
+        scenario_report=scenario_report,
+        catalog_path=example_plan.catalog_path,
+        write_reports=False,
+        return_sim=True,
+        scenario_staging="02_flood/04/c_run_example.ipynb",
+    )
 
 
 def plan_example(

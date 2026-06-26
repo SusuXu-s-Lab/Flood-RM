@@ -1,24 +1,39 @@
-
-
-# Figure style helpers
-
-"""Shared helpers for notebook review figures.
-
-Small seam so the block and switch review figures don't each re-spell the
-matplotlib finalize incantation or the switch-overlay color convention.
-"""
-
 from __future__ import annotations
 
+import csv
+import io
+import json
+import math
+import urllib.request
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
+import geopandas as gpd
+import matplotlib.colors as mcolors
+import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import shapely
+from matplotlib.collections import LineCollection
+from matplotlib.lines import Line2D
+from PIL import Image
+from pyproj import Transformer
+from scipy.cluster.vq import kmeans2
+from shapely.geometry import LineString, MultiPoint, Point, Polygon, box, mapping
+from shapely.geometry.base import BaseGeometry
+from shapely.ops import transform as shapely_transform
+from shapely.ops import unary_union
+
+from power.artifacts import power_grid
 
 # Switch line-overlay convention shared by the block and switch review figures:
 # sectionalizers (normally-closed, intra-feeder) vs ties (normally-open,
 # cross-feeder). DNMG reconfiguration treats them differently.
-SECTIONALIZING_SWITCH_COLOR = "#f97316"
-TIE_SWITCH_COLOR = "#dc2626"
+sectionalizing_switch_color = "#f97316"
+tie_switch_color = "#dc2626"
 
 
 def save_review_figure(fig, output_path: Path, *, dpi: int, pad: float | None = None) -> None:
@@ -29,32 +44,26 @@ def save_review_figure(fig, output_path: Path, *, dpi: int, pad: float | None = 
     plt.close(fig)
 
 
+def _line_handle(**kwargs):
+    return Line2D([0], [0], **kwargs)
+
+
+def _patch_handle(**kwargs):
+    return mpatches.Patch(**kwargs)
+
+
 # Switch overlay plots
 
-"""Switch-review figures for the configured grid dataset."""
-
-
-from pathlib import Path
-from typing import Any
-
-import matplotlib.pyplot as plt
-import pandas as pd
-from matplotlib.collections import LineCollection
-from matplotlib.lines import Line2D
-
-from power.artifacts import POWER_GRID
-
-
-DEFAULT_REGISTRY_DIR = POWER_GRID / "asset_registry"
-DEFAULT_SMART_DS_COMPAT_DIR = POWER_GRID / "augmented"
-DEFAULT_FIGURE_PATH = POWER_GRID / "figures" / "switch_line_overlay.png"
+default_registry_dir = power_grid / "asset_registry"
+default_smart_ds_compat_dir = power_grid / "augmented"
+default_figure_path = power_grid / "figures" / "switch_line_overlay.png"
 
 
 def plot_switches(
     *,
-    registry_dir: Path = DEFAULT_REGISTRY_DIR,
-    smart_ds_compat_dir: Path = DEFAULT_SMART_DS_COMPAT_DIR,
-    output_path: Path = DEFAULT_FIGURE_PATH,
+    registry_dir: Path = default_registry_dir,
+    smart_ds_compat_dir: Path = default_smart_ds_compat_dir,
+    output_path: Path = default_figure_path,
 ) -> dict[str, Any]:
     """Render SFO-style switch line notation for qualitative switch-placement review."""
 
@@ -93,15 +102,16 @@ def plot_switches(
                 continue
             if segment[0] == segment[1]:
                 zero_length_ties += 1
-                segment = _tiny_tick(segment[0])
+                lon, lat = segment[0]
+                segment = (lon - 0.00018, lat - 0.00018), (lon + 0.00018, lat + 0.00018)
             tie_segments.append(segment)
 
     fig, ax = plt.subplots(figsize=(10, 10))
     ax.add_collection(LineCollection(base_segments, colors="#486b7d", linewidths=0.35, alpha=0.40))
     if sectionalizing_segments:
-        ax.add_collection(LineCollection(sectionalizing_segments, colors=SECTIONALIZING_SWITCH_COLOR, linewidths=1.2, alpha=0.95))
+        ax.add_collection(LineCollection(sectionalizing_segments, colors=sectionalizing_switch_color, linewidths=1.2, alpha=0.95))
     if tie_segments:
-        ax.add_collection(LineCollection(tie_segments, colors=TIE_SWITCH_COLOR, linewidths=1.6, alpha=0.95))
+        ax.add_collection(LineCollection(tie_segments, colors=tie_switch_color, linewidths=1.6, alpha=0.95))
     ax.scatter(buses["lon"], buses["lat"], s=0.45, c="#1f2933", alpha=0.28, linewidths=0)
     ax.set_title(
         "Grid Dataset: SFO-style switch line overlay\n"
@@ -111,10 +121,10 @@ def plot_switches(
     ax.axis("off")
     ax.legend(
         handles=[
-            Line2D([0], [0], color="#486b7d", lw=1.4, label="Line"),
-            Line2D([0], [0], color=SECTIONALIZING_SWITCH_COLOR, lw=1.8, label="Sectionalizing switch (NC)"),
-            Line2D([0], [0], color=TIE_SWITCH_COLOR, lw=1.8, label="Tie switch (NO)"),
-            Line2D([0], [0], marker="o", color="none", markerfacecolor="#1f2933", markersize=4, label="Bus"),
+            _line_handle(color="#486b7d", lw=1.4, label="Line"),
+            _line_handle(color=sectionalizing_switch_color, lw=1.8, label="Sectionalizing switch (NC)"),
+            _line_handle(color=tie_switch_color, lw=1.8, label="Tie switch (NO)"),
+            _line_handle(marker="o", color="none", markerfacecolor="#1f2933", markersize=4, label="Bus"),
         ],
         loc="lower left",
         frameon=False,
@@ -143,49 +153,19 @@ def _bus_segment(
     return bus_xy[from_bus], bus_xy[to_bus]
 
 
-def _tiny_tick(point: tuple[float, float]) -> tuple[tuple[float, float], tuple[float, float]]:
-    lon, lat = point
-    delta = 0.00018
-    return (lon - delta, lat - delta), (lon + delta, lat + delta)
-
-
 # Block overview/detail plots
 
-"""Block-review figures for switch-bounded load blocks."""
-
-
-import io
-import json
-import math
-import urllib.request
-from pathlib import Path
-from typing import Any
-
-import geopandas as gpd
-import matplotlib.colors as mcolors
-import matplotlib.patches as mpatches
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
-from matplotlib.collections import LineCollection
-from matplotlib.lines import Line2D
-from PIL import Image
-from shapely.geometry import LineString, MultiPoint, Point, box
-from shapely.ops import unary_union
-
-
-
-OCEAN_BLUFF_BBOX = {
+ocean_bluff_bbox = {
     "min_lon": -70.666,
     "max_lon": -70.635,
     "min_lat": 42.078,
     "max_lat": 42.105,
 }
-WEBSTER_SUBSTATION_BUS = "marshfield_shift_synthetic_region_044__66050127"
-CARTO_LIGHT_NOLABELS_URL = "https://a.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png"
-BLOCK_ALPHA = 0.20
-BASEMAP_ZOOM = 15
-BLOCK_PALETTE = (
+webster_substation_bus = "marshfield_shift_synthetic_region_044__66050127"
+carto_light_nolabels_url = "https://a.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png"
+block_alpha = 0.20
+basemap_zoom = 15
+block_palette = (
     "#2563eb",
     "#16a34a",
     "#dc2626",
@@ -229,7 +209,7 @@ def block_overview(
     facilities = artifacts["critical_facilities"]
     assignments = artifacts["critical_load_assignments"]
 
-    line_gdf = _line_gdf_dft(lines)
+    line_gdf = _line_gdf(lines, aliases=True)
     bus_gdf = _point_gdf(buses)
     switch_gdf = _point_gdf(switches)
     facility_gdf = _point_gdf(facilities)
@@ -267,14 +247,14 @@ def block_overview(
         if hull is not None:
             block_hull_records.append({"root": root, "hull": hull, "area": hull.area})
 
-    block_color_by_root = _assign_contrasting_block_colors(block_hull_records, BLOCK_PALETTE)
+    block_color_by_root = _assign_contrasting_block_colors(block_hull_records, block_palette)
     block_plot_lines["block_color"] = block_plot_lines["block_root"].map(block_color_by_root)
     missing = block_plot_lines["block_color"].isna()
     block_plot_lines.loc[missing, "block_color"] = block_plot_lines.loc[missing, "block_color_index"].map(
-        lambda idx: BLOCK_PALETTE[int(idx) % len(BLOCK_PALETTE)]
+        lambda idx: block_palette[int(idx) % len(block_palette)]
     )
     for record in block_hull_records:
-        record["color"] = block_color_by_root.get(record["root"], BLOCK_PALETTE[0])
+        record["color"] = block_color_by_root.get(record["root"], block_palette[0])
 
     covered_hulls = []
     for record in sorted(block_hull_records, key=lambda item: (item["area"], item["root"])):
@@ -292,11 +272,17 @@ def block_overview(
     if not block_plot_lines.empty:
         block_plot_lines.plot(ax=ax, color=block_plot_lines["block_color"], linewidth=0.45, alpha=0.7, zorder=5)
 
-    sectionalizing, ties, zero_length_tie_ticks = _sfo_style_switch_line_layers(plot_switches, all_plot_lines, all_plot_buses)
+    sectionalizing, ties, _, zero_length_tie_ticks = _switch_line_layers(
+        plot_switches,
+        all_plot_lines,
+        all_plot_buses,
+        line_key="line",
+        draw_zero_length_ties=True,
+    )
     if sectionalizing:
-        ax.add_collection(LineCollection(sectionalizing, colors=SECTIONALIZING_SWITCH_COLOR, linewidths=1.2, alpha=0.95, zorder=6))
+        ax.add_collection(LineCollection(sectionalizing, colors=sectionalizing_switch_color, linewidths=1.2, alpha=0.95, zorder=6))
     if ties:
-        ax.add_collection(LineCollection(ties, colors=TIE_SWITCH_COLOR, linewidths=1.6, alpha=0.95, zorder=7))
+        ax.add_collection(LineCollection(ties, colors=tie_switch_color, linewidths=1.6, alpha=0.95, zorder=7))
     facility_segments = _critical_connector_segments_3857(plot_critical, assignments, all_plot_buses)
     if facility_segments:
         ax.add_collection(LineCollection(facility_segments, colors="#7c3aed", linewidths=0.72, alpha=0.58, linestyles=":", zorder=7))
@@ -348,7 +334,7 @@ def block_detail(
     blocks = artifacts["blocks"]
     facilities = artifacts["critical_facilities"]
     assignments = artifacts["critical_load_assignments"]
-    bbox = bbox or OCEAN_BLUFF_BBOX
+    bbox = bbox or ocean_bluff_bbox
 
     bbox_4326 = box(bbox["min_lon"], bbox["min_lat"], bbox["max_lon"], bbox["max_lat"])
     selection_bbox = gpd.GeoSeries([bbox_4326], crs="EPSG:4326").to_crs(3857).iloc[0]
@@ -373,7 +359,7 @@ def block_detail(
                 "feeder_id": row.feeder_id,
                 "bus_count": int(row.bus_count),
                 "load_kw": float(row.load_kw),
-                "color": BLOCK_PALETTE[index % len(BLOCK_PALETTE)],
+                "color": block_palette[index % len(block_palette)],
                 "raw_geometry": hull,
                 "buses": block_buses,
                 "area": hull.area,
@@ -413,9 +399,15 @@ def block_detail(
         | (switches["from_bus"].isin(selected_block_buses) & switches["to_bus"].isin(selected_block_buses))
     )
     local_switches = switch_gdf[switch_mask.to_numpy()].copy()
-    sectionalizing, ties, switch_markers = _switch_segments_3857(local_switches, local_lines, local_buses, plot_extent)
-    webster_sources = local_sources[local_sources["bus"].eq(WEBSTER_SUBSTATION_BUS)].copy()
-    generic_sources = local_sources[~local_sources["bus"].eq(WEBSTER_SUBSTATION_BUS)].copy()
+    sectionalizing, ties, switch_markers, _ = _switch_line_layers(
+        local_switches,
+        local_lines,
+        local_buses,
+        bbox=plot_extent,
+        include_markers=True,
+    )
+    webster_sources = local_sources[local_sources["bus"].eq(webster_substation_bus)].copy()
+    generic_sources = local_sources[~local_sources["bus"].eq(webster_substation_bus)].copy()
     local_facilities = _local_critical_facilities(facility_gdf, assignments, local_buses, plot_extent, selected_block_buses)
     facility_segments = _critical_connector_segments_3857(local_facilities, assignments, local_buses)
 
@@ -431,16 +423,16 @@ def block_detail(
             ax=ax,
             facecolor=row.color,
             edgecolor=row.color,
-            alpha=BLOCK_ALPHA,
+            alpha=block_alpha,
             linewidth=0.9,
             zorder=1,
         )
     if not local_lines.empty:
         local_lines.plot(ax=ax, color="#4b5563", linewidth=0.58, alpha=0.70, zorder=3)
     if sectionalizing:
-        ax.add_collection(LineCollection(sectionalizing, colors=SECTIONALIZING_SWITCH_COLOR, linewidths=2.0, alpha=0.96, zorder=5))
+        ax.add_collection(LineCollection(sectionalizing, colors=sectionalizing_switch_color, linewidths=2.0, alpha=0.96, zorder=5))
     if ties:
-        ax.add_collection(LineCollection(ties, colors=TIE_SWITCH_COLOR, linewidths=2.2, alpha=0.98, zorder=6))
+        ax.add_collection(LineCollection(ties, colors=tie_switch_color, linewidths=2.2, alpha=0.98, zorder=6))
     _plot_points(ax, local_buses, "#111827", "o", 1.0, 7, alpha=0.36)
     _plot_points(ax, local_demand_buses, "#2563eb", "o", 5.0, 8, alpha=0.78)
     _plot_points(ax, local_transformers, "#ca8a04", "D", 22, 10)
@@ -524,7 +516,7 @@ def _point_gdf(rows: pd.DataFrame, *, lon_col: str = "lon", lat_col: str = "lat"
     return gpd.GeoDataFrame(rows, geometry=[Point(xy) for xy in zip(rows[lon_col], rows[lat_col])], crs="EPSG:4326")
 
 
-def _line_gdf(rows: pd.DataFrame) -> gpd.GeoDataFrame:
+def _line_gdf(rows: pd.DataFrame, *, aliases: bool = False) -> gpd.GeoDataFrame:
     rows = rows[rows["has_buscoords"].astype(str).str.lower().eq("true")].dropna(
         subset=["from_lon", "from_lat", "to_lon", "to_lat"]
     ).copy()
@@ -532,23 +524,11 @@ def _line_gdf(rows: pd.DataFrame) -> gpd.GeoDataFrame:
         LineString([(row.from_lon, row.from_lat), (row.to_lon, row.to_lat)])
         for row in rows.itertuples(index=False)
     ]
-    return gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326")
-
-
-def _line_gdf_dft(rows: pd.DataFrame) -> gpd.GeoDataFrame:
-    rows = rows[rows["has_buscoords"].astype(str).str.lower().eq("true")].dropna(
-        subset=["from_lon", "from_lat", "to_lon", "to_lat"]
-    ).copy()
-    rows["geometry"] = [
-        LineString([(row.from_lon, row.from_lat), (row.to_lon, row.to_lat)])
-        for row in rows.itertuples(index=False)
-    ]
-    rows["line"] = rows["line_name"].astype(str)
-    rows["bus1"] = rows["from_bus"].astype(str)
-    rows["bus2"] = rows["to_bus"].astype(str)
-    rows["enabled"] = rows.get("enabled", True)
-    if not isinstance(rows["enabled"], pd.Series):
-        rows["enabled"] = True
+    if aliases:
+        rows["line"] = rows["line_name"].astype(str)
+        rows["bus1"] = rows["from_bus"].astype(str)
+        rows["bus2"] = rows["to_bus"].astype(str)
+        rows["enabled"] = rows["enabled"] if "enabled" in rows else True
     return gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326")
 
 
@@ -707,59 +687,48 @@ def _any_csv_token_in_set(value, names: set[str]) -> bool:
     return any(token.strip() in names for token in str(value).split(","))
 
 
-def _switch_segments_3857(switches_3857, lines_3857, buses_3857, bbox_3857):
+def _switch_line_layers(
+    switches_3857,
+    lines_3857,
+    buses_3857,
+    *,
+    bbox=None,
+    line_key: str = "line_name",
+    include_markers: bool = False,
+    draw_zero_length_ties: bool = False,
+):
     bus_xy = buses_3857.dropna(subset=["bus"]).set_index("bus").geometry.to_dict()
-    line_xy = {str(row.line_name): row.geometry for row in lines_3857.dropna(subset=["line_name"]).itertuples(index=False)}
+    line_xy = {
+        str(getattr(row, line_key)): row.geometry
+        for row in lines_3857.dropna(subset=[line_key]).itertuples(index=False)
+    }
     sectionalizing = []
     ties = []
     marker_rows = []
-    for row in switches_3857.itertuples(index=False):
-        segment = None
-        if row.switch_role == "sectionalizing" and bool(row.opens_existing_line):
-            segment = line_xy.get(str(row.associated_line_name))
-        elif row.switch_role == "tie":
-            left = bus_xy.get(str(row.from_bus))
-            right = bus_xy.get(str(row.to_bus))
-            if left is not None and right is not None:
-                segment = LineString([left, right])
-        if segment is not None and segment.intersects(bbox_3857):
-            target = sectionalizing if row.switch_role == "sectionalizing" else ties
-            target.extend(_clipped_line_segments(segment.intersection(bbox_3857)))
-        if row.geometry.within(bbox_3857):
-            marker_rows.append(row._asdict())
-    if marker_rows:
-        return sectionalizing, ties, gpd.GeoDataFrame(marker_rows, geometry="geometry", crs="EPSG:3857")
-    return sectionalizing, ties, gpd.GeoDataFrame(geometry=[], crs="EPSG:3857")
-
-
-def _sfo_style_switch_line_layers(switches_3857, lines_3857, buses_3857):
-    bus_xy = buses_3857.dropna(subset=["bus"]).set_index("bus").geometry.to_dict()
-    line_xy = {str(row.line): row.geometry for row in lines_3857.dropna(subset=["line"]).itertuples(index=False)}
-    sectionalizing = []
-    ties = []
     zero_length_tie_ticks = 0
     for row in switches_3857.itertuples(index=False):
-        if row.switch_role == "sectionalizing" and bool(row.opens_existing_line):
+        role = str(row.switch_role)
+        segment = None
+        if role == "sectionalizing" and bool(row.opens_existing_line):
             segment = line_xy.get(str(row.associated_line_name))
-            if segment is not None:
-                sectionalizing.extend(_clipped_line_segments(segment))
-        elif row.switch_role == "tie":
+        elif role == "tie":
             left = bus_xy.get(str(row.from_bus))
             right = bus_xy.get(str(row.to_bus))
             if left is None or right is None:
                 continue
-            if left.equals(right):
+            if left.equals(right) and draw_zero_length_ties:
                 zero_length_tie_ticks += 1
-                tick = _tiny_tick_3857(left)
-                ties.append(tick)
-            else:
-                ties.append([(left.x, left.y), (right.x, right.y)])
-    return sectionalizing, ties, zero_length_tie_ticks
-
-
-def _tiny_tick_3857(point: Point):
-    delta = 20.0
-    return [(point.x - delta, point.y - delta), (point.x + delta, point.y + delta)]
+                ties.append([(left.x - 20.0, left.y - 20.0), (left.x + 20.0, left.y + 20.0)])
+                continue
+            segment = LineString([left, right])
+        if segment is not None and (bbox is None or segment.intersects(bbox)):
+            clipped = segment.intersection(bbox) if bbox is not None else segment
+            target = sectionalizing if role == "sectionalizing" else ties
+            target.extend(_clipped_line_segments(clipped))
+        if include_markers and row.geometry.within(bbox):
+            marker_rows.append(row._asdict())
+    markers = gpd.GeoDataFrame(marker_rows, geometry="geometry", crs="EPSG:3857") if marker_rows else gpd.GeoDataFrame(geometry=[], crs="EPSG:3857")
+    return sectionalizing, ties, markers, zero_length_tie_ticks
 
 
 def _clipped_line_segments(geometry):
@@ -812,7 +781,7 @@ def _figure_size_for_bounds(bounds, *, height: float = 10.5):
     return height / aspect, height
 
 
-def _add_minimal_basemap(ax, bounds, *, zoom: int = BASEMAP_ZOOM, alpha: float = 0.78) -> bool:
+def _add_minimal_basemap(ax, bounds, *, zoom: int = basemap_zoom, alpha: float = 0.78) -> bool:
     x0, x1, y0, y1, tile_size_m, origin = _web_mercator_tile_range(bounds, zoom)
     cols = x1 - x0 + 1
     rows = y1 - y0 + 1
@@ -824,7 +793,7 @@ def _add_minimal_basemap(ax, bounds, *, zoom: int = BASEMAP_ZOOM, alpha: float =
     try:
         for x in range(x0, x1 + 1):
             for y in range(y0, y1 + 1):
-                url = CARTO_LIGHT_NOLABELS_URL.format(z=zoom, x=x, y=y)
+                url = carto_light_nolabels_url.format(z=zoom, x=x, y=y)
                 with opener.open(url, timeout=8) as response:
                     tile = Image.open(io.BytesIO(response.read())).convert("RGB")
                 canvas.paste(tile, ((x - x0) * 256, (y - y0) * 256))
@@ -883,61 +852,32 @@ def _annotate_facilities(ax, facilities: gpd.GeoDataFrame) -> None:
 
 def _overview_legend():
     return [
-        mpatches.Patch(facecolor="#9ca3af", edgecolor="#374151", alpha=0.35, label="Switch-bounded block (convex hull)"),
-        Line2D([0], [0], color=SECTIONALIZING_SWITCH_COLOR, lw=1.8, label="Sectionalizing switch (NC)"),
-        Line2D([0], [0], color=TIE_SWITCH_COLOR, lw=1.8, label="Tie switch (NO)"),
-        Line2D([0], [0], color="#7c3aed", lw=1.0, ls=":", label="Facility-to-load-bus proxy"),
-        Line2D([0], [0], marker="*", color="none", markerfacecolor="#7c3aed", markeredgecolor="white", markersize=8, label="Critical facility"),
+        _patch_handle(facecolor="#9ca3af", edgecolor="#374151", alpha=0.35, label="Switch-bounded block (convex hull)"),
+        _line_handle(color=sectionalizing_switch_color, lw=1.8, label="Sectionalizing switch (NC)"),
+        _line_handle(color=tie_switch_color, lw=1.8, label="Tie switch (NO)"),
+        _line_handle(color="#7c3aed", lw=1.0, ls=":", label="Facility-to-load-bus proxy"),
+        _line_handle(marker="*", color="none", markerfacecolor="#7c3aed", markeredgecolor="white", markersize=8, label="Critical facility"),
     ]
 
 
 def _detail_legend():
     return [
-        mpatches.Patch(facecolor="#9ca3af", edgecolor="#374151", alpha=BLOCK_ALPHA, label="Switch-bounded block hull"),
-        Line2D([0], [0], color="#4b5563", lw=1.6, label="Distribution line"),
-        Line2D([0], [0], marker="o", color="none", markerfacecolor="#111827", alpha=0.55, markersize=4, label="Bus"),
-        Line2D([0], [0], marker="o", color="none", markerfacecolor="#2563eb", markersize=5, label="Demand bus"),
-        Line2D([0], [0], marker="D", color="none", markerfacecolor="#ca8a04", markeredgecolor="white", markersize=7, label="Transformer"),
-        Line2D([0], [0], color=SECTIONALIZING_SWITCH_COLOR, lw=2.0, label="Sectionalizing switch (NC)"),
-        Line2D([0], [0], color=TIE_SWITCH_COLOR, lw=2.2, label="Tie switch (NO)"),
-        Line2D([0], [0], marker="s", color="none", markerfacecolor="#ef4444", markeredgecolor="white", markersize=6, label="Switch point"),
-        Line2D([0], [0], marker="^", color="none", markerfacecolor="#111827", markeredgecolor="white", markersize=9, label="Source"),
-        Line2D([0], [0], color="#7c3aed", lw=1.0, ls=":", label="Facility-to-load-bus proxy"),
-        Line2D([0], [0], marker="*", color="none", markerfacecolor="#7c3aed", markeredgecolor="white", markersize=11, label="Critical facility"),
-        Line2D([0], [0], marker="^", color="none", markerfacecolor="#f59e0b", markeredgecolor="#111827", markersize=11, label="Eversource Webster Substation"),
+        _patch_handle(facecolor="#9ca3af", edgecolor="#374151", alpha=block_alpha, label="Switch-bounded block hull"),
+        _line_handle(color="#4b5563", lw=1.6, label="Distribution line"),
+        _line_handle(marker="o", color="none", markerfacecolor="#111827", alpha=0.55, markersize=4, label="Bus"),
+        _line_handle(marker="o", color="none", markerfacecolor="#2563eb", markersize=5, label="Demand bus"),
+        _line_handle(marker="D", color="none", markerfacecolor="#ca8a04", markeredgecolor="white", markersize=7, label="Transformer"),
+        _line_handle(color=sectionalizing_switch_color, lw=2.0, label="Sectionalizing switch (NC)"),
+        _line_handle(color=tie_switch_color, lw=2.2, label="Tie switch (NO)"),
+        _line_handle(marker="s", color="none", markerfacecolor="#ef4444", markeredgecolor="white", markersize=6, label="Switch point"),
+        _line_handle(marker="^", color="none", markerfacecolor="#111827", markeredgecolor="white", markersize=9, label="Source"),
+        _line_handle(color="#7c3aed", lw=1.0, ls=":", label="Facility-to-load-bus proxy"),
+        _line_handle(marker="*", color="none", markerfacecolor="#7c3aed", markeredgecolor="white", markersize=11, label="Critical facility"),
+        _line_handle(marker="^", color="none", markerfacecolor="#f59e0b", markeredgecolor="#111827", markersize=11, label="Eversource Webster Substation"),
     ]
 
 
 # Power extent and SFINCS domain exports
-
-"""Power-extent exporter.
-
-Writes ``power_extent.geojson`` (per ADR-0024, amended) as the concave hull
-of a case's power-system asset locations. The concave hull supersedes the
-original convex-hull/bus-bounding-polygon rule because SMART-DS feeder sets
-are geographically dispersed — the SFO convex hull spans Pacific-to-Central-
-Valley with most of the interior empty.
-
-This module is intentionally narrow: it depends only on numpy + shapely +
-file I/O. SMART-DS / OpenDSS parsing helpers are added incrementally as
-later TDD cycles need them.
-"""
-
-
-import csv
-import json
-import math
-from collections.abc import Iterable, Iterator
-from dataclasses import dataclass
-from pathlib import Path
-
-import numpy as np
-import shapely
-from pyproj import Transformer
-from scipy.cluster.vq import kmeans2
-from shapely.geometry import MultiPoint, Polygon, box, mapping
-from shapely.geometry.base import BaseGeometry
-from shapely.ops import transform as shapely_transform
 
 _ASSET_COORD_COLUMNS: tuple[tuple[str, str], ...] = (
     ("lon", "lat"),
@@ -945,6 +885,22 @@ _ASSET_COORD_COLUMNS: tuple[tuple[str, str], ...] = (
     ("from_lon", "from_lat"),
     ("to_lon", "to_lat"),
 )
+
+
+def _write_feature_collection(output_path: Path, features: Iterable[dict]) -> Path:
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "crs": {"type": "name", "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"}},
+                "features": list(features),
+            }
+        )
+        + "\n"
+    )
+    return output_path
 
 
 def concave_power_extent(
@@ -1029,14 +985,7 @@ def write_smart_ds_power_extent(
             "source": "smart_ds Buscoords.dss (concave hull, per ADR-0024 amended)",
         },
     }
-    payload = {
-        "type": "FeatureCollection",
-        "crs": {"type": "name", "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"}},
-        "features": [feature],
-    }
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(payload) + "\n")
+    output_path = _write_feature_collection(output_path, [feature])
 
     return {
         "region_id": region_id,
@@ -1104,14 +1053,7 @@ def write_marshfield_power_extent(
             ),
         },
     }
-    payload = {
-        "type": "FeatureCollection",
-        "crs": {"type": "name", "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"}},
-        "features": [feature],
-    }
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(payload) + "\n")
+    output_path = _write_feature_collection(output_path, [feature])
 
     return {
         "region_id": "marshfield",
@@ -1137,6 +1079,56 @@ def _utm_epsg_for(lon: float, lat: float) -> str:
     return f"EPSG:{(32600 if lat >= 0 else 32700) + zone}"
 
 
+def _domain_from_projected_bounds(
+    *,
+    domain_id: str,
+    bounds: tuple[float, float, float, float],
+    to_geo,
+    n_assets_inside: int,
+    buffer_km: float,
+) -> SfincsDomain:
+    xmin, ymin, xmax, ymax = bounds
+    buf_m = buffer_km * 1000.0
+    bbox_geo = shapely_transform(to_geo, box(xmin - buf_m, ymin - buf_m, xmax + buf_m, ymax + buf_m))
+    return SfincsDomain(
+        domain_id=domain_id,
+        polygon=bbox_geo,
+        n_assets_inside=n_assets_inside,
+        aabb_km_x=(xmax - xmin + 2 * buf_m) / 1000.0,
+        aabb_km_y=(ymax - ymin + 2 * buf_m) / 1000.0,
+    )
+
+
+def _find_parent(parent: list[int], x: int) -> int:
+    while parent[x] != x:
+        parent[x] = parent[parent[x]]
+        x = parent[x]
+    return x
+
+
+def _domain_groups(parent: list[int]) -> list[list[int]]:
+    groups: dict[int, list[int]] = {}
+    for i in range(len(parent)):
+        groups.setdefault(_find_parent(parent, i), []).append(i)
+    return list(groups.values())
+
+
+def _merged_domain(member_doms: list[SfincsDomain], *, total_assets: int | None = None) -> SfincsDomain:
+    ids_sorted = sorted(d.domain_id for d in member_doms)
+    xmin = min(d.polygon.bounds[0] for d in member_doms)
+    ymin = min(d.polygon.bounds[1] for d in member_doms)
+    xmax = max(d.polygon.bounds[2] for d in member_doms)
+    ymax = max(d.polygon.bounds[3] for d in member_doms)
+    center_lat = (ymin + ymax) / 2
+    return SfincsDomain(
+        domain_id=f"{ids_sorted[0]} + {len(member_doms) - 1} more",
+        polygon=box(xmin, ymin, xmax, ymax),
+        n_assets_inside=sum(d.n_assets_inside for d in member_doms) if total_assets is None else total_assets,
+        aabb_km_x=(xmax - xmin) * 111.0 * math.cos(math.radians(center_lat)),
+        aabb_km_y=(ymax - ymin) * 111.0,
+    )
+
+
 def cluster_to_sfincs_domains(
     points: Iterable[tuple[float, float]],
     *,
@@ -1145,7 +1137,7 @@ def cluster_to_sfincs_domains(
     min_component_area_km2: float = 5.0,
     aabb_buffer_km: float = 1.0,
 ) -> list[SfincsDomain]:
-    """Cluster ``points`` and emit one AABB per cluster, per [ADR-0037].
+    """Cluster ``points`` and emit one AABB per cluster.
 
     1. Compute a tighter concave hull at ``alpha_split``. The tighter alpha
        lets disjoint clusters (Greensboro lobes, SFO Pacific-vs-Sacramento)
@@ -1180,20 +1172,16 @@ def cluster_to_sfincs_domains(
         area_km2 = comp_utm.area / 1e6
         if area_km2 < min_component_area_km2:
             continue
-        xmin, ymin, xmax, ymax = comp_utm.bounds
-        buf_m = aabb_buffer_km * 1000.0
-        bbox_utm = box(xmin - buf_m, ymin - buf_m, xmax + buf_m, ymax + buf_m)
-        bbox_geo = shapely_transform(to_geo, bbox_utm)
         n_inside = sum(
             1 for lon, lat in pts if component.covers(shapely.geometry.Point(lon, lat))
         )
         domains.append(
-            SfincsDomain(
+            _domain_from_projected_bounds(
                 domain_id=f"{region_id}:{idx}",
-                polygon=bbox_geo,
+                bounds=comp_utm.bounds,
+                to_geo=to_geo,
                 n_assets_inside=n_inside,
-                aabb_km_x=(xmax - xmin + 2 * buf_m) / 1000.0,
-                aabb_km_y=(ymax - ymin + 2 * buf_m) / 1000.0,
+                buffer_km=aabb_buffer_km,
             )
         )
     return domains
@@ -1239,18 +1227,13 @@ def cluster_smart_ds_by_subregion(
         if len(pts) < min_n_buses:
             continue
         xs_utm, ys_utm = zip(*(to_utm(lon, lat) for lon, lat in pts))
-        xmin, xmax = min(xs_utm), max(xs_utm)
-        ymin, ymax = min(ys_utm), max(ys_utm)
-        buf = aabb_buffer_km * 1000.0
-        bbox_utm = box(xmin - buf, ymin - buf, xmax + buf, ymax + buf)
-        bbox_geo = shapely_transform(to_geo, bbox_utm)
         domains.append(
-            SfincsDomain(
+            _domain_from_projected_bounds(
                 domain_id=f"{region_id}:{sr}",
-                polygon=bbox_geo,
+                bounds=(min(xs_utm), min(ys_utm), max(xs_utm), max(ys_utm)),
+                to_geo=to_geo,
                 n_assets_inside=len(pts),
-                aabb_km_x=(xmax - xmin + 2 * buf) / 1000.0,
-                aabb_km_y=(ymax - ymin + 2 * buf) / 1000.0,
+                buffer_km=aabb_buffer_km,
             )
         )
     return domains
@@ -1296,18 +1279,13 @@ def cluster_marshfield_by_feeder(
         if len(pts) < min_n_assets:
             continue
         xs_utm, ys_utm = zip(*(to_utm(lon, lat) for lon, lat in pts))
-        xmin, xmax = min(xs_utm), max(xs_utm)
-        ymin, ymax = min(ys_utm), max(ys_utm)
-        buf = aabb_buffer_km * 1000.0
-        bbox_utm = box(xmin - buf, ymin - buf, xmax + buf, ymax + buf)
-        bbox_geo = shapely_transform(to_geo, bbox_utm)
         domains.append(
-            SfincsDomain(
+            _domain_from_projected_bounds(
                 domain_id=f"{region_id}:{feeder_id}",
-                polygon=bbox_geo,
+                bounds=(min(xs_utm), min(ys_utm), max(xs_utm), max(ys_utm)),
+                to_geo=to_geo,
                 n_assets_inside=len(pts),
-                aabb_km_x=(xmax - xmin + 2 * buf) / 1000.0,
-                aabb_km_y=(ymax - ymin + 2 * buf) / 1000.0,
+                buffer_km=aabb_buffer_km,
             )
         )
     return domains
@@ -1319,7 +1297,7 @@ def merge_overlapping_aabbs(
     min_intersection_km2: float = 10.0,
     max_anchor_aabb_km: float | None = 80.0,
 ) -> list[SfincsDomain]:
-    """Union-find merge of overlapping AABBs (per ADR-0037).
+    """Union-find merge of overlapping AABBs.
 
     Each connected component (transitively via pairwise polygon intersection)
     collapses into one merged domain whose AABB is the union of its members'
@@ -1344,14 +1322,8 @@ def merge_overlapping_aabbs(
     n = len(domains)
     parent = list(range(n))
 
-    def find(x: int) -> int:
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
     def union(x: int, y: int) -> None:
-        rx, ry = find(x), find(y)
+        rx, ry = _find_parent(parent, x), _find_parent(parent, y)
         if rx != ry:
             parent[rx] = ry
 
@@ -1375,34 +1347,13 @@ def merge_overlapping_aabbs(
             if inter.area * km2_per_deg2 >= min_intersection_km2:
                 union(i, j)
 
-    groups: dict[int, list[int]] = {}
-    for i in range(n):
-        groups.setdefault(find(i), []).append(i)
-
     merged: list[SfincsDomain] = []
-    for members in groups.values():
+    for members in _domain_groups(parent):
         member_doms = [domains[i] for i in members]
         if len(member_doms) == 1:
             merged.append(member_doms[0])
             continue
-        ids_sorted = sorted(d.domain_id for d in member_doms)
-        xmin = min(d.polygon.bounds[0] for d in member_doms)
-        ymin = min(d.polygon.bounds[1] for d in member_doms)
-        xmax = max(d.polygon.bounds[2] for d in member_doms)
-        ymax = max(d.polygon.bounds[3] for d in member_doms)
-        bbox_geo = box(xmin, ymin, xmax, ymax)
-        center_lat = (ymin + ymax) / 2
-        km_x = (xmax - xmin) * 111.0 * math.cos(math.radians(center_lat))
-        km_y = (ymax - ymin) * 111.0
-        merged.append(
-            SfincsDomain(
-                domain_id=f"{ids_sorted[0]} + {len(member_doms) - 1} more",
-                polygon=bbox_geo,
-                n_assets_inside=sum(d.n_assets_inside for d in member_doms),
-                aabb_km_x=km_x,
-                aabb_km_y=km_y,
-            )
-        )
+        merged.append(_merged_domain(member_doms))
     # Stable order: by descending n_assets so the headline domain shows first.
     merged.sort(key=lambda d: -d.n_assets_inside)
     return merged
@@ -1415,7 +1366,7 @@ def merge_by_centroid_proximity(
     min_assets_per_cluster: int = 50_000,
 ) -> list[SfincsDomain]:
     """Cluster sub-domains by **centroid distance in UTM metres**, then union
-    each cluster's AABBs (per ADR-0037).
+    each cluster's AABBs.
 
     This is the v0 default for SFO and the recommended method whenever a
     region has more than ~5 candidate subregions. It avoids the two failure
@@ -1452,27 +1403,17 @@ def merge_by_centroid_proximity(
     n = len(domains)
     parent = list(range(n))
 
-    def find(x: int) -> int:
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
     for i in range(n):
         for j in range(i + 1, n):
             dx = utm_centroids[i][0] - utm_centroids[j][0]
             dy = utm_centroids[i][1] - utm_centroids[j][1]
             if math.hypot(dx, dy) < eps_m:
-                pi, pj = find(i), find(j)
+                pi, pj = _find_parent(parent, i), _find_parent(parent, j)
                 if pi != pj:
                     parent[pi] = pj
 
-    groups: dict[int, list[int]] = {}
-    for i in range(n):
-        groups.setdefault(find(i), []).append(i)
-
     merged: list[SfincsDomain] = []
-    for members in groups.values():
+    for members in _domain_groups(parent):
         member_doms = [domains[i] for i in members]
         total_assets = sum(d.n_assets_inside for d in member_doms)
         if total_assets < min_assets_per_cluster:
@@ -1480,24 +1421,7 @@ def merge_by_centroid_proximity(
         if len(member_doms) == 1:
             merged.append(member_doms[0])
             continue
-        ids_sorted = sorted(d.domain_id for d in member_doms)
-        xmin = min(d.polygon.bounds[0] for d in member_doms)
-        ymin = min(d.polygon.bounds[1] for d in member_doms)
-        xmax = max(d.polygon.bounds[2] for d in member_doms)
-        ymax = max(d.polygon.bounds[3] for d in member_doms)
-        bbox_geo = box(xmin, ymin, xmax, ymax)
-        center_lat = (ymin + ymax) / 2
-        km_x = (xmax - xmin) * 111.0 * math.cos(math.radians(center_lat))
-        km_y = (ymax - ymin) * 111.0
-        merged.append(
-            SfincsDomain(
-                domain_id=f"{ids_sorted[0]} + {len(member_doms) - 1} more",
-                polygon=bbox_geo,
-                n_assets_inside=total_assets,
-                aabb_km_x=km_x,
-                aabb_km_y=km_y,
-            )
-        )
+        merged.append(_merged_domain(member_doms, total_assets=total_assets))
     merged.sort(key=lambda d: -d.n_assets_inside)
     return merged
 
@@ -1516,16 +1440,9 @@ def cluster_buses_kmeans(
     groups using k-means in the region's UTM CRS, then compute one AABB per
     cluster from **only that cluster's assets** (buffered by ``aabb_buffer_km``).
 
-    Why this method (per ADR-0037, after iteration):
-
-    - Subregion-based clustering + AABB-intersection merge: false positives
-      from 1 km buffer kisses; false negatives from oversized rural anchors.
-    - Subregion-based + centroid-distance merge: subregions are 20-50 km wide;
-      adjacent clusters' subregion-AABBs still overlap heavily.
-    - Bus-level k-means: each bus belongs to exactly one cluster, and the
-      cluster's AABB is tight to its asset subset. Adjacent cluster AABBs
-      can still overlap at the boundary where assets interleave, but the
-      overlap is minimized (only the edge-of-cluster buses bleed across).
+    Each bus belongs to exactly one cluster and the cluster's AABB is tight to
+    its asset subset, so adjacent AABBs overlap only where edge-of-cluster buses
+    interleave at the boundary.
 
     ``k`` is per-region and lives in ``case.yaml``. Recommended defaults
     (matching the visual lobes in notebooks/regions/bbox.ipynb):
@@ -1557,23 +1474,23 @@ def cluster_buses_kmeans(
         _, labels = kmeans2(pts_utm, k, seed=seed, minit="++")
 
     domains: list[SfincsDomain] = []
-    buf_m = aabb_buffer_km * 1000.0
     for cluster_idx in range(k):
         mask = labels == cluster_idx
         if not mask.any():
             continue
         cluster_utm = pts_utm[mask]
-        xmin, xmax = float(cluster_utm[:, 0].min()), float(cluster_utm[:, 0].max())
-        ymin, ymax = float(cluster_utm[:, 1].min()), float(cluster_utm[:, 1].max())
-        bbox_utm = box(xmin - buf_m, ymin - buf_m, xmax + buf_m, ymax + buf_m)
-        bbox_geo = shapely_transform(to_geo, bbox_utm)
         domains.append(
-            SfincsDomain(
+            _domain_from_projected_bounds(
                 domain_id=f"{region_id}:k{cluster_idx}",
-                polygon=bbox_geo,
+                bounds=(
+                    float(cluster_utm[:, 0].min()),
+                    float(cluster_utm[:, 1].min()),
+                    float(cluster_utm[:, 0].max()),
+                    float(cluster_utm[:, 1].max()),
+                ),
+                to_geo=to_geo,
                 n_assets_inside=int(mask.sum()),
-                aabb_km_x=(xmax - xmin + 2 * buf_m) / 1000.0,
-                aabb_km_y=(ymax - ymin + 2 * buf_m) / 1000.0,
+                buffer_km=aabb_buffer_km,
             )
         )
     domains.sort(key=lambda d: -d.n_assets_inside)
@@ -1596,10 +1513,9 @@ def write_sfincs_domains(
         min_component_area_km2=min_component_area_km2,
         aabb_buffer_km=aabb_buffer_km,
     )
-    payload = {
-        "type": "FeatureCollection",
-        "crs": {"type": "name", "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"}},
-        "features": [
+    _write_feature_collection(
+        output_path,
+        [
             {
                 "type": "Feature",
                 "geometry": mapping(d.polygon),
@@ -1616,8 +1532,5 @@ def write_sfincs_domains(
             }
             for d in domains
         ],
-    }
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(payload) + "\n")
+    )
     return domains

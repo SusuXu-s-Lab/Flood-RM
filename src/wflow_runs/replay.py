@@ -94,6 +94,37 @@ def resolve_event_window(
     return start, end
 
 
+def configured_event_window_hours(
+    config: dict,
+    *,
+    default_pre_event_hours: float = 48.0,
+    default_post_event_hours: float = 72.0,
+) -> tuple[float, float]:
+    """Return Wflow event-window hours, including configured SFINCS drain-down.
+
+    Wflow dynamic handoff needs enough post-rain time for routed discharge to
+    recede before SFINCS stops. Locations may override this with
+    ``wflow.event_window``. Otherwise, reuse the standard Wflow 72-hour
+    post-event forcing window and add the Location's SFINCS drain-down buffer.
+    """
+
+    wflow_window = ((config.get("wflow", {}) or {}).get("event_window", {}) or {})
+    timing = ((config.get("scenario_build", {}) or {}).get("timing", {}) or {})
+    pre = _positive_float(
+        wflow_window.get("pre_event_hours"),
+        default=default_pre_event_hours,
+    )
+    if "post_event_hours" in wflow_window:
+        post = _positive_float(
+            wflow_window.get("post_event_hours"),
+            default=default_post_event_hours,
+        )
+    else:
+        drain_down = max(float(timing.get("drain_down_hours", 0.0) or 0.0), 0.0)
+        post = float(default_post_event_hours) + drain_down
+    return pre, post
+
+
 def build_meteo(
     config: dict,
     location_root,
@@ -126,8 +157,15 @@ def build_meteo(
 
     precip_path = event_dir / "precip.nc"
     temp_pet_path = event_dir / "temp_pet.nc"
-    write_precip = overwrite or not precip_path.exists()
-    write_temp_pet = overwrite or write_precip or not temp_pet_path.exists()
+    precip_provenance = event_dir / "precip_provenance.json"
+    temp_pet_provenance = event_dir / "temp_pet_provenance.json"
+    write_precip = overwrite or not precip_path.exists() or not _provenance_window_matches(precip_provenance, start, end)
+    write_temp_pet = (
+        overwrite
+        or write_precip
+        or not temp_pet_path.exists()
+        or not _provenance_window_matches(temp_pet_provenance, start, end)
+    )
 
     rainfall_source_nc = _event_rainfall_source_nc(config, location_root, row)
     scale_factor = _positive_float(row.get("rainfall_scale_factor"), default=1.0)
@@ -146,7 +184,7 @@ def build_meteo(
             scale_factor=scale_factor,
         )
         _write_json(
-            event_dir / "precip_provenance.json",
+            precip_provenance,
             {
                 "source_nc": str(rainfall_source_nc),
                 "output_nc": str(precip_path),
@@ -167,7 +205,7 @@ def build_meteo(
             precip_template=precip_path,
             variable_candidates=aorc_wflow_temp_pet_variables(config),
             source_time_start=source_time_start,
-            provenance_path=event_dir / "temp_pet_provenance.json",
+            provenance_path=temp_pet_provenance,
         )
 
     return {
@@ -178,8 +216,8 @@ def build_meteo(
         "rainfall_scale_factor": scale_factor,
         "precip_path": str(precip_path),
         "temp_pet_path": str(temp_pet_path),
-        "precip_provenance": str(event_dir / "precip_provenance.json"),
-        "temp_pet_provenance": str(event_dir / "temp_pet_provenance.json"),
+        "precip_provenance": str(precip_provenance),
+        "temp_pet_provenance": str(temp_pet_provenance),
         "precip_written": bool(write_precip),
         "temp_pet_written": bool(write_temp_pet),
     }
@@ -750,11 +788,8 @@ def replay_inland_domain_set(
         if execute:
             _run(_resolve_hydromt_command(step.update_command, location_root), cwd=location_root)
             prepare_wflow_event_instate(event_dir / step.submodel_id, base_root / step.submodel_id)
-            # ADR-0016: Wflow is the discharge generator. Event models run with rainfall +
-            # antecedent moisture ONLY; no scaled gage hydrograph is injected as external
-            # inflow (that double-counted the gauged catchment's rainfall-runoff response).
-            # Frequency provenance is applied as a single-K Same-Frequency Amplification on
-            # the merged Wflow output below, anchored on the Primary Reference Gage.
+            # Event models run with rainfall + antecedent moisture only; frequency provenance
+            # is applied as a single-K Same-Frequency Amplification on the merged output below.
             repair_wflow_staticmaps_nodata(event_dir / step.submodel_id)
             repair_wflow_canopy_parameters(event_dir / step.submodel_id)
             if apply_repairs:
@@ -799,10 +834,9 @@ def replay_inland_domain_set(
                 out_path=discharge_path,
                 handoff_points=_sfincs_handoff_points_for_replay(config, location_root, model_crs),
             )
-            # ADR-0016: honor the streamflow return period with one Same-Frequency
-            # Amplification K applied uniformly to the Wflow-generated handoff hydrographs,
-            # anchored on the Primary Reference Gage. No-op (K=1) until the catalog provides
-            # a per-event target and a primary_reference_gage is configured.
+            # One Same-Frequency Amplification K applied uniformly to the handoff hydrographs.
+            # No-op (K=1) until the catalog provides a per-event target and a
+            # primary_reference_gage is configured.
             apply_same_frequency_amplification(
                 config,
                 location_root,
@@ -906,9 +940,8 @@ def _zero_event_forcing(forcing_path: Path) -> None:
     with xr.open_dataset(forcing_path) as src:
         ds = src.load()
     zeroed = []
-    # ADR-0016: Wflow event models no longer carry an injected ``river_inflow`` forcing;
-    # the zero-rain control isolates baseflow/startup by zeroing precip only (river_inflow
-    # is still handled if a legacy event model carries it).
+    # The zero-rain control isolates baseflow/startup by zeroing precip (river_inflow is
+    # still zeroed if a legacy event model carries it).
     for name in ("precip", "river_inflow"):
         if name in ds:
             ds[name] = ds[name] * 0
@@ -995,6 +1028,18 @@ def _write_json(path: Path, payload: dict) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return path
+
+
+def _provenance_window_matches(path: Path, start: pd.Timestamp, end: pd.Timestamp) -> bool:
+    if not Path(path).exists():
+        return False
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        existing_start = pd.Timestamp(payload.get("time_start"))
+        existing_end = pd.Timestamp(payload.get("time_stop"))
+    except Exception:
+        return False
+    return existing_start == pd.Timestamp(start) and existing_end == pd.Timestamp(end)
 
 
 def _require_event_forcing(event_dir: Path) -> None:

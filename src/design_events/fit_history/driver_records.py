@@ -26,10 +26,9 @@ from design_events.fit_history.paired_observations import (
 )
 from design_events.fit_history.tidal import non_tidal_residual
 
-# Real Greensboro source-record schemas (see locations/greensboro/data/sources/...).
-# AORC SST stores per-storm basin-mean depths (a sparse storm-event series), which is
-# the correct conditioning record for rainfall; NWM soil moisture and USGS discharge are
-# multi-row per timestamp and are aggregated to one value per time.
+# Source-record schemas (see locations/greensboro/data/sources/...). AORC SST stores per-storm
+# basin-mean depths (sparse storm-event series), the rainfall conditioning record; NWM soil
+# moisture and USGS discharge are multi-row per timestamp and aggregated to one value per time.
 def _dependence(config):
     return (config.get("event_catalog", {}) or {}).get("dependence", {}) or {}
 

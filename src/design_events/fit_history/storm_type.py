@@ -1,4 +1,4 @@
-"""Storm-type classification of historical compound events (ADR-0011, Fix 3).
+"""Storm-type classification of historical compound events.
 
 Labels each paired-observation event by the storm population that produced it, so a separate
 copula can be fit per population and their AEPs combined. A ``tc`` event has a HURDAT2

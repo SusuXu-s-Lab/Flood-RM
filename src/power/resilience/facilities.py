@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 import geopandas as gpd
@@ -15,9 +17,9 @@ from shapely.geometry import Point
 from power.artifacts import stable_token
 
 
-CRITICAL_FACILITY_SCHEMA_VERSION = "stage_b_critical_facilities.v0.2"
+facility_version = "stage_b_critical_facilities.v0.2"
 
-CRITICAL_FACILITY_COLUMNS = [
+facility_columns = [
     "sandbox_id",
     "facility_id",
     "facility_name",
@@ -63,7 +65,7 @@ def load_critical_facilities(path: Path, *, location_name: str) -> gpd.GeoDataFr
 
     frame = pd.DataFrame(facilities.drop(columns=["geometry"], errors="ignore")).copy()
     rows = [_normalize_facility_row(row, location_name=location_name) for row in frame.to_dict("records")]
-    normalized = pd.DataFrame(rows, columns=CRITICAL_FACILITY_COLUMNS)
+    normalized = pd.DataFrame(rows, columns=facility_columns)
     normalized = normalized.dropna(subset=["lon", "lat"]).copy()
     return gpd.GeoDataFrame(
         normalized,
@@ -126,36 +128,30 @@ def _normalize_facility_row(row: dict[str, Any], *, location_name: str) -> dict[
         "resilience_asset_type": row.get("resilience_asset_type"),
         "hazard_exposure_summary": hazard_exposure_summary or json.dumps({"status": "pending_hazard_overlay"}, sort_keys=True),
         "source_provenance": source_provenance or json.dumps({"source": "location_critical_facilities"}, sort_keys=True),
-        "schema_version": row.get("schema_version") or CRITICAL_FACILITY_SCHEMA_VERSION,
+        "schema_version": row.get("schema_version") or facility_version,
     }
 
 
-# Critical load assignment
+# Load matches
 
-"""Stage B critical-load electrical assignment helpers.
+"""Stage B load-match helpers.
 
 Critical facilities are public geographic evidence. Electrical service points
-are synthetic sandbox assets. This module builds the auditable bridge between
+are synthetic Grid Dataset assets. This module builds the auditable bridge between
 those two data channels without treating nearest-neighbor matches as utility
 truth.
 """
 
-
-import json
-import math
-from collections.abc import Iterable, Mapping
-from typing import Any
-
 from power.artifacts import present as _present, slug as _slug
 
-CRITICAL_LOAD_ASSIGNMENTS_SCHEMA_VERSION = "stage_b_critical_load_assignments.v0.2"
+load_match_version = "stage_b_load_matches.v0.2"
 
 
-class CriticalLoadAssignmentViolation(ValueError):
-    """Raised when critical-load assignment rows violate the artifact contract."""
+class LoadMatchViolation(ValueError):
+    """Raised when load-match rows violate the artifact contract."""
 
 
-def _critical_load_facility_token(facility_id: str) -> str:
+def _facility_token(facility_id: str) -> str:
     return _slug(facility_id.rsplit(":", 1)[-1])
 
 
@@ -208,17 +204,17 @@ def _confidence(distance_m: float) -> str:
     return "low"
 
 
-def build_critical_load_assignments(
+def build_load_matches(
     facility_rows: Iterable[Mapping[str, Any]],
     *,
     asset_rows: Iterable[Mapping[str, Any]],
     control_unit_rows: Iterable[Mapping[str, Any]],
     load_bus_electrical_metadata: Mapping[str, Mapping[str, Any]] | None = None,
-    sandbox_id: str,
+    location_id: str,
     max_assignment_distance_m: float = 300.0,
     assign_nearest_when_outside_radius: bool = False,
 ) -> list[dict[str, Any]]:
-    """Assign public critical facilities to nearest valid synthetic load buses.
+    """Match public critical facilities to nearest valid synthetic load buses.
 
     By default, the assignment is operational only when the nearest Stage A
     ``load_bus`` asset lies inside ``max_assignment_distance_m``. Farther
@@ -235,7 +231,7 @@ def build_critical_load_assignments(
 
     for facility in facility_rows:
         facility_id = str(facility["facility_id"])
-        token = _critical_load_facility_token(facility_id)
+        token = _facility_token(facility_id)
         nearest: dict[str, Any] | None = None
         nearest_distance = math.inf
         if _present(facility.get("lon")) and _present(facility.get("lat")):
@@ -300,7 +296,7 @@ def build_critical_load_assignments(
             "selected": nearest_payload if assigned else None,
             "method_note": (
                 "Public critical-facility point matched to synthetic Stage A load_bus "
-                "asset; this is a reproducible sandbox service proxy, not a utility "
+                "asset; this is a reproducible Grid Dataset service proxy, not a utility "
                 "service-record claim."
             ),
         }
@@ -308,10 +304,8 @@ def build_critical_load_assignments(
         load_or_proxy_token = _asset_token(matched_asset_id)
         rows.append(
             {
-                "sandbox_id": sandbox_id,
-                "assignment_id": (
-                    f"{sandbox_id}:critical_load_assignment:{token}:{load_or_proxy_token}"
-                ),
+                "sandbox_id": location_id,
+                "assignment_id": f"{location_id}:load_match:{token}:{load_or_proxy_token}",
                 "facility_id": facility_id,
                 "load_asset_id": matched_asset_id,
                 "matched_asset_id": matched_asset_id,
@@ -331,7 +325,7 @@ def build_critical_load_assignments(
                 "criticality_weight": float(facility.get("criticality_weight") or 0.0),
                 "assignment_status": status,
                 "source_provenance": json.dumps(provenance, sort_keys=True),
-                "schema_version": CRITICAL_LOAD_ASSIGNMENTS_SCHEMA_VERSION,
+                "schema_version": load_match_version,
             }
         )
 
@@ -339,14 +333,14 @@ def build_critical_load_assignments(
     return rows
 
 
-def validate_critical_load_assignments(
+def validate_load_matches(
     rows: Iterable[Mapping[str, Any]],
     *,
     facility_ids: Iterable[str],
     asset_ids: Iterable[str],
     control_unit_ids: Iterable[str],
 ) -> None:
-    """Validate assignment rows reference known facility/electrical artifacts."""
+    """Validate load-match rows reference known facility/electrical artifacts."""
 
     facility_id_set = {str(value) for value in facility_ids}
     asset_id_set = {str(value) for value in asset_ids}
@@ -356,12 +350,12 @@ def validate_critical_load_assignments(
     for row in rows:
         assignment_id = str(row.get("assignment_id"))
         if assignment_id in seen:
-            raise CriticalLoadAssignmentViolation(f"duplicate assignment_id {assignment_id!r}")
+            raise LoadMatchViolation(f"duplicate assignment_id {assignment_id!r}")
         seen.add(assignment_id)
 
         facility_id = str(row.get("facility_id"))
         if facility_id not in facility_id_set:
-            raise CriticalLoadAssignmentViolation(
+            raise LoadMatchViolation(
                 f"{assignment_id}: unknown facility_id {facility_id!r}"
             )
 
@@ -370,31 +364,31 @@ def validate_critical_load_assignments(
             load_asset_id = row.get("load_asset_id")
             control_unit_id = row.get("control_unit_id")
             if not _present(load_asset_id):
-                raise CriticalLoadAssignmentViolation(
+                raise LoadMatchViolation(
                     f"{assignment_id}: assigned row lacks load_asset_id"
                 )
             if str(load_asset_id) not in asset_id_set:
-                raise CriticalLoadAssignmentViolation(
+                raise LoadMatchViolation(
                     f"{assignment_id}: unknown load_asset_id {load_asset_id!r}"
                 )
             if not _present(row.get("matched_bus")):
-                raise CriticalLoadAssignmentViolation(
+                raise LoadMatchViolation(
                     f"{assignment_id}: assigned row lacks matched_bus"
                 )
             if not _present(control_unit_id) or str(control_unit_id) not in control_unit_id_set:
-                raise CriticalLoadAssignmentViolation(
+                raise LoadMatchViolation(
                     f"{assignment_id}: unknown control_unit_id {control_unit_id!r}"
                 )
         elif status in {"unmatched", "needs_review", "excluded_duplicate"}:
             continue
         else:
-            raise CriticalLoadAssignmentViolation(
+            raise LoadMatchViolation(
                 f"{assignment_id}: invalid assignment_status {status!r}"
             )
 
 
-def critical_load_assignments_pyarrow_schema() -> Any:
-    """Return the pyarrow schema for `critical_load_assignments.parquet` v0.2."""
+def load_match_schema() -> Any:
+    """Return the schema for the load-match parquet artifact."""
 
     import pyarrow as pa
 
@@ -420,3 +414,17 @@ def critical_load_assignments_pyarrow_schema() -> Any:
             pa.field("schema_version", pa.string(), nullable=False),
         ]
     )
+
+
+def write_load_matches(rows: Iterable[Mapping[str, Any]], output_path: Path) -> None:
+    """Write load-match rows to the canonical parquet artifact."""
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    schema = load_match_schema()
+    row_list = list(rows)
+    columns = {field.name: [row.get(field.name) for row in row_list] for field in schema}
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.table(columns, schema=schema), output_path)

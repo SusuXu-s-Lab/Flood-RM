@@ -112,10 +112,8 @@ def marginal_rps_frame(marginal, rps):
     return pd.DataFrame({"h": marginal.magnitude(rps)}, index=pd.Index(rps, name="rps"))
 
 def write_historical_peak_marginal(marginal, path, detrend_meta=None):
-    # Save one row so the sampler can reload the fitted curve later.
-    # Detrend metadata is persisted on the same row so a reviewer can
-    # reconstruct exactly what secular trend was removed before the fit
-    # and what reference epoch the curve represents.
+    # Save one row so the sampler can reload the fitted curve; detrend metadata rides on the
+    # same row so a reviewer sees what trend was removed and at what reference epoch.
     path.parent.mkdir(parents=True, exist_ok=True)
     marginal_params_frame(marginal, detrend_meta).to_csv(path)
 

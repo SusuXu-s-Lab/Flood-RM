@@ -1,4 +1,4 @@
-"""Collect the NHC HURDAT2 Atlantic tropical-cyclone track database (ADR-0011, Fix 3).
+"""Collect the NHC HURDAT2 Atlantic tropical-cyclone track database.
 
 HURDAT2 is a single public text file: a 3-field header line per storm
 (``AL092021, IDA, 40``) followed by that many 6-hourly track rows

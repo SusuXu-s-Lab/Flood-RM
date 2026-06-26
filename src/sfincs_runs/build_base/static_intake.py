@@ -203,11 +203,9 @@ def clip_dem_and_landcover_to_bbox(
         if target_resolution_degrees is not None:
             target_crs = dem_clip.rio.crs if dem_clip.rio.crs.is_geographic else "EPSG:4269"
             dem_clip = dem_clip.rio.reproject(target_crs, resolution=float(target_resolution_degrees))
-        # Clip landcover to the AOI's bounding rectangle (matching the DEM), then align it
-        # to the DEM grid. Do NOT clip to the AOI polygon geometry: when the AOI is several
-        # disjoint sub-region boxes, a geometry clip punches nodata holes in the corners
-        # they leave uncovered, and any SFINCS domain spanning a gap loses its landcover and
-        # falls back to a flat manning value.
+        # Clip landcover to the AOI's bounding rectangle (matching the DEM), then align to the
+        # DEM grid. Clip to the box, not the AOI polygon: a geometry clip on disjoint sub-region
+        # boxes punches nodata holes, leaving domains in the gaps with a flat fallback manning.
         landcover_clip = landcover.rio.clip_box(*bbox_landcover.total_bounds)
         landcover_clip = landcover_clip.rio.reproject_match(dem_clip)
         _write_raster_atomically(dem_clip, dem_output)

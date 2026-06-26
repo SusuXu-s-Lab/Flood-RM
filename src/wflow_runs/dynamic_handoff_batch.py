@@ -15,7 +15,7 @@ from wflow_runs.dynamic_handoff import (
     prepare_handoff,
     require_handoff,
 )
-from wflow_runs.replay import build_meteo
+from wflow_runs.replay import build_meteo, configured_event_window_hours
 
 
 def dynamic_handoff_batch_worklist(
@@ -106,11 +106,14 @@ def run_handoffs(
                 pass
         try:
             if execute:
+                pre_event_hours, post_event_hours = configured_event_window_hours(config)
                 build_meteo(
                     config,
                     location_root,
                     event_id,
                     catalog_path=catalog_path,
+                    pre_event_hours=pre_event_hours,
+                    post_event_hours=post_event_hours,
                     overwrite=overwrite_meteo,
                 )
             report = prepare_handoff(

@@ -10,14 +10,14 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-from power.artifacts import POWER_GRID
+from power.artifacts import power_grid
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-SHARED_FRAGILITY_DIR = PROJECT_ROOT / "artifacts" / "fragility"
-DEFAULT_CURVES_CSV = SHARED_FRAGILITY_DIR / "erad_flood_depth_curves.csv"
-FRAGILITY_DIR = POWER_GRID / "fragility"
-DEFAULT_MAPPING_CSV = FRAGILITY_DIR / "asset_type_mapping.csv"
+project_root = Path(__file__).resolve().parents[3]
+shared_fragility_dir = project_root / "artifacts" / "fragility"
+default_curves_csv = shared_fragility_dir / "erad_flood_depth_curves.csv"
+fragility_dir = power_grid / "fragility"
+default_mapping_csv = fragility_dir / "asset_type_mapping.csv"
 
 
 @dataclass(frozen=True)
@@ -50,7 +50,7 @@ class FloodDepthFragilityCurve:
 
 @lru_cache(maxsize=None)
 def load_flood_depth_curves(
-    path: str | Path = DEFAULT_CURVES_CSV,
+    path: str | Path = default_curves_csv,
 ) -> dict[str, FloodDepthFragilityCurve]:
     """Load ERAD flood-depth curves keyed by ERAD asset type."""
     curve_path = Path(path)
@@ -71,7 +71,7 @@ def load_flood_depth_curves(
 
 
 @lru_cache(maxsize=None)
-def load_asset_type_mapping(path: str | Path = DEFAULT_MAPPING_CSV) -> dict[str, str]:
+def load_asset_type_mapping(path: str | Path = default_mapping_csv) -> dict[str, str]:
     """Load the Marshfield Asset Registry type to ERAD asset type mapping."""
     mapping_path = Path(path)
     with mapping_path.open(newline="", encoding="utf-8") as f:

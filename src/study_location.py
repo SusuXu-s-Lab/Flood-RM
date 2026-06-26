@@ -692,9 +692,8 @@ def _inland_methodology_defaults() -> dict:
                     "soil_moisture": "data/sources/nwm/soil_moisture.csv",
                 },
                 "dependence": {
-                    # ADR-0016: inland design driver is rainfall (+ antecedent moisture as a
-                    # conditioning attribute); discharge is the Wflow response, not a copula
-                    # dimension. Streamflow POT is a calibration/validation anchor only.
+                    # Inland design driver is rainfall (+ antecedent moisture as a conditioning
+                    # attribute); discharge is the Wflow response, not a copula dimension.
                     "method": "rainfall_marginal_with_antecedent_moisture",
                     "driver_vector": ["rainfall"],
                     "primary_driver": "rainfall",
@@ -869,10 +868,9 @@ def _inland_methodology_defaults() -> dict:
                 "base_model_root": "data/wflow/base",
                 "events_root": "data/wflow/events",
                 "readiness_root": "data/wflow/readiness",
-                # ADR-0016: USGS instantaneous (IV) records are calibration/validation inputs,
-                # not per-event runtime forcing. No design run depends on a cached IV file, so the
-                # former fetch/require_instantaneous forcing flags are removed. Discharge is
-                # Wflow-generated and frequency-corrected by inland_coupling.amplification (single-K).
+                # USGS instantaneous (IV) records are calibration/validation inputs, not per-event
+                # runtime forcing. Discharge is Wflow-generated and frequency-corrected by
+                # inland_coupling.amplification (single-K).
                 "streamflow_calibration": {
                     "event_records_root": "data/sources/usgs_streamgages/event_streamflow_iv",
                 },

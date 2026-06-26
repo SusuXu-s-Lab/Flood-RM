@@ -64,7 +64,7 @@ from power.plotting import block_overview
 from power.plotting import block_detail
 from power.plotting import plot_switches
 from power.resilience import write_switches
-from power.resilience import build_inventory
+from power.resilience import build_der_inventory
 from power.resilience import load_inputs
 from power.resilience import switch_inputs
 from power.resilience import build_blocks

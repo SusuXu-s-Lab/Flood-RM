@@ -1,7 +1,7 @@
-"""Inland (Wflow-coupled) design-catalog builder — ADR-0016.
+"""Inland (Wflow-coupled) design-catalog builder.
 
 Rainfall is the single stochastic design driver; antecedent soil moisture is a
-conditioning attribute (ADR-0011); discharge is the **Wflow response**, not a copula
+conditioning attribute; discharge is the **Wflow response**, not a copula
 dimension. The in-domain streamflow POT at the **Primary Reference Gage** is fit only as a
 calibration/validation anchor (no per-event streamflow design target — the realized event
 probability is carried by rainfall + antecedent wetness, and the flood frequency is
@@ -84,7 +84,7 @@ def build_inland_catalog(
     reference_gage=None,
     id_prefix: str = "design",
 ):
-    """Build the rainfall-driven, antecedent-conditioned inland design catalog (ADR-0016).
+    """Build the rainfall-driven, antecedent-conditioned inland design catalog.
 
     Rainfall is the single Driver Probability Index (POT/marginal); the catalog is
     tail-enriched across severity bands with importance weights; each event is realized to an
@@ -151,7 +151,7 @@ def build_inland_catalog(
     catalog["rainfall_member_time"] = catalog.get("rainfall_member_time")
     catalog["rainfall_source"] = "aorc_sst"
 
-    # Antecedent moisture: conditioning state, not a copula axis (ADR-0011).
+    # Antecedent moisture: conditioning state, not a copula axis.
     if soil_moisture_members is not None:
         catalog = attach_antecedent_soil_moisture(catalog, soil_moisture_members, config=config)
 
@@ -162,7 +162,7 @@ def build_inland_catalog(
 
     catalog["forcing_pairing_policy"] = "rainfall_marginal_with_antecedent_moisture_wflow_response"
     catalog["event_drivers"] = "rainfall"
-    catalog["streamflow_design_role"] = "wflow_response"  # not a design driver (ADR-0016)
+    catalog["streamflow_design_role"] = "wflow_response"  # not a design driver
     catalog["study_location"] = str(paths.get("location_name") or config.get("project", {}).get("name") or "")
     events_root = config.get("wflow", {}).get("events_root", "data/wflow/events")
     catalog["wflow_event_dir"] = catalog["event_id"].map(lambda e: f"{str(events_root).rstrip('/')}/{e}")

@@ -2,7 +2,7 @@
 
 Produces the local NetCDF referenced by the `era5_waves` entry in
 `locations/marshfield/data/static/data_catalogue.yaml`. Used as SnapWave Boundary Forcing
-in the Wave-Coupled build path (docs/adr/0001-coastal-wave-coupling-architecture.md).
+in the Wave-Coupled build path.
 
 Requires the `cdsapi` package and a valid ~/.cdsapirc; both are user-local
 (network + credentials) so we import cdsapi lazily and keep the request

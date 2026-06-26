@@ -18,6 +18,7 @@ plot_runup        Runup gauge map + per-gauge crest overtopping screen
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 from pathlib import Path
 
@@ -37,6 +38,48 @@ M_TO_FT = 3.28084
 DEFAULT_PROBABILITY_DEPTHS_FT = (0.5, 1.0, 2.0)
 
 
+@dataclass(frozen=True)
+class FloodResponseDiagnostics:
+    """Return-period, storm-family, and largest-response summaries."""
+
+    flood: pd.DataFrame
+    scope: pd.Series
+    rp_band_stats: pd.DataFrame
+    storm_type_stats: pd.DataFrame
+    top_flood_events: pd.DataFrame
+
+
+@dataclass(frozen=True)
+class DepthProbabilityDiagnostics:
+    """Catalog-weighted probability rasters and their supporting tables."""
+
+    outcomes: pd.DataFrame
+    coverage: pd.Series
+    depth_probability: xr.Dataset
+    depth_probability_path: Path
+    thresholds_ft: tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class DriverResponseDiagnostics:
+    """Weighted driver/flood-response association table."""
+
+    associations: pd.DataFrame
+    associations_path: Path
+    driver_columns: list[str]
+    outcome_columns: list[str]
+
+    @property
+    def top_associations(self) -> pd.DataFrame:
+        if self.associations.empty:
+            return self.associations
+        return self.associations.sort_values(
+            "standardized_wls_coefficient",
+            key=lambda s: s.abs(),
+            ascending=False,
+        ).head(30)
+
+
 # ─── private helpers ──────────────────────────────────────────────────────────
 
 
@@ -45,6 +88,257 @@ def _axis_message(ax, message: str) -> None:
     ax.text(0.5, 0.5, message, ha="center", va="center", transform=ax.transAxes)
     ax.set_xticks([])
     ax.set_yticks([])
+
+
+def flood_response_diagnostics(catalogue_csv) -> FloodResponseDiagnostics:
+    """Summarize how sampled event severity maps to flood depth, area, and duration."""
+    path = Path(catalogue_csv)
+    flood = pd.read_csv(path)
+    numeric_cols = [
+        "sample_rp_years", "coastal_absolute_peak_m", "coastal_peak_m", "rainfall_metric_mm", "bzs_peak_max_m",
+        "peak_incremental_land_depth_m", "peak_incremental_flooded_area_km2",
+        "anytime_incremental_flooded_area_km2", "longest_incremental_flood_duration_h",
+        "mean_incremental_flood_duration_h", "cumulative_incremental_flooded_area_km2h",
+    ]
+    for col in [c for c in numeric_cols if c in flood]:
+        flood[col] = pd.to_numeric(flood[col], errors="coerce")
+
+    rp_breaks = [0, 2, 10, 50, 100, 500, np.inf]
+    rp_labels = ["<2 yr", "2-10 yr", "10-50 yr", "50-100 yr", "100-500 yr", ">500 yr"]
+    flood["rp_band"] = pd.cut(flood["sample_rp_years"], bins=rp_breaks, labels=rp_labels, right=False)
+    flood["has_incremental_flood"] = flood["anytime_incremental_flooded_area_km2"] > 0
+
+    def p90(values):
+        return values.quantile(0.90)
+
+    rp_band_stats = (
+        flood.groupby(["rp_band", "severity_band"], observed=True)
+        .agg(
+            event_count=("event_id", "nunique"),
+            median_rp_years=("sample_rp_years", "median"),
+            median_peak_boundary_m=("bzs_peak_max_m", "median"),
+            median_rainfall_mm=("rainfall_metric_mm", "median"),
+            flood_hit_rate=("has_incremental_flood", "mean"),
+            median_peak_depth_m=("peak_incremental_land_depth_m", "median"),
+            p90_peak_depth_m=("peak_incremental_land_depth_m", p90),
+            median_peak_area_km2=("peak_incremental_flooded_area_km2", "median"),
+            p90_anytime_area_km2=("anytime_incremental_flooded_area_km2", p90),
+            p90_longest_duration_h=("longest_incremental_flood_duration_h", p90),
+        )
+        .reset_index()
+    )
+    storm_type_stats = (
+        flood.groupby(["storm_type", "severity_band"], observed=True)
+        .agg(
+            event_count=("event_id", "nunique"),
+            median_rp_years=("sample_rp_years", "median"),
+            median_peak_boundary_m=("bzs_peak_max_m", "median"),
+            median_rainfall_mm=("rainfall_metric_mm", "median"),
+            median_peak_area_km2=("peak_incremental_flooded_area_km2", "median"),
+            p90_anytime_area_km2=("anytime_incremental_flooded_area_km2", p90),
+            p90_longest_duration_h=("longest_incremental_flood_duration_h", p90),
+        )
+        .reset_index()
+    )
+    top_cols = [
+        "event_id", "storm_type", "severity_band", "sample_rp_years",
+        "coastal_absolute_peak_m", "rainfall_metric_mm", "bzs_peak_max_m",
+        "peak_incremental_land_depth_m", "peak_incremental_flooded_area_km2",
+        "anytime_incremental_flooded_area_km2", "longest_incremental_flood_duration_h",
+    ]
+    top_flood_events = flood.sort_values(
+        ["anytime_incremental_flooded_area_km2", "peak_incremental_land_depth_m"],
+        ascending=False,
+    )[[c for c in top_cols if c in flood]].head(15)
+    scope = pd.Series(
+        {
+            "catalogue_csv": str(path),
+            "events": int(len(flood)),
+            "storm_types": ", ".join(sorted(flood["storm_type"].dropna().astype(str).unique())),
+            "max_anytime_incremental_area_km2": flood["anytime_incremental_flooded_area_km2"].max(),
+            "max_peak_incremental_depth_m": flood["peak_incremental_land_depth_m"].max(),
+        },
+        name="flood_catalogue_scope",
+    )
+    return FloodResponseDiagnostics(flood, scope, rp_band_stats, storm_type_stats, top_flood_events)
+
+
+def plot_flood_response_diagnostics(response: FloodResponseDiagnostics):
+    """Three-panel view of return period, severity bands, and paired flood drivers."""
+    flood = response.flood
+    severity_order = ["mild", "common", "significant", "rare", "extreme"]
+    # Cool->warm ramp so mild (blue) and extreme (crimson) are clearly distinct.
+    severity_colors = {
+        "mild": "#3288bd",
+        "common": "#66c2a5",
+        "significant": "#fdae61",
+        "rare": "#f46d43",
+        "extreme": "#9e0142",
+        "beyond_design": "#542788",
+    }
+    fig, axes = plt.subplots(1, 3, figsize=(17, 4))
+
+    plotted = False
+    present_bands = list(flood["severity_band"].dropna().unique())
+    plot_order = [b for b in severity_order if b in present_bands] + [b for b in present_bands if b not in severity_order]
+    for severity_band in plot_order:
+        group = flood[flood["severity_band"] == severity_band]
+        x = pd.to_numeric(group["sample_rp_years"], errors="coerce")
+        y = pd.to_numeric(group["anytime_incremental_flooded_area_km2"], errors="coerce")
+        mask = np.isfinite(x) & (x > 0) & np.isfinite(y)
+        if mask.any():
+            axes[0].scatter(x[mask], y[mask], s=28, alpha=0.70, label=severity_band, color=severity_colors.get(severity_band))
+            plotted = True
+    axes[0].set_xscale("log")
+    limits = _positive_log_limits(flood["sample_rp_years"])
+    if limits is not None:
+        axes[0].set_xlim(*limits)
+    axes[0].set_xlabel("sampled joint return period (years)")
+    axes[0].set_ylabel("anytime incremental flooded area (km2)")
+    axes[0].legend(title="severity", fontsize=8) if plotted else _axis_message(axes[0], "No finite area metrics available")
+
+    box_data = [
+        pd.to_numeric(flood.loc[flood["severity_band"] == band, "peak_incremental_flooded_area_km2"], errors="coerce").dropna()
+        for band in severity_order
+    ]
+    if any(len(values) for values in box_data):
+        axes[1].boxplot(box_data, tick_labels=severity_order, showfliers=False)
+        axes[1].tick_params(axis="x", rotation=25)
+    else:
+        _axis_message(axes[1], "No finite peak-area metrics available")
+    axes[1].set_ylabel("peak incremental flooded area (km2)")
+
+    plotted = False
+    # Use the NTR/surge index (the copula axis, ADR-0011), not the tide-inclusive total
+    # water level, so this panel correlates the same physical coastal driver as the joint model.
+    coastal_col = "coastal_peak_m" if "coastal_peak_m" in flood else "coastal_absolute_peak_m"
+    coastal_label = "coastal NTR / surge peak (m)" if coastal_col == "coastal_peak_m" else "coastal absolute peak (m)"
+    for storm_type, group in flood.groupby("storm_type", sort=True):
+        x = pd.to_numeric(group["rainfall_metric_mm"], errors="coerce")
+        y = pd.to_numeric(group[coastal_col], errors="coerce")
+        mask = np.isfinite(x) & np.isfinite(y)
+        if mask.any():
+            area = pd.to_numeric(group.loc[mask, "anytime_incremental_flooded_area_km2"], errors="coerce").fillna(0.0)
+            axes[2].scatter(x[mask], y[mask], s=np.clip(area * 2.0, 12, 90), alpha=0.55, label=storm_type)
+            plotted = True
+    axes[2].set_xlabel("72h mean rainfall (mm)")
+    axes[2].set_ylabel(coastal_label)
+    axes[2].legend(title="storm type", fontsize=8) if plotted else _axis_message(axes[2], "No finite paired driver metrics available")
+
+    fig.tight_layout()
+    return fig
+
+
+def depth_probability_diagnostics(
+    *,
+    storage_root,
+    catalog_path,
+    risk_metadata_path,
+    flood_catalogue_path,
+    outdir,
+    thresholds_ft=DEFAULT_PROBABILITY_DEPTHS_FT,
+) -> DepthProbabilityDiagnostics:
+    """Build catalog-weighted annual flood-depth probability rasters."""
+    catalog_path = Path(catalog_path)
+    metadata = json.loads(Path(risk_metadata_path).read_text(encoding="utf-8"))
+    total_rate = float(metadata["total_rate_per_year"])
+    weights = pd.read_csv(catalog_path)
+    if "event_origin" in weights:
+        weights = weights[weights["event_origin"].isin(["synthetic_body", "synthetic_tail"])].copy()
+    weights["probability_weight"] = pd.to_numeric(weights["probability_weight"], errors="coerce")
+    weights = weights[weights["probability_weight"].notna()].reset_index(drop=True)
+
+    runs = completed_sfincs_runs(storage_root)
+    flood_catalogue = pd.read_csv(flood_catalogue_path)
+    outcomes = event_outcome_table(runs, catalog_path, weights, total_rate, outcomes=flood_catalogue)
+    coverage = outcome_coverage(outcomes, weights)
+    depth_probability = catalog_depth_probability(runs, outcomes, thresholds_ft=thresholds_ft)
+    out_path = Path(outdir) / "flood_depth_probability.nc"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    depth_probability.to_netcdf(out_path)
+    return DepthProbabilityDiagnostics(outcomes, coverage, depth_probability, out_path, tuple(float(t) for t in thresholds_ft))
+
+
+def plot_depth_probability_panels(probability_ds: xr.Dataset, thresholds_ft=DEFAULT_PROBABILITY_DEPTHS_FT, *, basemap_style="osm"):
+    """Plot flood-depth AEP thresholds with one shared color scale."""
+    vmax_values = []
+    for threshold in thresholds_ft:
+        key = f"depth_gt_{str(float(threshold)).replace('.', 'p')}ft_aep"
+        values = np.asarray(probability_ds[key].values, dtype=float)
+        positive = values[np.isfinite(values) & (values > 0)]
+        if positive.size:
+            vmax_values.append(float(np.nanpercentile(positive, 99)))
+    shared_vmax = max(vmax_values) if vmax_values else 0.01
+
+    fig, axes = plt.subplots(1, len(thresholds_ft), figsize=(6 * len(thresholds_ft), 5.5), squeeze=False)
+    for ax, threshold in zip(axes[0], thresholds_ft):
+        ax, mesh = plot_depth_probability(
+            probability_ds,
+            threshold,
+            ax=ax,
+            basemap_style=basemap_style,
+            vmax=shared_vmax,
+            title=f"Annual P(depth > {threshold:g} ft)",
+        )
+        fig.colorbar(mesh, ax=ax, shrink=0.82, label="annual probability")
+    fig.tight_layout()
+    return fig
+
+
+def driver_response_diagnostics(
+    outcomes: pd.DataFrame,
+    *,
+    outdir,
+    min_rows: int = 8,
+) -> DriverResponseDiagnostics:
+    """Estimate weighted diagnostic associations between event drivers and flood outcomes."""
+    drivers = [
+        "coastal_water_level", "coastal_absolute_peak_m", "rainfall", "rainfall_metric_mm",
+        "soil_moisture_metric", "coastal_water_level_scale_factor", "rainfall_scale_factor",
+        "rainfall_pairing_lag_hours",
+    ]
+    response = [
+        "peak_incremental_land_depth_m", "peak_incremental_flooded_area_km2",
+        "anytime_incremental_flooded_area_km2", "longest_incremental_flood_duration_h",
+    ]
+    drivers = [c for c in drivers if c in outcomes]
+    response = [c for c in response if c in outcomes]
+    associations = weighted_standardized_associations(outcomes, drivers=drivers, outcomes=response, min_rows=min_rows)
+    out_path = Path(outdir) / "driver_flood_response_diagnostic_associations.csv"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    associations.to_csv(out_path, index=False)
+    return DriverResponseDiagnostics(associations, out_path, drivers, response)
+
+
+def plot_driver_response_matrix(outcomes: pd.DataFrame, response: DriverResponseDiagnostics):
+    """Scatter the main driver/outcome pairs used to sanity-check associations."""
+    drivers = [
+        c for c in ["coastal_water_level", "rainfall", "soil_moisture_metric", "rainfall_pairing_lag_hours"]
+        if c in response.driver_columns
+    ]
+    outcomes_cols = [
+        c for c in [
+            "peak_incremental_land_depth_m",
+            "peak_incremental_flooded_area_km2",
+            "anytime_incremental_flooded_area_km2",
+        ]
+        if c in response.outcome_columns
+    ]
+    if not drivers or not outcomes_cols:
+        return None
+    return plot_driver_outcome_matrix(outcomes, drivers=drivers, outcomes=outcomes_cols)
+
+
+def _positive_log_limits(values):
+    positive = pd.to_numeric(values, errors="coerce")
+    positive = positive[np.isfinite(positive) & (positive > 0)]
+    if positive.empty:
+        return None
+    low = float(positive.min())
+    high = float(positive.max())
+    if np.isclose(low, high):
+        return low / np.sqrt(10.0), high * np.sqrt(10.0)
+    return low * 0.9, high * 1.1
 
 
 def completed_sfincs_runs(storage_root) -> pd.DataFrame:
@@ -362,6 +656,47 @@ def _weighted_corr(x: np.ndarray, y: np.ndarray, weights: np.ndarray) -> float:
     return float(np.average(xz * yz, weights=weights))
 
 
+_PRETTY_AXIS_LABELS = {
+    "coastal_water_level": "Coastal Water Level (m)",
+    "rainfall": "Rainfall (mm)",
+    "soil_moisture_metric": "Soil Moisture Metric",
+    "rainfall_pairing_lag_hours": "Rainfall Pairing Lag (hours)",
+    "peak_incremental_land_depth_m": "Peak Incremental Land Depth (m)",
+    "peak_incremental_flooded_area_km2": "Peak Incremental Flooded Area (km²)",
+    "anytime_incremental_flooded_area_km2": "Anytime Incremental Flooded Area (km²)",
+}
+
+
+def _pretty_axis_label(column: str) -> str:
+    """Human-readable axis label, falling back to a tidied column name."""
+    if column in _PRETTY_AXIS_LABELS:
+        return _PRETTY_AXIS_LABELS[column]
+    unit_suffixes = {"_m": " (m)", "_km2": " (km²)", "_hours": " (hours)", "_mm": " (mm)"}
+    label = column
+    for suffix, unit in unit_suffixes.items():
+        if label.endswith(suffix):
+            label = label[: -len(suffix)]
+            return label.replace("_", " ").title() + unit
+    return label.replace("_", " ").title()
+
+
+def _tau_with_ci(x, y, *, confidence: float = 0.95):
+    """Kendall tau plus a normal-approximation CI. Returns (tau, lo, hi, p, n) or None."""
+    from scipy.stats import kendalltau, norm
+
+    valid = pd.DataFrame({"x": pd.to_numeric(x, errors="coerce"), "y": pd.to_numeric(y, errors="coerce")}).dropna()
+    n = len(valid)
+    if n < 8 or valid["x"].nunique() < 2 or valid["y"].nunique() < 2:
+        return None
+    tau, p = kendalltau(valid["x"], valid["y"])
+    if not np.isfinite(tau):
+        return None
+    # Asymptotic SE of Kendall's tau under H1 (Fisher-z stabilised), good enough for a diagnostic band.
+    se = np.sqrt((2.0 * (2.0 * n + 5.0)) / (9.0 * n * (n - 1.0)))
+    z = norm.ppf(0.5 + confidence / 2.0)
+    return float(tau), float(tau - z * se), float(tau + z * se), float(p), int(n)
+
+
 def plot_driver_outcome_matrix(
     data: pd.DataFrame,
     drivers: list[str],
@@ -370,8 +705,15 @@ def plot_driver_outcome_matrix(
     storm_col: str = "storm_type",
     weight_col: str = "probability_weight",
 ):
-    """Maduwantha-style scatter panels linking drivers to flood outcomes."""
-    from scipy.stats import kendalltau
+    """Maduwantha-style scatter panels linking drivers to flood outcomes.
+
+    Kendall tau is reported pooled (labelled diagnostic-only — the catalogue is a
+    tail-enriched importance sample, so pooled unweighted tau is not climatology) and
+    stratified by storm type, mirroring how the joint copula itself is fit (ADR-0011).
+    The probability-weighted association table is the headline; these tau values are a
+    visual cross-check.
+    """
+    from matplotlib.ticker import MaxNLocator, ScalarFormatter
 
     drivers = [d for d in drivers if d in data]
     outcomes = [o for o in outcomes if o in data]
@@ -399,12 +741,28 @@ def plot_driver_outcome_matrix(
                         sizes = 28
                     ax.scatter(x[mask], y[mask], s=sizes, alpha=0.62, color=palette[storm_type], label=storm_type)
                     plotted = True
-            valid = data[[driver, outcome]].apply(pd.to_numeric, errors="coerce").dropna()
-            if len(valid) >= 3:
-                tau, p = kendalltau(valid[driver], valid[outcome])
-                ax.text(0.04, 0.95, f"Kendall tau={tau:.2f}\np={p:.2g}", transform=ax.transAxes, va="top", fontsize=8, bbox=dict(boxstyle="round", fc="white", alpha=0.8))
-            ax.set_xlabel(driver)
-            ax.set_ylabel(outcome)
+            pooled = _tau_with_ci(data[driver], data[outcome])
+            if pooled is not None:
+                tau, lo, hi, p, n = pooled
+                lines = [f"pooled τ={tau:+.2f} [{lo:+.2f},{hi:+.2f}]", f"p={p:.2g}, n={n} (diagnostic-only)"]
+                for storm_type in [s for s in palette if s in set(storm_values)]:
+                    sub = data[storm_values == storm_type]
+                    strat = _tau_with_ci(sub[driver], sub[outcome])
+                    if strat is not None:
+                        s_tau, s_lo, s_hi, _s_p, s_n = strat
+                        lines.append(f"  {storm_type}: τ={s_tau:+.2f} (n={s_n})")
+                ax.text(0.04, 0.96, "\n".join(lines), transform=ax.transAxes, va="top", fontsize=6.5,
+                        bbox=dict(boxstyle="round", fc="white", alpha=0.85))
+            ax.set_xlabel(_pretty_axis_label(driver))
+            ax.set_ylabel(_pretty_axis_label(outcome))
+            # Thin out and de-crowd large-magnitude x ticks (e.g. pairing-lag hours)
+            x_all = pd.to_numeric(data[driver], errors="coerce")
+            if x_all.notna().any() and x_all.abs().max() >= 1e4:
+                ax.xaxis.set_major_locator(MaxNLocator(nbins=5, prune="both"))
+                fmt = ScalarFormatter(useMathText=True)
+                fmt.set_powerlimits((-3, 3))
+                ax.xaxis.set_major_formatter(fmt)
+                ax.ticklabel_format(axis="x", style="sci", scilimits=(-3, 3))
             ax.grid(True, alpha=0.3)
             if plotted and row_idx == 0 and col_idx == len(drivers) - 1:
                 ax.legend(loc="best", fontsize=8)

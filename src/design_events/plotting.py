@@ -142,10 +142,8 @@ def plot_aic_model_selection(peaks, marginal):
     axes[0].legend(loc="lower right", fontsize=9)
     axes[0].grid(True, alpha=0.3)
 
-    # Right: log-survival diagnostic. The Exponential is a straight line on
-    # this scale; any deviation indicates a heavier or lighter tail. The
-    # empirical points falling on a straight line is direct visual evidence
-    # that no heavier-tailed (GPD) model is needed.
+    # Right: log-survival diagnostic. The Exponential is a straight line on this scale;
+    # empirical points on the line are evidence that no heavier-tailed (GPD) model is needed.
     n = len(sorted_vals)
     emp_surv = 1.0 - (np.arange(1, n + 1) - 0.5) / n
     axes[1].semilogy(sorted_vals, emp_surv, "o", color="0.3", alpha=0.7,
@@ -942,11 +940,17 @@ def _catalog_with_severity(catalog, *, severity_bands=None):
     return frame
 
 
+def _sampling_weight_series(catalog):
+    if "sampling_weight" in catalog:
+        return pd.to_numeric(catalog["sampling_weight"], errors="coerce").fillna(0.0)
+    return pd.Series(np.ones(len(catalog), dtype=float), index=catalog.index)
+
+
 def severity_band_distribution(catalog, *, band_order=None, severity_bands=None):
     band_order = band_order or ["mild", "common", "significant", "rare", "extreme", "beyond_design"]
     catalog = _catalog_with_severity(catalog, severity_bands=severity_bands)
     counts = catalog["severity_band"].value_counts()
-    weights = pd.to_numeric(catalog["sampling_weight"], errors="coerce").fillna(0.0)
+    weights = _sampling_weight_series(catalog)
     weighted = weights.groupby(catalog["severity_band"].astype(str)).sum()
     if "probability_weight" in catalog:
         probability_weights = pd.to_numeric(catalog["probability_weight"], errors="coerce")
@@ -1090,10 +1094,8 @@ def plot_original_vs_design_severity(original_catalog, design_catalog, *, band_o
     return fig
 
 
-# Stage 5.5: pairing-policy sensitivity. Overlay seasonal-window vs independent
-# permutation for one forcing so reviewers can see what the seasonal constraint
-# buys in practice. Independent permutation is the methodology's baseline
-# sensitivity case, not the production policy.
+# Stage 5.5: pairing-policy sensitivity. Overlay seasonal-window vs independent permutation
+# for one forcing. Independent permutation is the baseline sensitivity case, not production.
 def plot_independent_vs_seasonal(catalog_seasonal, catalog_independent, forcing, *, window_days=None):
     fig, axes = plt.subplots(1, 2, figsize=(14, 5), sharex=True, sharey=True)
     plot_seasonal_pairing(catalog_seasonal, forcing, window_days=window_days, ax=axes[0])
@@ -1627,7 +1629,7 @@ def plot_msl_shift_scenario_comparison(
     return fig
 
 
-# --- Copula-Joint compound-dependence figures (ADR-0011) -------------------------------
+# --- Copula-Joint compound-dependence figures ------------------------------------------
 # These visualize the production copula_joint method: the paired co-occurrence sample,
 # the fitted vine, AND joint-exceedance isolines, the tail-enrichment budget, and the
 # field-preserving realization. Heavy imports are local to avoid import cycles.

@@ -1,4 +1,4 @@
-"""Coastal Field-Preserving Realization for copula-joint catalog rows (ADR-0011, Fix 2).
+"""Coastal Field-Preserving Realization for copula-joint catalog rows.
 
 Builds the coastal SFINCS water-level boundary for a copula-joint event. Each event names an
 observed surge (NTR) analog — its declustered POT peak time — and a scale factor ``K``. We cut

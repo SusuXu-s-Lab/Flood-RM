@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
+import xarray as xr
 
 from wflow_runs.coupled_handoff import read_stream_boundary_handoff_location_artifacts
 from wflow_runs.coupling_qa import (
@@ -14,6 +16,8 @@ from wflow_runs.replay import (
     _domain_set_submodels,
     _event_reference_time,
     _sfincs_handoff_locations_for_replay,
+    build_meteo,
+    configured_event_window_hours,
     replay_inland_domain_set,
     resolve_event_window,
     run_zero_rain_control,
@@ -22,6 +26,16 @@ from wflow_runs.build_plan import validate_wflow_reservoir_staticmaps, validate_
 from wflow_runs.states import plan_wflow_warmup_state, validate_warmup_forcing, validate_instates, write_cold_state_workflow
 from wflow_runs.streamflow_realization import validate_wflow_streamflow_realization
 from wflow_runs.notebook import resolve_location_path
+
+
+@dataclass(frozen=True)
+class DynamicHandoffRun:
+    """Notebook result for preparing or reusing one dynamic Wflow handoff."""
+
+    summary: pd.Series
+    acceptance: pd.Series
+    meteo_report: pd.Series | None = None
+    handoff_report: pd.DataFrame | None = None
 
 
 def dynamic_handoff_paths(config: dict, location_root, event_id: str) -> dict[str, Path]:
@@ -40,7 +54,12 @@ def dynamic_handoff_paths(config: dict, location_root, event_id: str) -> dict[st
 def plan_handoff(config: dict, location_root, event_id: str, *, catalog_path=None) -> pd.Series:
     location_root = Path(location_root)
     reference_time = _event_reference_time(location_root, event_id, catalog_path)
-    start, end = resolve_event_window(reference_time)
+    pre_event_hours, post_event_hours = configured_event_window_hours(config)
+    start, end = resolve_event_window(
+        reference_time,
+        pre_event_hours=pre_event_hours,
+        post_event_hours=post_event_hours,
+    )
     state_plan = plan_wflow_warmup_state(config, location_root, event_id, reference_time=reference_time)
     paths = dynamic_handoff_paths(config, location_root, event_id)
     acceptance_status = "missing"
@@ -64,6 +83,83 @@ def plan_handoff(config: dict, location_root, event_id: str, *, catalog_path=Non
     )
 
 
+def ensure_dynamic_handoff(
+    config: dict,
+    location_root,
+    event_id: str,
+    *,
+    catalog_path=None,
+    rerun: bool = False,
+    run: bool = True,
+) -> DynamicHandoffRun:
+    """Reuse a current accepted handoff, or build/accept it for this event."""
+    location_root = Path(location_root)
+    catalog_path = _resolve_catalog_path(location_root, catalog_path)
+    paths = dynamic_handoff_paths(config, location_root, event_id)
+    instates = _instate_paths(config, location_root)
+    missing_instates = [str(path) for path in instates if not path.exists()]
+    if missing_instates:
+        raise FileNotFoundError(
+            "Missing prepared Wflow instate(s): "
+            + "; ".join(missing_instates)
+            + ". Run b_prepare_wflow_dynamic_handoff.ipynb first."
+        )
+
+    handoff_issue = ""
+    try:
+        require_handoff(config, location_root, event_id, catalog_path=catalog_path)
+        needs_dynamic_wflow = bool(rerun)
+    except Exception as exc:
+        handoff_issue = str(exc)
+        needs_dynamic_wflow = True
+
+    meteo_report = None
+    handoff_report = None
+    if needs_dynamic_wflow:
+        if not run:
+            raise FileNotFoundError(
+                f"Missing accepted Wflow handoff for {event_id}: {paths['acceptance']}. "
+                "Set run_dynamic_wflow_handoff=True or run b_prepare_wflow_dynamic_handoff.ipynb first."
+            )
+        meteo_report = pd.Series(
+            build_meteo(
+                config,
+                location_root,
+                event_id,
+                catalog_path=catalog_path,
+                overwrite=rerun,
+            ),
+            name="wflow_event_meteo_forcing",
+        )
+        handoff_report = prepare_handoff(
+            config,
+            location_root,
+            event_id,
+            catalog_path=catalog_path,
+            execute=True,
+        )
+
+    acceptance = require_handoff(config, location_root, event_id, catalog_path=catalog_path)
+    summary = pd.Series(
+        {
+            "event_id": str(event_id),
+            "dynamic_wflow_handoff": "run" if needs_dynamic_wflow and run else "reuse accepted",
+            "rerun": bool(rerun),
+            "wflow_instate_count": len(instates),
+            "acceptance_json": str(paths["acceptance"]),
+            "sfincs_discharge": str(paths["discharge"]),
+            "handoff_issue": handoff_issue,
+        },
+        name="dynamic_wflow_handoff_run",
+    )
+    return DynamicHandoffRun(
+        summary=summary,
+        acceptance=acceptance,
+        meteo_report=meteo_report,
+        handoff_report=handoff_report,
+    )
+
+
 def prepare_handoff(
     config: dict,
     location_root,
@@ -78,6 +174,7 @@ def prepare_handoff(
         raise ValueError("inland_coupling.discharge_forcing.source must be 'wflow_dynamic'")
     location_root = Path(location_root)
     reference_time = _event_reference_time(location_root, event_id, catalog_path)
+    pre_event_hours, post_event_hours = configured_event_window_hours(config)
     state_plan = plan_wflow_warmup_state(config, location_root, event_id, reference_time=reference_time)
     write_cold_state_workflow(state_plan["cold_state_workflow"], timestamp=state_plan["warmup_start"])
     if execute:
@@ -91,6 +188,8 @@ def prepare_handoff(
         event_id,
         catalog_path=catalog_path,
         execute=execute,
+        pre_event_hours=pre_event_hours,
+        post_event_hours=post_event_hours,
     )
     paths = dynamic_handoff_paths(config, location_root, event_id)
     if not execute:
@@ -105,6 +204,11 @@ def prepare_handoff(
     max_shape_corr = float(thresholds.get("max_source_shape_correlation", 0.9999))
     zero_path = zero_rain_discharge_nc or (paths["zero_rain_discharge"] if paths["zero_rain_discharge"].exists() else None)
     zero_report = pd.DataFrame()
+    if zero_path is not None:
+        try:
+            _require_current_handoff_window(config, location_root, event_id, Path(zero_path), catalog_path=catalog_path)
+        except Exception:
+            zero_path = None
     if zero_path is None:
         zero_report = run_zero_rain_control(config, location_root, event_id, execute=True)
         zero_path = paths["zero_rain_discharge"] if paths["zero_rain_discharge"].exists() else None
@@ -141,7 +245,7 @@ def prepare_handoff(
     return replay_report
 
 
-def require_handoff(config: dict, location_root, event_id: str) -> pd.Series:
+def require_handoff(config: dict, location_root, event_id: str, *, catalog_path=None) -> pd.Series:
     paths = dynamic_handoff_paths(config, location_root, event_id)
     if not paths["acceptance"].exists():
         discharge_note = (
@@ -172,6 +276,7 @@ def require_handoff(config: dict, location_root, event_id: str) -> pd.Series:
         )
     if not paths["discharge"].exists():
         raise FileNotFoundError(paths["discharge"])
+    _require_current_handoff_window(config, location_root, event_id, paths["discharge"], catalog_path=catalog_path)
     return pd.Series(
         {
             "event_id": str(event_id),
@@ -184,8 +289,45 @@ def require_handoff(config: dict, location_root, event_id: str) -> pd.Series:
     )
 
 
+def _require_current_handoff_window(config: dict, location_root, event_id: str, discharge_nc: Path, *, catalog_path=None) -> None:
+    location_root = Path(location_root)
+    reference_time = _event_reference_time(location_root, event_id, catalog_path)
+    pre_event_hours, post_event_hours = configured_event_window_hours(config)
+    _start, expected_end = resolve_event_window(
+        reference_time,
+        pre_event_hours=pre_event_hours,
+        post_event_hours=post_event_hours,
+    )
+    with xr.open_dataset(discharge_nc) as ds:
+        if "time" not in ds:
+            raise RuntimeError(f"Dynamic Wflow handoff discharge lacks a time coordinate: {discharge_nc}")
+        actual_end = pd.Timestamp(ds["time"].max().values)
+    if actual_end < expected_end:
+        raise RuntimeError(
+            f"Dynamic Wflow handoff for {event_id} is stale: {discharge_nc} ends at "
+            f"{actual_end.isoformat()}, but the current Wflow event window ends at {expected_end.isoformat()}. "
+            "Rerun 04/b_prepare_wflow_dynamic_handoff.ipynb with rerun=True so meteo, Wflow discharge, "
+            "zero-rain QA, and SFINCS staging use the extended window."
+        )
+
+
 def _configured_discharge_source(config: dict) -> str:
     return str(((config.get("inland_coupling", {}) or {}).get("discharge_forcing", {}) or {}).get("source", "wflow_replay")).lower()
+
+
+def _resolve_catalog_path(location_root: Path, catalog_path) -> Path | None:
+    if catalog_path is None:
+        return None
+    path = Path(catalog_path)
+    return path if path.is_absolute() else location_root / path
+
+
+def _instate_paths(config: dict, location_root: Path) -> list[Path]:
+    base_root = resolve_location_path(location_root, config.get("wflow", {}).get("base_model_root", "data/wflow/base"))
+    return [
+        base_root / str(submodel["wflow_submodel_id"]) / "instate" / "instates.nc"
+        for submodel in _domain_set_submodels(config, location_root)
+    ]
 
 
 def _expected_handoff_ids(config: dict, location_root: Path) -> set[str]:

@@ -47,6 +47,14 @@ from wflow_runs.replay import (
     write_event_streamflow_handoff_discharge,
 )
 from wflow_runs.river_geometry import validate_geometry
+from wflow_runs.coupling_qa import (
+    CoupledDomainReview,
+    WflowArtifactInventory,
+    WflowHandoffContract,
+    coupled_domain_review,
+    wflow_artifact_inventory,
+    wflow_handoff_contract,
+)
 from wflow_runs.states import (
     configure_wflow_state_paths,
     plan_warmup,
@@ -62,7 +70,9 @@ from wflow_runs.states import (
     write_cold_state_workflow,
 )
 from wflow_runs.dynamic_handoff import (
+    DynamicHandoffRun,
     dynamic_handoff_paths,
+    ensure_dynamic_handoff,
     plan_streamflow,
     plan_handoff,
     prepare_handoff,
@@ -119,6 +129,12 @@ __all__ = [
     "run_zero_rain_control",
     "write_event_streamflow_handoff_discharge",
     "validate_geometry",
+    "CoupledDomainReview",
+    "WflowArtifactInventory",
+    "WflowHandoffContract",
+    "coupled_domain_review",
+    "wflow_artifact_inventory",
+    "wflow_handoff_contract",
     "warmup_window",
     "write_cold_state_workflow",
     "configure_wflow_state_paths",
@@ -131,7 +147,9 @@ __all__ = [
     "validate_warmup_forcing",
     "validate_wflow_reservoir_states",
     "validate_instates",
+    "DynamicHandoffRun",
     "dynamic_handoff_paths",
+    "ensure_dynamic_handoff",
     "plan_streamflow",
     "plan_handoff",
     "prepare_handoff",

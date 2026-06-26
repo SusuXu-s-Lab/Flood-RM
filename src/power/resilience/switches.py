@@ -9,16 +9,19 @@ from __future__ import annotations
 import json
 import re
 from bisect import bisect_right
-from collections import deque
+import hashlib
+from collections import defaultdict, deque
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from itertools import combinations
 from typing import Any, Optional
 
+import pandas as pd
 
-PLACEMENT_RULE_SSAP = "ssap_radial_sectionalizing_switch_allocation"
-SSAP_SUBRULE = "exact_tree_dynamic_programming_ssap"
-CONTROLLABLE_SWITCHES_SCHEMA_VERSION = "stage_b_controllable_switches.v0.1"
+
+placement_rule_ssap = "ssap_radial_sectionalizing_switch_allocation"
+ssap_subrule = "exact_tree_dynamic_programming_ssap"
+controllable_switches_schema_version = "stage_b_controllable_switches.v0.1"
 
 
 @dataclass(frozen=True)
@@ -799,7 +802,7 @@ def emit_ssap_switch_rows(
     solution: SsapSolution,
     *,
     feeder_id: str,
-    sandbox_id: str,
+    location_id: str,
 ) -> list[dict]:
     """Convert an SSAP solution into ``controllable_switches.parquet`` rows.
 
@@ -814,10 +817,10 @@ def emit_ssap_switch_rows(
     rows: list[dict] = []
     for switch_edge in solution.switch_edges:
         bus_slug = f"{_safe_token(switch_edge.upstream)}__{_safe_token(switch_edge.downstream)}"
-        switch_id = f"{sandbox_id}:asset:controllable_switches:{feeder_token}:{bus_slug}"
+        switch_id = f"{location_id}:asset:controllable_switches:{feeder_token}:{bus_slug}"
         provenance = {
-            "placement_rule": PLACEMENT_RULE_SSAP,
-            "sub_rule": SSAP_SUBRULE,
+            "placement_rule": placement_rule_ssap,
+            "sub_rule": ssap_subrule,
             "feeder_id": feeder_id,
             "k_switches": len(solution.switch_edges),
             "objective_value": solution.objective_value,
@@ -825,7 +828,7 @@ def emit_ssap_switch_rows(
         }
         rows.append(
             {
-                "sandbox_id": sandbox_id,
+                "sandbox_id": location_id,
                 "switch_id": switch_id,
                 "from_bus": switch_edge.upstream,
                 "to_bus": switch_edge.downstream,
@@ -834,9 +837,9 @@ def emit_ssap_switch_rows(
                 "initial_state": "closed",
                 "dispatchable": True,
                 "status": "enabled",
-                "placement_rule": PLACEMENT_RULE_SSAP,
+                "placement_rule": placement_rule_ssap,
                 "source_provenance": json.dumps(provenance, sort_keys=True),
-                "schema_version": CONTROLLABLE_SWITCHES_SCHEMA_VERSION,
+                "schema_version": controllable_switches_schema_version,
             }
         )
     return rows
@@ -994,24 +997,7 @@ def build_rooted_feeders_from_tables(
 
 # Switch synthesis workflow helpers
 
-"""Notebook orchestration helpers for the SSAP switch-synthesis cell.
-
-Keeps data-frame wrangling, OpenDSS naming, and provenance JSON out of the
-notebook so the math cell can read like an optimization-problem spec.
-"""
-
-
-import json
-import re
-from collections import defaultdict
-from dataclasses import dataclass
-from typing import Any
-
-import pandas as pd
-
-
-
-SWITCH_ARTIFACT_COLUMNS: tuple[str, ...] = (
+switch_artifact_columns: tuple[str, ...] = (
     "sandbox_id",
     "switch_id",
     "component_id",
@@ -1232,7 +1218,7 @@ def write_switches(
     component_meta: list[ComponentMeta],
     physical_lines: pd.DataFrame,
     *,
-    sandbox_id: str,
+    location_id: str,
     exposure_mode: str,
     candidate_policy: SsapCandidatePolicy,
     ssap_budget: int,
@@ -1262,7 +1248,7 @@ def write_switches(
         feeder_id = meta.feeder_id
         solution = point.solution
         rows = emit_ssap_switch_rows(
-            solution, feeder_id=component_id, sandbox_id=sandbox_id
+            solution, feeder_id=component_id, location_id=location_id
         )
 
         for row_index, (row, edge) in enumerate(
@@ -1317,7 +1303,7 @@ def write_switches(
                     "associated_length_m": _line_length_m(line),
                     "marginal_benefit": point.marginal_benefit / max(point.k_switches, 1),
                     "source_provenance": json.dumps(provenance, sort_keys=True),
-                    "schema_version": CONTROLLABLE_SWITCHES_SCHEMA_VERSION,
+                    "schema_version": controllable_switches_schema_version,
                 }
             )
             switch_rows.append(row)
@@ -1335,11 +1321,11 @@ def write_switches(
                 "selected_switches": point.k_switches,
                 "objective_value": point.objective_value,
                 "marginal_benefit": point.marginal_benefit,
-                "placement_rule": PLACEMENT_RULE_SSAP,
+                "placement_rule": placement_rule_ssap,
             }
         )
 
-    switches = pd.DataFrame(switch_rows, columns=list(SWITCH_ARTIFACT_COLUMNS))
+    switches = pd.DataFrame(switch_rows, columns=list(switch_artifact_columns))
     diagnostics = pd.DataFrame(diagnostic_rows).sort_values(
         ["selected_switches", "marginal_benefit", "component_id"],
         ascending=[False, False, True],
@@ -1375,41 +1361,7 @@ def _phases(line: pd.Series) -> int:
 
 
 # Switch-bounded load blocks
-
-"""Block Invariant Contract for Stage B Switch-Bounded Load Blocks.
-
-Implements the per-block validation required before
-``switch_bounded_load_blocks.parquet`` may ship as part of the Augmented
-Network artifact set.
-
-Invariants (hard-fail policy per
-``docs/power/methodology/rpop_ready_switch_siting.md``):
-
-    B) block has >= 1 load
-    C) block confined to a single Bus Voltage Class
-    D) phi_max recorded per block (max bus phase count)
-    E) phase_set recorded (union over per-bus phase sets)
-    F) block is acyclic with all Controllable Switches open
-    G) block records Block Voltage Source Reachability
-       (substation_pcc / gfm_eligible_der / both / pending_der_inventory / none)
-
-B/C/D/E/F violations raise ``BlockInvariantViolation`` during
-``derive_validated_blocks``. G reports ``pending_der_inventory`` when no
-``der_inventory`` argument is supplied; a ``none`` result with DER inventory
-present is a hard-fail of G.
-"""
-
-
-import hashlib
-import json
-import re
-from collections import deque
-from dataclasses import dataclass, field
-
-import pandas as pd
-
-
-SWITCH_BOUNDED_LOAD_BLOCKS_SCHEMA_VERSION = "stage_b_switch_bounded_load_blocks.v0.1"
+switch_bounded_load_blocks_schema_version = "stage_b_switch_bounded_load_blocks.v0.1"
 
 
 class BlockInvariantViolation(ValueError):
@@ -1661,7 +1613,7 @@ def _connected_components(
 def build_block_artifact_rows(
     blocks: tuple[Block, ...],
     *,
-    sandbox_id: str,
+    location_id: str,
     buses: pd.DataFrame | None = None,
     controllable_switches: pd.DataFrame | None = None,
 ) -> list[dict]:
@@ -1677,10 +1629,10 @@ def build_block_artifact_rows(
     rows: list[dict] = []
     for block in blocks:
         feeder_id = _modal_feeder(block.buses, feeder_by_bus)
-        block_id = _stable_block_id(sandbox_id=sandbox_id, feeder_id=feeder_id, buses=block.buses)
+        block_id = _stable_block_id(location_id=location_id, feeder_id=feeder_id, buses=block.buses)
         rows.append(
             {
-                "sandbox_id": sandbox_id,
+                "sandbox_id": location_id,
                 "block_id": block_id,
                 "feeder_id": feeder_id,
                 "bus_count": len(block.buses),
@@ -1693,7 +1645,7 @@ def build_block_artifact_rows(
                 "gfm_eligible_der_ids_json": json.dumps(list(block.gfm_eligible_der_ids)),
                 "voltage_source_reachability": block.voltage_source_reachability,
                 "bounding_switch_ids_json": json.dumps(sorted(bounding_switches.get(frozenset(block.buses), set()))),
-                "schema_version": SWITCH_BOUNDED_LOAD_BLOCKS_SCHEMA_VERSION,
+                "schema_version": switch_bounded_load_blocks_schema_version,
             }
         )
     return rows
@@ -1705,7 +1657,7 @@ def inject_block_ids_into_onm_settings(
     blocks: tuple[Block, ...],
     buses: pd.DataFrame | None = None,
     loads: pd.DataFrame | None = None,
-    sandbox_id: str,
+    location_id: str,
 ) -> dict:
     """Add per-bus and per-load ``block_id`` and per-block ``microgrid``
     sections to the PowerModelsONM settings sidecar.
@@ -1718,7 +1670,7 @@ def inject_block_ids_into_onm_settings(
     microgrid_section: dict[str, dict] = {}
     for block in blocks:
         feeder_id = _modal_feeder(block.buses, feeder_by_bus)
-        block_id = _stable_block_id(sandbox_id=sandbox_id, feeder_id=feeder_id, buses=block.buses)
+        block_id = _stable_block_id(location_id=location_id, feeder_id=feeder_id, buses=block.buses)
         microgrid_section[block_id] = {
             "buses": sorted(block.buses),
             "load_kw": block.load_kw,
@@ -1757,7 +1709,7 @@ def build_blocks(
     switches: pd.DataFrame,
     der_inventory: pd.DataFrame | None = None,
     transformers: pd.DataFrame | None = None,
-    sandbox_id: str,
+    location_id: str,
 ) -> tuple[pd.DataFrame, dict]:
     """Notebook-facing builder for validated switch-bounded load blocks.
 
@@ -1782,7 +1734,7 @@ def build_blocks(
     )
     rows = build_block_artifact_rows(
         block_objects,
-        sandbox_id=sandbox_id,
+        location_id=location_id,
         buses=buses,
         controllable_switches=switches,
     )
@@ -1798,7 +1750,7 @@ def build_blocks(
         ),
     }
     report = {
-        "schema_version": SWITCH_BOUNDED_LOAD_BLOCKS_SCHEMA_VERSION,
+        "schema_version": switch_bounded_load_blocks_schema_version,
         "violations": [],
         "summary": summary,
     }
@@ -1828,10 +1780,10 @@ def _modal_feeder(bus_set, feeder_by_bus: dict[str, str]) -> str:
     return max(counts.items(), key=lambda kv: (kv[1], kv[0]))[0]
 
 
-def _stable_block_id(*, sandbox_id: str, feeder_id: str, buses) -> str:
+def _stable_block_id(*, location_id: str, feeder_id: str, buses) -> str:
     digest = hashlib.sha1("|".join(sorted(buses)).encode("utf-8")).hexdigest()[:12]
     feeder_token = re.sub(r"[^A-Za-z0-9_]+", "_", feeder_id).strip("_")
-    return f"{sandbox_id}:block:{feeder_token}:{digest}"
+    return f"{location_id}:block:{feeder_token}:{digest}"
 
 
 def _bounding_switches_by_block_buses(
@@ -1908,7 +1860,7 @@ def _raise_if_source_less_blocks_lack_switch_reachable_source_path(
         )
 
 
-_GFM_FLAG_COLUMNS = ("gfm_capable", "grid_forming_eligible")
+_gfm_flag_columns = ("gfm_capable", "grid_forming_eligible")
 
 
 def _gfm_eligible_by_bus(der_inventory: pd.DataFrame | None) -> dict[str, list[str]]:
@@ -1919,7 +1871,7 @@ def _gfm_eligible_by_bus(der_inventory: pd.DataFrame | None) -> dict[str, list[s
     """
     if der_inventory is None or der_inventory.empty:
         return {}
-    flag_col = next((c for c in _GFM_FLAG_COLUMNS if c in der_inventory.columns), None)
+    flag_col = next((c for c in _gfm_flag_columns if c in der_inventory.columns), None)
     if flag_col is None:
         return {}
     gfm = der_inventory[der_inventory[flag_col].fillna(False).astype(bool)]

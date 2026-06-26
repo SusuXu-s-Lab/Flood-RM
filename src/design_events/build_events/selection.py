@@ -300,6 +300,10 @@ def apply_compound_stress_pairing(
     real_window_hours = float(settings.get("real_event_window_hours", 72))
     lead_hours = float(settings.get("soil_moisture_lead_time_hours", 24))
     reuse_penalty = float(settings.get("reuse_penalty", 0.15))
+    # Empirical pool of observed within-event peak-RF-to-peak-NTR lags (hours). When supplied,
+    # realistic co-occurrence events sample their compound lag from it rather than forcing the
+    # peaks to coincide (Maduwantha et al. 2026, Fig 2p / Sec 4.3.4).
+    observed_cooccurrence_lags = settings.get("observed_cooccurrence_lags")
 
     out["compound_pairing_policy"] = "operationally_severe_plausible_dependence"
     out["compound_pairing_role"] = pd.NA
@@ -337,7 +341,10 @@ def apply_compound_stress_pairing(
         )
         if member is None:
             continue
-        _assign_rainfall_member(out, index, member, reference, role, season_window_days, seed)
+        cooccurrence_lag = _draw_cooccurrence_lag(role, observed_cooccurrence_lags, real_window_hours, seed, index)
+        _assign_rainfall_member(
+            out, index, member, reference, role, season_window_days, seed, real_window_hours, cooccurrence_lag
+        )
 
     soil = _soil_member_table(soil_moisture_members)
     if soil is not None and not soil.empty:
@@ -367,7 +374,7 @@ def apply_compound_stress_pairing(
 
 
 def attach_antecedent_soil_moisture(catalog, soil_moisture_members, *, config=None):
-    """Stamp an antecedent soil-moisture state onto every design event (ADR-0011).
+    """Stamp an antecedent soil-moisture state onto every design event.
 
     Soil moisture is not a copula axis; it is the wetness the basin carries into the storm. For
     each row with a paired rainfall time, pick the nearest soil observation ``lead_hours`` before
@@ -651,9 +658,30 @@ def _day_of_year_distance(a, b):
     return np.minimum(diff, 366.0 - diff)
 
 
-def _assign_rainfall_member(out, index, member, reference, role, season_window_days, seed):
+def _draw_cooccurrence_lag(role, observed_lags, real_window_hours, seed, index):
+    """Sample a within-event RF-vs-NTR peak lag from the observed co-occurrence pool.
+
+    Mirrors Maduwantha et al. (2026, Fig 2p / Sec 4.3.4): a realistic co-occurrence event draws
+    its compound lag from the empirical observed peak-to-peak lags (predominantly RF before NTR),
+    instead of assuming the peaks coincide. Returns ``None`` for roles that carry a deliberate
+    timing pattern (rainfall-before/after, wet-soil) or when no observed pool is supplied, in
+    which case the prior coincident default is preserved.
+    """
+    if role != "high_rainfall_cooccurrence" or observed_lags is None or len(observed_lags) == 0:
+        return None
+    from design_events.build_events.probability.realization import draw_relative_lags
+
+    lag = float(draw_relative_lags(1, observed_lags=observed_lags, seed=int(seed) + int(index))[0])
+    return float(np.clip(lag, -float(real_window_hours), float(real_window_hours)))
+
+
+def _assign_rainfall_member(
+    out, index, member, reference, role, season_window_days, seed, real_window_hours=72.0, observed_lag_hours=None
+):
     duration = float(member.get("duration_hours", 72.0))
-    start_offset, peak_offset, end_offset, edge_case = _rainfall_offsets(role, duration, member, reference)
+    start_offset, peak_offset, end_offset, edge_case = _rainfall_offsets(
+        role, duration, member, reference, real_window_hours, observed_lag_hours
+    )
     member_time = pd.Timestamp(member["member_time"])
     out.at[index, "rainfall_source"] = member.get("source", "aorc_sst")
     out.at[index, "rainfall_member_file"] = member.get("member_file", pd.NA)
@@ -672,15 +700,26 @@ def _assign_rainfall_member(out, index, member, reference, role, season_window_d
     out.at[index, "rainfall_metric_mm"] = float(member["rainfall_metric"])
 
 
-def _rainfall_offsets(role, duration, member, reference):
+def _rainfall_offsets(role, duration, member, reference, real_window_hours=72.0, observed_lag_hours=None):
     half = duration / 2.0
+    if role == "high_rainfall_cooccurrence" and observed_lag_hours is not None and np.isfinite(observed_lag_hours):
+        # Place the rainfall peak at the sampled observed lag relative to the coastal (NTR) peak,
+        # instead of forcing coincidence (Maduwantha et al. 2026, Fig 2p / Sec 4.3.4).
+        lag = float(np.clip(observed_lag_hours, -real_window_hours, real_window_hours))
+        return lag - half, lag, lag + half, "high-rainfall-cooccurrence-observed-lag"
     if role == "rainfall_before_coastal":
         return -duration, -half, 0.0, "rainfall-before-coastal"
     if role == "rainfall_after_coastal":
         return 0.0, half, duration, "rainfall-after-coastal"
     if role == "historical_coastal_rainfall_pair":
         start = (pd.Timestamp(member["member_time"]) - pd.Timestamp(reference)) / pd.Timedelta(hours=1)
-        return float(start), float(start + half), float(start + duration), "historical-compound-pair"
+        # A genuine within-window co-occurrence carries a real (bounded) lead/lag. When the
+        # selector falls back to a same-season analog from another year, member_time - reference
+        # spans the historical record (decades); that is a provenance gap, NOT a physical compound
+        # lag, so place the hyetograph coincident with the coastal peak inside the event window.
+        if abs(start) <= float(real_window_hours):
+            return float(start), float(start + half), float(start + duration), "historical-compound-pair"
+        return -half, 0.0, half, "historical-pair-seasonal-fallback"
     if role == "wet_soil_high_rainfall":
         return -half, 0.0, half, "wet-soil-high-rain"
     return -half, 0.0, half, "rainfall-coincident"

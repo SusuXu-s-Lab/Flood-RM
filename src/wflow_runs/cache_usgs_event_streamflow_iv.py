@@ -40,11 +40,9 @@ def main() -> int:
 
     location_root = repo_root / "locations" / args.location
     config = define_location(location_root / "config.yaml").config
-    # ADR-0016: this CLI fetches observed USGS instantaneous (IV) hydrographs for
-    # CALIBRATION / VALIDATION of the Wflow discharge generator (Wflow Readiness), not as
-    # per-event runtime forcing. No design run depends on these files; the former
-    # fetch/require_instantaneous forcing flags are gone. Point it at named historical
-    # validation events (via --worklist / --catalog) to pull their IV windows.
+    # Fetches observed USGS instantaneous (IV) hydrographs for calibration/validation of the
+    # Wflow discharge generator, not as per-event runtime forcing. Point it at named
+    # historical validation events (via --worklist / --catalog) to pull their IV windows.
     config.setdefault("wflow", {}).setdefault("streamflow_calibration", {}).setdefault(
         "event_records_root", "data/sources/usgs_streamgages/event_streamflow_iv"
     )

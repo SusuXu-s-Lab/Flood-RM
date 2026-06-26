@@ -268,6 +268,7 @@ def build_scenarios(args, *, config=None, runtime_paths=None, sf_model=None):
     else:
         root = ensure_clean_dir(args.scenarios_dir, force=args.force)
     rows, wall_t0 = [], time.time()
+    precip_model = sf_model
 
     for i, row in df.iterrows():
         # 3. Build one event folder.
@@ -303,7 +304,8 @@ def build_scenarios(args, *, config=None, runtime_paths=None, sf_model=None):
             config=config,
         )
         if args.include_precip:
-            precip_model = sf_model if sf_model is not None else _build_precip_model(args.base_dir)
+            if precip_model is None:
+                precip_model = _build_precip_model(args.base_dir)
             event_forcing.stage_precip(
                 precip_model,
                 staged.run_root,
@@ -332,7 +334,7 @@ def build_scenarios(args, *, config=None, runtime_paths=None, sf_model=None):
         )
         rows.append(out)
 
-        if (i + 1) % 100 == 0 or i + 1 == len(df):
+        if (i + 1) % 25 == 0 or i + 1 == len(df):
             written = sum(r.get("scenario_status") == "written" for r in rows)
             skipped = sum(r.get("scenario_status") == "skipped_existing" for r in rows)
             print(f"  {i + 1}/{len(df)} processed; {written} written, {skipped} skipped ({time.time() - wall_t0:.0f}s total)")
