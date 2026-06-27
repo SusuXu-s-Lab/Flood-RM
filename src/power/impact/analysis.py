@@ -1,6 +1,4 @@
-# Asset impact analysis
 """Compute flood exposure and fragility-based affected assets."""
-
 import csv
 import json
 import math
@@ -34,9 +32,7 @@ def _finite_float(value):
 power_grid = power_grid_root()
 smart_ds_compat = power_grid / "augmented"
 impacts_dir = power_grid / "figures" / "impacts"
-default_event_dir = (
-    power_grid / "sfincs_truth" / "run_outputs" / "single_event_tests" / "riley_90m"
-)
+default_event_dir = power_grid / "sfincs_truth" / "run_outputs" / "single_event_tests" / "riley_90m"
 default_probability_threshold = 0.50
 default_max_sample_distance_m = 150.0
 
@@ -49,61 +45,43 @@ class AssetPoint:
     lat: float
     label: str
 
-def load_asset_points(registry_dir: Path = smart_ds_compat, *, include_lines: bool = False) -> list[AssetPoint]:
-    """Load flood-relevant point assets from the Asset Registry."""
+def load_asset_points(registry_dir=smart_ds_compat, *, include_lines=False):
+    """Flood-relevant point assets from the Asset Registry."""
     assets_parquet = registry_dir / "assets.parquet"
     if assets_parquet.exists():
         return _load_stage_a1_asset_points(assets_parquet, include_lines=include_lines)
 
-    points: list[AssetPoint] = []
+    points = []
 
     for row in pd.read_csv(registry_dir / "load_buses.csv", keep_default_na=False).to_dict("records"):
         lon = _finite_float(row.get("lon"))
         lat = _finite_float(row.get("lat"))
         if lon is None or lat is None:
             continue
-        points.append(
-            AssetPoint(
-                asset_id=row["bus"],
-                asset_type="load_bus",
-                feeder_id=row.get("feeder_id", ""),
-                lon=lon,
-                lat=lat,
-                label=f"load bus {row['bus']}",
-            )
-        )
+        points.append(AssetPoint(
+            asset_id=row["bus"], asset_type="load_bus", feeder_id=row.get("feeder_id", ""),
+            lon=lon, lat=lat, label=f"load bus {row['bus']}",
+        ))
 
     for row in pd.read_csv(registry_dir / "transformers.csv", keep_default_na=False).to_dict("records"):
         lon = _finite_float(row.get("location_lon"))
         lat = _finite_float(row.get("location_lat"))
         if lon is None or lat is None:
             continue
-        points.append(
-            AssetPoint(
-                asset_id=row["transformer_name"],
-                asset_type="transformer",
-                feeder_id=row.get("feeder_id", ""),
-                lon=lon,
-                lat=lat,
-                label=f"transformer {row['transformer_name']}",
-            )
-        )
+        points.append(AssetPoint(
+            asset_id=row["transformer_name"], asset_type="transformer", feeder_id=row.get("feeder_id", ""),
+            lon=lon, lat=lat, label=f"transformer {row['transformer_name']}",
+        ))
 
     for row in pd.read_csv(registry_dir / "sources.csv", keep_default_na=False).to_dict("records"):
         lon = _finite_float(row.get("lon"))
         lat = _finite_float(row.get("lat"))
         if lon is None or lat is None:
             continue
-        points.append(
-            AssetPoint(
-                asset_id=row["source_name"],
-                asset_type="source",
-                feeder_id=row.get("feeder_id", ""),
-                lon=lon,
-                lat=lat,
-                label=f"source {row['source_name']}",
-            )
-        )
+        points.append(AssetPoint(
+            asset_id=row["source_name"], asset_type="source", feeder_id=row.get("feeder_id", ""),
+            lon=lon, lat=lat, label=f"source {row['source_name']}",
+        ))
 
     if include_lines:
         for row in pd.read_csv(registry_dir / "lines.csv", keep_default_na=False).to_dict("records"):
@@ -113,22 +91,16 @@ def load_asset_points(registry_dir: Path = smart_ds_compat, *, include_lines: bo
             to_lat = _finite_float(row.get("to_lat"))
             if None in {from_lon, from_lat, to_lon, to_lat}:
                 continue
-            points.append(
-                AssetPoint(
-                    asset_id=row["line_name"],
-                    asset_type=line_local_asset_type(row.get("line_class")),
-                    feeder_id=row.get("feeder_id", ""),
-                    lon=(from_lon + to_lon) / 2.0,
-                    lat=(from_lat + to_lat) / 2.0,
-                    label=f"{row.get('line_class', 'line')} line {row['line_name']}",
-                )
-            )
+            points.append(AssetPoint(
+                asset_id=row["line_name"], asset_type=line_local_asset_type(row.get("line_class")),
+                feeder_id=row.get("feeder_id", ""), lon=(from_lon + to_lon) / 2.0, lat=(from_lat + to_lat) / 2.0,
+                label=f"{row.get('line_class', 'line')} line {row['line_name']}",
+            ))
 
     return points
 
-
-def _load_stage_a1_asset_points(assets_parquet: Path, *, include_lines: bool) -> list[AssetPoint]:
-    points: list[AssetPoint] = []
+def _load_stage_a1_asset_points(assets_parquet, *, include_lines):
+    points = []
     line_types = {"line", "overhead_line", "underground_line_proxy"}
     for row in pd.read_parquet(assets_parquet).to_dict("records"):
         lon = _finite_float(row.get("lon"))
@@ -139,18 +111,11 @@ def _load_stage_a1_asset_points(assets_parquet: Path, *, include_lines: bool) ->
         if not row.get("is_flood_relevant") and not (include_lines and asset_type in line_types):
             continue
         asset_id = str(row["asset_id"])
-        points.append(
-            AssetPoint(
-                asset_id=asset_id,
-                asset_type=asset_type,
-                feeder_id=str(row.get("feeder_id") or ""),
-                lon=lon,
-                lat=lat,
-                label=f"{asset_type} {asset_id}",
-            )
-        )
+        points.append(AssetPoint(
+            asset_id=asset_id, asset_type=asset_type, feeder_id=str(row.get("feeder_id") or ""),
+            lon=lon, lat=lat, label=f"{asset_type} {asset_id}",
+        ))
     return sorted(points, key=lambda point: point.asset_id)
-
 
 def _require_geo_stack():
     try:
@@ -165,8 +130,7 @@ def _require_geo_stack():
         ) from exc
     return np, xr, Transformer, cKDTree
 
-
-def _sample_peak_depths(event_dir: Path, assets: list[AssetPoint], *, max_sample_distance_m: float | None):
+def _sample_peak_depths(event_dir, assets, *, max_sample_distance_m):
     np, xr, Transformer, cKDTree = _require_geo_stack()
     map_path = Path(event_dir) / "sfincs_map.nc"
     if not map_path.exists():
@@ -197,48 +161,41 @@ def _sample_peak_depths(event_dir: Path, assets: list[AssetPoint], *, max_sample
         depths = np.where(distances <= float(max_sample_distance_m), depths, np.nan)
     return depths, distances
 
-
 def compute_asset_impacts(
-    event_dir: Path,
+    event_dir,
     *,
-    event_id: str | None = None,
-    probability_threshold: float = default_probability_threshold,
-    max_sample_distance_m: float | None = default_max_sample_distance_m,
-    include_lines: bool = False,
-    registry_dir: Path = smart_ds_compat,
-) -> tuple[list[dict[str, object]], dict[str, object]]:
-    """Compute per-asset flood exposure and fragility-driven impact rows."""
+    event_id=None,
+    probability_threshold=default_probability_threshold,
+    max_sample_distance_m=default_max_sample_distance_m,
+    include_lines=False,
+    registry_dir=smart_ds_compat,
+):
+    """Per-asset flood exposure and fragility-driven impact rows."""
     assets = load_asset_points(registry_dir, include_lines=include_lines)
-    depths, distances = _sample_peak_depths(
-        event_dir,
-        assets,
-        max_sample_distance_m=max_sample_distance_m,
-    )
+    depths, distances = _sample_peak_depths(event_dir, assets, max_sample_distance_m=max_sample_distance_m)
     curves = load_flood_depth_curves()
     mapping = load_asset_type_mapping()
 
-    rows: list[dict[str, object]] = []
+    rows = []
     for asset, depth_m, distance_m in zip(assets, depths, distances, strict=True):
         depth = _finite_float(depth_m)
         probability = failure_probability(asset.asset_type, depth, curves=curves, mapping=mapping)
-        rows.append(
-            {
-                "event_id": event_id or Path(event_dir).name,
-                "asset_id": asset.asset_id,
-                "asset_type": asset.asset_type,
-                "erad_asset_type": mapping[asset.asset_type],
-                "feeder_id": asset.feeder_id,
-                "lon": asset.lon,
-                "lat": asset.lat,
-                "peak_depth_m": depth,
-                "nearest_grid_distance_m": float(distance_m),
-                "failure_probability": probability,
-                "affected_probability": probability,
-                "affected": probability >= probability_threshold,
-                "affected_probability_threshold": probability_threshold,
-                "label": asset.label,
-            }
-        )
+        rows.append({
+            "event_id": event_id or Path(event_dir).name,
+            "asset_id": asset.asset_id,
+            "asset_type": asset.asset_type,
+            "erad_asset_type": mapping[asset.asset_type],
+            "feeder_id": asset.feeder_id,
+            "lon": asset.lon,
+            "lat": asset.lat,
+            "peak_depth_m": depth,
+            "nearest_grid_distance_m": float(distance_m),
+            "failure_probability": probability,
+            "affected_probability": probability,
+            "affected": probability >= probability_threshold,
+            "affected_probability_threshold": probability_threshold,
+            "label": asset.label,
+        })
 
     summary = summarize_impacts(rows, event_id=event_id or Path(event_dir).name)
     summary["event_dir"] = str(event_dir)
@@ -247,28 +204,24 @@ def compute_asset_impacts(
     summary["include_lines"] = include_lines
     return rows, summary
 
-
-def summarize_impacts(rows: list[dict[str, object]], *, event_id: str) -> dict[str, object]:
-    by_type: dict[str, dict[str, object]] = {}
+def summarize_impacts(rows, *, event_id):
+    by_type = {}
     for row in rows:
         asset_type = str(row["asset_type"])
-        bucket = by_type.setdefault(
-            asset_type,
-            {
-                "asset_count": 0,
-                "affected_count": 0,
-                "expected_affected_count": 0.0,
-                "max_failure_probability": 0.0,
-                "max_peak_depth_m": 0.0,
-            },
-        )
+        bucket = by_type.setdefault(asset_type, {
+            "asset_count": 0,
+            "affected_count": 0,
+            "expected_affected_count": 0.0,
+            "max_failure_probability": 0.0,
+            "max_peak_depth_m": 0.0,
+        })
         probability = float(row["failure_probability"] or 0.0)
         depth = float(row["peak_depth_m"] or 0.0)
-        bucket["asset_count"] = int(bucket["asset_count"]) + 1
-        bucket["affected_count"] = int(bucket["affected_count"]) + int(bool(row["affected"]))
-        bucket["expected_affected_count"] = float(bucket["expected_affected_count"]) + probability
-        bucket["max_failure_probability"] = max(float(bucket["max_failure_probability"]), probability)
-        bucket["max_peak_depth_m"] = max(float(bucket["max_peak_depth_m"]), depth)
+        bucket["asset_count"] += 1
+        bucket["affected_count"] += int(bool(row["affected"]))
+        bucket["expected_affected_count"] += probability
+        bucket["max_failure_probability"] = max(bucket["max_failure_probability"], probability)
+        bucket["max_peak_depth_m"] = max(bucket["max_peak_depth_m"], depth)
 
     return {
         "event_id": event_id,
@@ -278,8 +231,7 @@ def summarize_impacts(rows: list[dict[str, object]], *, event_id: str) -> dict[s
         "by_asset_type": by_type,
     }
 
-
-def write_outputs(rows: list[dict[str, object]], summary: dict[str, object], output_dir: Path) -> None:
+def write_outputs(rows, summary, output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
     csv_path = output_dir / "asset_impacts.csv"
     fieldnames = list(rows[0]) if rows else []
@@ -289,17 +241,16 @@ def write_outputs(rows: list[dict[str, object]], summary: dict[str, object], out
         writer.writerows(rows)
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
-
 def run_asset_impacts(
-    event_dir: Path,
+    event_dir,
     *,
-    event_id: str | None = None,
-    output_dir: Path | None = None,
-    probability_threshold: float = default_probability_threshold,
-    max_sample_distance_m: float = default_max_sample_distance_m,
-    include_lines: bool = False,
-) -> tuple[list[dict], dict]:
-    """Compute fragility-based asset impacts and write CSV/summary outputs."""
+    event_id=None,
+    output_dir=None,
+    probability_threshold=default_probability_threshold,
+    max_sample_distance_m=default_max_sample_distance_m,
+    include_lines=False,
+):
+    """Fragility-based asset impacts, written as CSV/summary outputs."""
     event_id = event_id or event_dir.name
     output_dir = output_dir or impacts_dir / event_id
     rows, summary = compute_asset_impacts(

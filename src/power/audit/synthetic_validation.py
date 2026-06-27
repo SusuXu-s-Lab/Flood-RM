@@ -85,10 +85,8 @@ def get_region_config(region_id: str) -> RegionConfig:
         raise ValueError(f"unknown region_id {region_id!r}; expected one of: {valid}")
     return regions[region_id]
 
-
 # SMART-DS reference helpers
 """Public SMART-DS v1.0 OpenDSS model locations on the OEDI data lake.
-
 SMART-DS publishes synthetic distribution feeders per region/subregion; we use
 them only as audit references. ``SmartDsModelRef`` is the single source of truth
 for the OEDI key layout — the URL list and the download plan both derive from it.
