@@ -48,7 +48,8 @@ from design_events.collect_sources.aorc_event_meteo import (
     aorc_wflow_temp_pet_variables,
     prepare_aorc_temp_pet_for_wflow,
 )
-from sfincs_runs.hydrology import find_aorc_event_window, prepare_aorc_precip_for_sfincs
+from sfincs_runs.hydrology import prepare_aorc_precip_for_sfincs
+from sfincs_runs.scenarios.event_forcing import _find_aorc_event_window
 from wflow_runs.handoff_locations import read_stream_boundary_handoff_location_artifacts
 from wflow_runs.build_plan import (
     repair_wflow_canopy_parameters,
@@ -187,7 +188,6 @@ def build_meteo(
             t_start=start,
             t_stop=end,
             variable=str(precip_cfg.get("variable", aorc_cfg.get("variable", "APCP_surface"))),
-            align_start_to_run=True,
             window_alignment=str(precip_cfg.get("window_alignment", "start")),
             precip_start=_catalog_rainfall_start(row),
             scale_factor=scale_factor,
@@ -966,7 +966,7 @@ def _event_rainfall_source_nc(config: dict, location_root: Path, row: pd.Series)
     )
     event_windows_dir = precip_cfg.get("event_windows_dir") or (rainfall_member_file.parent / "event_windows")
     event_windows_dir = resolve_location_path(location_root, event_windows_dir)
-    return find_aorc_event_window(
+    return _find_aorc_event_window(
         event_windows_dir,
         member_id=str(_required_event_value(row, "rainfall_member_id")),
         storm_start=_required_event_value(row, "rainfall_member_time"),

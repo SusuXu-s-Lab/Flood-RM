@@ -31,7 +31,7 @@ lives in `docs/audit/notebook_backend_trace.json`.
 | `02_flood/04/b_example_waves.ipynb` | wave-enabled example run | `sfincs_runs.config.load_sfincs_runtime`, `sfincs_runs.config.parse_sfincs_inp`, `sfincs_runs.diagnostics`, `sfincs_runs.scenarios.event_forcing` | `sfincs.inp`, `usgs_3dep_13_arcsec.tif`, forcing/run outputs; SFINCS files and environment variables; mutates `sys.path` |
 | `02_flood/05_create_scenarios.ipynb` | coastal scenario creation | `sfincs_runs.config.load_sfincs_runtime`, `sfincs_runs.scenarios.create_events.build_scenarios` | `scenario_catalog.csv`, `forcing_manifest.json`, `sfincs_netampr.nc`; SFINCS files; mutates `sys.path` |
 | `02_flood/06_evaluate.ipynb` | flood evaluation | `sfincs_runs.config.load_sfincs_runtime`, `sfincs_runs.scenarios` facade, `sfincs_runs.diagnostics` | `scenario_stats.csv`, `scenario_stats_notebook.csv`, `run_metadata.json`, `sfincs.inp`; SFINCS files; mutates `sys.path` |
-| `02_flood/07_risk_fiat.ipynb` | FIAT risk | `fiat_runs.notebook.load_runtime`, `fiat_runs.risk_workflow` | `fiat_config.yml`, `catalog_risk_metadata.json`, `preflight.inp`; mutates `sys.path` |
+| `02_flood/07_risk_fiat.ipynb` | FIAT risk | `fiat_runs.load_notebook_runtime`, `fiat_runs.risk_workflow` | `fiat_config.yml`, `catalog_risk_metadata.json`, `preflight.inp`; mutates `sys.path` |
 | `03_ops/overlay.ipynb` | operations overlay | no `src/` imports found | reads grid CSV/parquet and `/sfincs_map.nc`; SFINCS files |
 
 ## Austin
@@ -101,4 +101,5 @@ Event Catalog construction and a direct import of
   `src/wflow_runs/notebook.py`, `src/wflow_runs/build_plan.py`,
   `src/wflow_runs/replay.py`, and `src/sfincs_runs/build_base/inland_base.py`.
 - FIAT risk: start at Marshfield `02_flood/07_risk_fiat.ipynb`, then
-  `src/fiat_runs/notebook.py` and `src/fiat_runs/risk_workflow.py`.
+  `src/fiat_runs/config.py` for `load_notebook_runtime` and
+  `src/fiat_runs/risk_workflow.py`.

@@ -1,13 +1,5 @@
-"""SnapWave + runup-gauge setup helpers for wave-coupled SFINCS builds.
-
-Pure functions. The notebook glues these together; no hydromt-sfincs
-internals leak into this module.
-"""
-
 from __future__ import annotations
-
 from pathlib import Path
-
 import geopandas as gpd
 import numpy as np
 import pandas as pd
@@ -18,17 +10,14 @@ from shapely.geometry import LineString, MultiLineString, Polygon
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union
 
-
 # Default ERA5 short-name mapping. Caller may override per dataset version.
 era5_variable_map = {"bhs": "swh", "btp": "pp1d", "bwd": "mwd", "bds": "wdw"}
-
 
 def unwrap_direction_degrees(values):
     """Return degrees unwrapped across the 0/360 seam for plotting."""
     series = pd.Series(values)
     radians = np.deg2rad(series.astype(float).to_numpy())
     return pd.Series(np.rad2deg(np.unwrap(radians)), index=series.index)
-
 
 def derive_seaward_boundary(
     domain: BaseGeometry,
@@ -97,7 +86,6 @@ def derive_seaward_boundary(
         )
     return offshore_polygon, seaward_edge
 
-
 def _line_parts(geometry: BaseGeometry) -> list[LineString]:
     if geometry.is_empty:
         return []
@@ -122,7 +110,6 @@ def _line_parts(geometry: BaseGeometry) -> list[LineString]:
         return parts
     raise TypeError(f"unexpected line geometry type: {geometry.geom_type}")
 
-
 def _nearest_line_parts(
     geometry: BaseGeometry,
     seed: BaseGeometry,
@@ -142,7 +129,6 @@ def _nearest_line_parts(
     ]
     return unary_union(keep)
 
-
 def select_snapwave_boundary_points(
     offshore_edge: LineString | MultiLineString,
     offshore_polygon: Polygon,
@@ -157,7 +143,6 @@ def select_snapwave_boundary_points(
     kept = [p for p in raw_points if offshore_polygon.contains(p) or offshore_polygon.touches(p)]
     names = [f"{i + 1:04d}" for i in range(len(kept))]
     return gpd.GeoDataFrame({"name": names, "geometry": kept}, crs=crs)
-
 
 def era5_spectra_to_snapwave_timeseries(
     ds: xr.Dataset,
@@ -180,7 +165,6 @@ def era5_spectra_to_snapwave_timeseries(
             )
         result[key] = pd.DataFrame(per_point, index=sliced["valid_time"].values)
     return result
-
 
 def _nearest_finite_era5_series(
     ds: xr.Dataset,
@@ -209,7 +193,6 @@ def _nearest_finite_era5_series(
     iy, ix = np.unravel_index(int(np.nanargmin(distance)), distance.shape)
     return cube[:, iy, ix]
 
-
 def write_runup_gauges_file(path, transects) -> None:
     # SFINCS rug file: per transect, name line, "2 2" header, then x0 y0 and x1 y1.
     # SFINCS only reads the first two vertices; emitting more would trigger a warning.
@@ -221,12 +204,10 @@ def write_runup_gauges_file(path, transects) -> None:
         lines.append(f"{x1:.6f} {y1:.6f}")
     Path(path).write_text("\n".join(lines) + "\n")
 
-
 def validate_runup_transects(transects, region: BaseGeometry, *, min_length_m: float = 1.0) -> None:
     """Reject runup transects that cannot sample the model region."""
     if region is None or region.is_empty:
         raise ValueError("runup gauge validation requires a non-empty model region")
-
     invalid = []
     for name, (x0, y0), (x1, y1) in transects:
         line = LineString([(float(x0), float(y0)), (float(x1), float(y1))])
@@ -236,7 +217,6 @@ def validate_runup_transects(transects, region: BaseGeometry, *, min_length_m: f
             invalid.append(f"{name} does not intersect the model region")
     if invalid:
         raise ValueError("Invalid runup transect(s): " + "; ".join(invalid))
-
 
 def derive_snapwave_boundary_points(
     sf,
@@ -264,23 +244,19 @@ def derive_snapwave_boundary_points(
     grid = sf.quadtree_grid
     if min_dist is None:
         min_dist = float(grid.data.attrs["dx"]) * 2
-
     mask = grid.data["snapwave_mask"]
     ibnd = np.where(mask == 2)
     xz, yz = grid.face_coordinates  # property — no parens (the upstream bug)
     xp = xz[ibnd]
     yp = yz[ibnd]
-
     used = np.full(xp.shape, False, dtype=bool)
     polylines: list[list[int]] = []
-
     while True:
         if np.all(used):
             break
         i1 = int(np.where(~used)[0][0])
         used[i1] = True
         polyline = [i1]
-
         # Walk forward from i1.
         while True:
             xpu = xp[~used]
@@ -297,7 +273,6 @@ def derive_snapwave_boundary_points(
                 i1 = inearall
             else:
                 break
-
         # Walk backward from polyline[0].
         i1 = polyline[0]
         while True:
@@ -315,10 +290,8 @@ def derive_snapwave_boundary_points(
                 i1 = inearall
             else:
                 break
-
         if len(polyline) > 1:
             polylines.append(polyline)
-
     gdf_rows: list[dict] = []
     transformer = (
         Transformer.from_crs(sf.crs, 3857, always_xy=True)
@@ -336,7 +309,6 @@ def derive_snapwave_boundary_points(
             num_points = int(line_m.length / bnd_dist) + 2
         else:
             num_points = int(line.length / bnd_dist) + 2
-
         new_points = [
             line.interpolate(i / float(num_points - 1), normalized=True)
             for i in range(num_points)
@@ -348,7 +320,6 @@ def derive_snapwave_boundary_points(
                 "timeseries": pd.DataFrame(),
                 "geometry": point,
             })
-
     bnd_gdf = gpd.GeoDataFrame(gdf_rows, crs=sf.crs)
     sf.snapwave_boundary_conditions.data = bnd_gdf
     sf.snapwave_boundary_conditions.set_timeseries(
@@ -360,7 +331,6 @@ def derive_snapwave_boundary_points(
         ds=20.0,
     )
     return bnd_gdf
-
 
 def inject_runup_config(
     inp_path,
@@ -410,16 +380,13 @@ def inject_runup_config(
         out.append(_sfincs_inp_line("obsfile", support_obsfile))
     path.write_text("\n".join(out) + "\n")
 
-
 def _sfincs_inp_line(key: str, value) -> str:
     return f"{key:<21}= {value}"
-
 
 def _write_runup_obs_workaround(model_root: Path, rugfile: str, obsfile: str) -> None:
     x, y = _first_runup_gauge_xy(model_root, rugfile)
     obs_path = model_root / obsfile
     obs_path.write_text(f"{x:.6f} {y:.6f} 'runup_gauge_workaround'\n")
-
 
 def _first_runup_gauge_xy(model_root: Path, rugfile: str) -> tuple[float, float]:
     rug_path = Path(rugfile)
@@ -434,7 +401,6 @@ def _first_runup_gauge_xy(model_root: Path, rugfile: str) -> tuple[float, float]
         x, y = (float(value) for value in lines[i].split()[:2])
         return x, y
     raise ValueError(f"no run-up gauge coordinate found in {rug_path}")
-
 
 def repair_snapwave_directional_spreading_file(
     model_root,

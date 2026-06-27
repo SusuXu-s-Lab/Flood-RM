@@ -1,6 +1,5 @@
 """Derive Wflow outlets and SFINCS discharge source points from where the
 stream network crosses each SFINCS coverage box, with no USGS-gage dependency.
-
 A stream that crosses the coverage-box boundary carrying meaningful drainage
 area is simultaneously (a) a SFINCS inflow boundary source point and (b) the
 outlet of a Wflow subbasin that must be delineated upstream of the crossing.
@@ -8,11 +7,9 @@ Drainage area (``uparea``) ranks crossings and screens out trickles.
 """
 
 from __future__ import annotations
-
 import geopandas as gpd
 import pandas as pd
 from shapely.geometry import GeometryCollection, LineString, MultiPoint, Point
-
 
 def coverage_domain_id(box_row, project_name: str, index: int, count: int) -> str:
     """Return the SFINCS domain id for one coverage box.
@@ -27,7 +24,6 @@ def coverage_domain_id(box_row, project_name: str, index: int, count: int) -> st
         return f"{project_name}_main"
     return f"{project_name}_{index + 1:02d}"
 
-
 def coverage_box_crossings(
     boxes: gpd.GeoDataFrame,
     rivers: gpd.GeoDataFrame,
@@ -37,7 +33,6 @@ def coverage_box_crossings(
     uparea_col: str = "uparea",
 ) -> gpd.GeoDataFrame:
     """Return every inflow crossing across all coverage boxes with stable ids.
-
     This is the single source of truth for crossing locations: SFINCS reads it for
     discharge source points, and Wflow reads it for the gauges it reports ``river_q`` at.
     Each crossing id is namespaced by its SFINCS domain (``<domain>_inflow_NN``).
@@ -66,10 +61,8 @@ def coverage_box_crossings(
         crs=getattr(rivers, "crs", None),
     )
 
-
 def select_encompassing_huc(coverage_geom, huc_loader, *, levels=(8, 6, 4), allow_union=True) -> dict:
     """Return the WBD HUC domain that contains ``coverage_geom``.
-
     ``huc_loader(level)`` returns candidate HUC polygons (with a ``huc_id`` column).
     Preference order: the smallest *single* HUC that covers the geometry (finest level
     first). If none exists at any level -- e.g. a coverage box straddling a basin divide --
@@ -113,7 +106,6 @@ def select_encompassing_huc(coverage_geom, huc_loader, *, levels=(8, 6, 4), allo
         f"{tuple(levels)} contains the coverage area; widen the levels (e.g. add 2)."
     )
 
-
 def stream_boundary_inflow_crossings(
     rivers: gpd.GeoDataFrame,
     coverage_bbox,
@@ -122,7 +114,6 @@ def stream_boundary_inflow_crossings(
     uparea_col: str = "uparea",
 ) -> gpd.GeoDataFrame:
     """Return stream/coverage-box boundary crossings ranked by drainage area.
-
     Each row is the point where one river reach meets the box perimeter, carrying
     that reach's upstream drainage area. Crossings below ``min_uparea_km2`` are
     dropped so only hydrologically meaningful inflows become coupling points.
@@ -143,7 +134,6 @@ def stream_boundary_inflow_crossings(
 
     crossings = gpd.GeoDataFrame(rows, columns=["river_index", "uparea_km2", "geometry"], geometry="geometry", crs=rivers.crs)
     return crossings.sort_values("uparea_km2", ascending=False).reset_index(drop=True)
-
 
 def subbasin_submodels_from_crossings(
     crossings: gpd.GeoDataFrame,
@@ -179,17 +169,14 @@ def subbasin_submodels_from_crossings(
         )
     return submodels
 
-
 def _flows_into(river: LineString, coverage_bbox) -> bool:
     """True when the reach drains into the box (downstream end inside it).
-
     Flowlines are digitised upstream->downstream, so the last vertex is the
     downstream end. An inflow ends inside the box; the trunk that leaves the box
     (the SFINCS outflow) ends outside it.
     """
     downstream_end = Point(river.coords[-1])
     return coverage_bbox.covers(downstream_end)
-
 
 def _intersection_points(geometry) -> list[Point]:
     if geometry is None or geometry.is_empty:

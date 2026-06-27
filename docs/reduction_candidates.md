@@ -116,6 +116,10 @@ formatting and dataframe/geospatial transformations.
   were migrated to direct `sfincs_runs.config.load_runtime` and `build_grid_paths`
   imports. Keep watching other `*.notebook.py` files with the same deletion test before
   preserving them as public interfaces.
+- Former `src/fiat_runs/notebook.py` (`RESOLVED`): deleted after the Marshfield FIAT
+  notebook migrated to `fiat_runs.load_notebook_runtime` and kept workflow verbs in
+  `fiat_runs.risk_workflow`. This preserves the FIAT risk notebook contract without a
+  broad notebook re-export facade.
 - `src/power/exports/restoration.py` (`HIGH`): 1594 lines, ONM settings, DSS text manipulation,
   event windows, asset-state events, run bundle materialization, and Julia smoke commands.
 - `src/power/exports/smart_ds_grid.py` (`HIGH`): 1584 lines, SMART-DS assets/control units,

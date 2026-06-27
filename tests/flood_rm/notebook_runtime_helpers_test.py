@@ -1,7 +1,7 @@
 from pathlib import Path
 
+from fiat_runs import load_notebook_runtime
 from study_location import define_location
-import fiat_runs.notebook as fiat
 from sfincs_runs.config import build_grid_paths
 from sfincs_runs.config import load_runtime as load_config_runtime
 from sfincs_runs.config import load_sfincs_runtime
@@ -73,7 +73,7 @@ def test_sfincs_notebook_runtime_derives_standard_and_wave_paths():
 def test_fiat_notebook_runtime_layers_risk_paths_without_creating_tide_gauge_dirs():
     location_root = repo_root / "locations" / "marshfield"
 
-    runtime = fiat.load_runtime(location_root, create_tide_gauge_dirs=False)
+    runtime = load_notebook_runtime(location_root, create_tide_gauge_dirs=False)
 
     assert runtime.catalog_csv == location_root / "data/event_catalog/catalog/event_catalog.csv"
     assert runtime.metadata_json == location_root / "data/event_catalog/catalog/catalog_risk_metadata.json"

@@ -288,6 +288,11 @@ Validation:
 This lane is not one of the five active domain task briefs. Use it for final coordination,
 documentation consolidation, baseline updates, and cross-domain validation only.
 
+Current next-pass decision: run an integration-led deletion bridge before assigning broad
+domain-led big-file splits. The bridge should preserve notebook behavior while proving
+call sites and deleting shallow compatibility wrappers or redundant plumbing after
+caller migration. Do not use the bridge to change guarded science or artifact semantics.
+
 Owns docs and audit artifacts:
 
 - `AGENTS.md`
@@ -321,6 +326,7 @@ Integration responsibilities:
 - Merge domain reports into the roadmap.
 - Resolve conflicts between domain proposals.
 - Update notebook-backend traces, especially artifact-only notebooks.
+- Own deletion-bridge decisions that cross domain boundaries or notebook setup cells.
 - Decide whether FIAT needs a separate task brief before any FIAT source edits.
 - Run full validation and document current failures.
 

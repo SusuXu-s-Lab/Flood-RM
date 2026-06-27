@@ -15,24 +15,18 @@ from study_location import (
     resolve_study_location,
 )
 
-
 repo_root = find_repo_root(Path(__file__).resolve())
-
 
 def default_config_path():
     return default_location_config_path(repo_root)
 
-
 project_config_path = None
-
 
 def resolve_path(path):
     return resolve_repo_path(path, repo_root)
 
-
 def load_config(path=None):
     return load_location_config(default_config_path() if path is None else resolve_path(path), repo_root)
-
 
 def build_paths(config=None):
     config = load_config() if config is None else config
@@ -87,11 +81,9 @@ def build_paths(config=None):
         "design_outputs_root": design_outputs_root,
     }
 
-
 def load_runtime(path=None):
     config = load_config(path)
     return config, build_paths(config)
-
 
 @dataclass(frozen=True)
 class SfincsRuntime:

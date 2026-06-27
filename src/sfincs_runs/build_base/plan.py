@@ -61,7 +61,6 @@ def build_static_intake_plan(config, paths):
         required_static_inputs=("terrain", "landcover", "coastline", "ssurgo"),
     )
 
-
 def build_baseline_build_plan(config, paths):
     coastal_waves = bool(config.get("coastal_waves", False))
     build_kind = "wave_coupled" if coastal_waves else "regular_grid"
@@ -83,7 +82,6 @@ def build_baseline_build_plan(config, paths):
         required_sources=("era5_waves",) if coastal_waves else (),
     )
 
-
 def _repo_path(paths, value):
     path = Path(value)
     if path.is_absolute():
@@ -91,7 +89,6 @@ def _repo_path(paths, value):
     if path.parts and path.parts[0] in {"data", "02_flood", "01_grid"} and paths.get("location_root") is not None:
         return Path(paths["location_root"]) / path
     return _repo_root(paths) / path
-
 
 def _grid_footprint_source(config, paths):
     value = config.get("grid_footprint", {}).get("source")
@@ -103,7 +100,6 @@ def _grid_footprint_source(config, paths):
     if (len(path.parts) == 1 or path.parts[0] in {"data", "02_flood", "01_grid"}) and paths.get("location_root") is not None:
         return Path(paths["location_root"]) / path
     return _repo_root(paths) / path
-
 
 def _repo_root(paths):
     if paths.get("repo_root") is not None:

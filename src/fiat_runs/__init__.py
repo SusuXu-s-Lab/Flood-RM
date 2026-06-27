@@ -19,13 +19,15 @@ from .build_model import (
     model_ready,
 )
 from . import diagnostics, risk, risk_native, validate
-from .config import fiat_paths, load_runtime
+from .config import FiatNotebookRuntime, fiat_paths, load_notebook_runtime, load_runtime
 from .hazard import WaterLevelRasterizer
 from .run import read_fiat_damages, run_event
 
 
 __all__ = [
     "load_runtime",
+    "load_notebook_runtime",
+    "FiatNotebookRuntime",
     "fiat_paths",
     "env_ready",
     "run_in_fiat_env",
@@ -41,9 +43,4 @@ __all__ = [
     "risk_native",
     "diagnostics",
     "validate",
-    "env_ready",
-    "build_model",
-    "apply_ground",
-    "model_ready",
-    "run_event",
 ]

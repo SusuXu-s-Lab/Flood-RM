@@ -54,7 +54,7 @@ KNOWN_DUPLICATE_PUBLIC_NAMES = {
 SIGNATURE_GUARDS = {
     ("design_events.build_events.workflow", "load_runtime"): {"location_root"},
     ("design_events.collect_sources.workflow", "load_runtime"): {"location_root"},
-    ("fiat_runs.notebook", "load_runtime"): {"location_root"},
+    ("fiat_runs", "load_notebook_runtime"): {"location_root"},
     ("power.exports", "build_event_window_bundle"): {
         "event_start",
         "horizon_hours",

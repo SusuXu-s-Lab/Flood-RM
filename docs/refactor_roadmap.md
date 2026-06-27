@@ -95,6 +95,31 @@ Risk:
 
 - Medium. This touches public workflow contracts but should not change implementation.
 
+## Stage 1A: Deletion Bridge Before Broad Splits
+
+Current decision: the next implementation pass should be integration-led deletion bridge
+work, not broad domain-led big-file splitting. The bridge exists to preserve notebook
+imports, artifact paths, schema columns, and side effects while migrating callers away
+from shallow compatibility facades and redundant plumbing.
+
+Target outcome:
+
+- Pick one narrow notebook workflow or cross-domain facade at a time.
+- Prove current call sites across notebooks, package facades, scripts, tests, dynamic
+  imports, and artifact-only workflows.
+- Migrate callers only when the replacement is flatter and easier to trace.
+- Delete compatibility wrappers after migration instead of preserving them as new helper
+  layers.
+- Record any notebook-facing import migration in `docs/notebook_backend_trace.md` and
+  the relevant domain report.
+
+Out of scope for this bridge:
+
+- Changing probability, timing, SFINCS/Wflow handoff, SSAP, Block Invariant Contract,
+  Stable Grid ID, SMART-DS-compatible schema, or FIAT risk semantics.
+- Splitting large `CORE_SCIENCE` files unless the split is needed to remove a proven
+  compatibility wrapper and tests already pin the public contract.
+
 ## Validation Harness
 
 Added lightweight smoke coverage in `tests/test_architecture_smoke.py` and shared
@@ -198,13 +223,16 @@ Src-wide plumbing inventory from the artifact/path review:
   adapters that own the artifacts.
 - Path helpers still repeat in `design_events.collect_sources.*`,
   `sfincs_runs.config`, `sfincs_runs.build_base.*`, `sfincs_runs.scenarios.*`,
-  `wflow_runs.*`, `fiat_runs.notebook`, and `power.*`.
+  `wflow_runs.*`, `fiat_runs.config`, and `power.*`.
 - Source artifact helpers should not be restored as a generic module unless adapter-local
   duplication proves a real shared seam.
 - Notebook-facing `load_runtime` helpers should remain public seams, but their internals
   should converge on `src/paths.py` plus domain-owned artifact keys where possible.
 - Scalar parser and slug/token helpers should live near their artifact owner or be
   replaced by direct pandas/numpy operations.
+- FIAT deletion bridge: `src/fiat_runs/notebook.py` was deleted after the Marshfield
+  FIAT notebook migrated to `fiat_runs.load_notebook_runtime`; risk workflow verbs remain
+  in `fiat_runs.risk_workflow` instead of a broad notebook re-export facade.
 
 ## Stage 6: Remove Or Archive Stale Paths
 

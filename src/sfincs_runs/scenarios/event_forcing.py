@@ -2,6 +2,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
@@ -14,11 +15,7 @@ from pyproj import Transformer
 from shapely.geometry import Point
 
 from sfincs_runs.config import parse_sfincs_inp
-from sfincs_runs.hydrology import (
-    find_aorc_event_window,
-    prepare_aorc_precip_for_sfincs,
-    summarize_soil_moisture,
-)
+from sfincs_runs.hydrology import prepare_aorc_precip_for_sfincs
 from sfincs_runs.scenarios.scenarios import (
     assert_event_catalog_audit,
     build_event_timeseries,
@@ -508,7 +505,7 @@ def hydrology_inputs(forcing: EventForcing, *, paths, config):
         hydrology_cfg.get("precipitation", {}).get("event_windows_dir")
         or rainfall_member_file.parent / "event_windows"
     )
-    rainfall_source_nc = find_aorc_event_window(
+    rainfall_source_nc = _find_aorc_event_window(
         _resolve_catalog_path(rainfall_windows_dir, paths=paths),
         member_id=rainfall_member_id,
         storm_start=rainfall_member_time,
@@ -518,7 +515,7 @@ def hydrology_inputs(forcing: EventForcing, *, paths, config):
     soil_member_file = catalog.get("soil_moisture_member_file")
     soil_member_time = catalog.get("soil_moisture_member_time")
     if soil_member_file is not None and not pd.isna(soil_member_file):
-        soil_summary = summarize_soil_moisture(
+        soil_summary = _summarize_soil_moisture(
             _resolve_catalog_path(soil_member_file, paths=paths),
             at_time=soil_member_time if soil_member_time is not None else rainfall_member_time,
             lookback_hours=float(soil_cfg.get("lookback_hours", 24)),
@@ -550,7 +547,6 @@ def stage_precip(sf, run_root, forcing: EventForcing, *, paths, config):
         t_start=run_start,
         t_stop=run_stop,
         variable=str(precip_cfg.get("variable", "APCP_surface")),
-        align_start_to_run=True,
         window_alignment=window_alignment,
         precip_start=precip_start,
         scale_factor=rainfall_scale_factor,
@@ -987,3 +983,51 @@ def _resolve_catalog_path(value, *, paths):
         return path
     location_root = Path(paths.get("location_root", "."))
     return location_root / path
+
+
+def _find_aorc_event_window(event_windows_dir, *, member_id=None, storm_start=None):
+    """Find one local AORC storm-window NetCDF by rank and/or start hour."""
+    root = Path(event_windows_dir)
+    if not root.exists():
+        raise FileNotFoundError(root)
+
+    patterns = []
+    if member_id:
+        match = re.search(r"rank(\d{4})", str(member_id))
+        if match is None:
+            raise ValueError(f"Could not parse rank#### from member_id={member_id!r}")
+        patterns.append(f"*rank{match.group(1)}_*.nc")
+    if storm_start is not None:
+        patterns.append(f"*_{pd.Timestamp(storm_start):%Y%m%dT%H}.nc")
+    patterns = patterns or ["*.nc"]
+
+    matches = [set(root.glob(pattern)) for pattern in patterns]
+    candidates = sorted(set.intersection(*matches) if len(matches) > 1 else matches[0])
+    if len(candidates) != 1:
+        sample = ", ".join(path.name for path in candidates[:8]) or "no matches"
+        raise RuntimeError(f"AORC event-window lookup expected 1 match; got {sample}")
+    return candidates[0]
+
+
+def _summarize_soil_moisture(source_csv, *, at_time, lookback_hours=24.0):
+    """Summarize NWM soil moisture in the lookback window ending at ``at_time``."""
+    source_csv = Path(source_csv)
+    if not source_csv.exists():
+        raise FileNotFoundError(source_csv)
+
+    end = pd.Timestamp(at_time)
+    start = end - pd.Timedelta(hours=float(lookback_hours))
+    data = pd.read_csv(source_csv, parse_dates=["time"])
+    window = data.loc[data["time"].between(start, end)]
+    if window.empty:
+        raise RuntimeError(f"No soil-moisture rows in {lookback_hours:g}h before {end}")
+
+    column = "SOILSAT_TOP" if "SOILSAT_TOP" in window.columns else "SOIL_M"
+    values = window[column].astype(float)
+    return {
+        "soil_moisture_variable": column,
+        "mean_soil_moisture": float(values.mean()),
+        "min_soil_moisture": float(values.min()),
+        "max_soil_moisture": float(values.max()),
+        "row_count": int(len(values)),
+    }

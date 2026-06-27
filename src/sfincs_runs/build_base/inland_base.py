@@ -13,7 +13,7 @@ from scipy import ndimage
 from shapely.geometry import GeometryCollection, LineString, MultiPoint, Point
 from shapely.ops import nearest_points, unary_union
 
-from sfincs_runs.hydrology import setup_hydromt_infiltration, validate_physics
+from sfincs_runs.build_base.infiltration import setup_hydromt_infiltration, validate_physics
 from wflow_runs.handoff_locations import (
     LEGACY_BOUNDARY_HANDOFF_MODES,
     STREAM_BOUNDARY_HANDOFF_MODES,

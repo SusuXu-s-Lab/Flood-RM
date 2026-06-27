@@ -287,6 +287,15 @@ def event_stats(event_dir, storage_dir, land_threshold_m, huthresh_m, impact_thr
         if np.any(impacted_cells):
             peak_map[impacted_cells] = np.nanmax(np.where(impact, incremental, np.nan)[:, impacted_cells], axis=0)
         peak_depth, peak_y, peak_x = peak_index(peak_map)
+        # Total (absolute) inundation depth above ground on flooded land = TWL - bed, the
+        # standard coastal flood-modeling depth. Unlike the incremental (above-antecedent)
+        # depth it rises with sea-level rise, so it is the metric for SLR magnitude comparison.
+        total_depth_land = np.where(land[None, :, :], np.maximum(depth, 0.0), np.nan)
+        peak_total_map = np.full(land.shape, np.nan, float)
+        if np.any(impacted_cells):
+            peak_total_map[impacted_cells] = np.nanmax(
+                np.where(impact, total_depth_land, np.nan)[:, impacted_cells], axis=0
+            )
         impact_counts = impact.sum(axis=(1, 2))
         newly_counts = newly_wet.sum(axis=(1, 2))
         duration = np.where(np.isfinite(peak_map), impact.sum(axis=0) * dt, np.nan) if dt else np.full(peak_map.shape, np.nan)
@@ -332,6 +341,9 @@ def event_stats(event_dir, storage_dir, land_threshold_m, huthresh_m, impact_thr
             "baseline_t0_flooded_area_km2": area(baseline_wet, cell_area),
             "dry_land_t0_area_km2": area(dry_t0, cell_area),
             "peak_incremental_land_depth_m": peak_depth,
+            "peak_total_land_depth_m": metric(peak_total_map, np.max),
+            "mean_total_land_depth_m": metric(peak_total_map, np.mean),
+            "flood_volume_m3": (float(np.nansum(peak_total_map) * cell_area) if cell_area else None),
             "mean_peak_incremental_land_depth_m": metric(peak_map, np.mean),
             "median_peak_incremental_land_depth_m": metric(peak_map, np.median),
             "p90_peak_incremental_land_depth_m": metric(peak_map, lambda x: np.percentile(x, 90)),

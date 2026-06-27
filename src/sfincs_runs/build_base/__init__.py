@@ -26,7 +26,7 @@ from sfincs_runs.build_base.inland_base import (
     write_inland_sfincs_domain_set_manifest,
     write_inland_sfincs_handoff_locations,
 )
-from sfincs_runs.hydrology import validate_physics
+from sfincs_runs.build_base.infiltration import validate_physics
 from sfincs_runs.build_base.static_intake import (
     RegionSetup,
     build_region_setup,

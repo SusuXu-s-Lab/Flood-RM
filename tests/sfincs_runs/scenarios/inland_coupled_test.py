@@ -7,7 +7,7 @@ import xarray as xr
 import yaml
 
 from sfincs_runs.scenarios.event_forcing import _sfincs_subprocess_env
-from sfincs_runs.hydrology import validate_physics
+from sfincs_runs.build_base.infiltration import validate_physics
 from sfincs_runs.scenarios.inland_coupled import (
     audit_inland_coupled_batch_readiness,
     plan_example,
