@@ -1,28 +1,12 @@
-"""Historical-event validation: modeled damage for real storms (no EAD claim).
-
-The catalog appends ``historical_tail`` events (actual surge analogs, e.g. the Dec-1992
-and Oct-1991 nor'easters). Running SFINCS+FIAT on these gives a non-parametric cross-check
-on the synthetic EAD: the modeled damage of known storms should sit in a plausible place
-relative to the synthetic distribution. These events are *not* used in the EAD integral.
-
-Historical events must be staged and run through SFINCS first (like the SLR scenarios);
-this module operates on whatever historical runs are present and reports which are missing.
-"""
-
 from __future__ import annotations
-
 from pathlib import Path
-
 import pandas as pd
-
 from .run import run_event
-
 
 def historical_events(catalog_csv) -> pd.DataFrame:
     cat = pd.read_csv(catalog_csv)
     cols = ["event_id", "sample_rp_years", "historical_event_time", "coastal_absolute_peak_m"]
     return cat[cat["event_origin"] == "historical_tail"][[c for c in cols if c in cat.columns]].reset_index(drop=True)
-
 
 def validate_history(model_root, rasterizer, storage_root, catalog_csv, out_root, hazard_root) -> dict:
     """Run FIAT for each historical event that has a completed SFINCS run."""

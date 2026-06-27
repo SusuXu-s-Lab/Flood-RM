@@ -13,8 +13,10 @@ from rasterio.enums import Resampling
 from rasterio.warp import transform_bounds
 import rioxarray as rxr
 from rioxarray.merge import merge_arrays
+import shapely
 import xarray as xr
-from shapely.geometry import box
+from shapely.geometry import LineString, box
+from shapely.ops import split
 
 from design_events.collect_sources.ssurgo import ssurgo_attribute_columns
 from design_events.collect_sources.national_hydrography import WBD_MAPSERVER, fetch_nhdplus_hr_catchments, fetch_wbd_huc
@@ -23,9 +25,9 @@ from sfincs_runs.build_base.inland_base import (
     plan_inland_sfincs_domain_set,
     write_inland_sfincs_domain_set_manifest,
 )
-from sfincs_runs.build_base.region_setup import build_region_setup
 from sfincs_runs.build_base.static_catalog import build_static_data_catalog
 from sfincs_runs.build_base.static_intake import (
+    build_region_setup,
     clip_dem_and_landcover_to_bbox,
     collect_ssurgo_infiltration_inputs,
     collect_static_region_inputs,
@@ -36,7 +38,7 @@ from sfincs_runs.build_base.static_intake import (
     worldcover_tile_urls,
 )
 from sfincs_runs.config import build_paths as build_sfincs_paths
-from study_location import build_study_area, define_location, preserve_disconnected_subregions
+from study_location import build_study_area, define_location
 from wflow_runs.build_plan import write_wflow_crossing_gauge_locations, write_wflow_domain_set_manifest
 from wflow_runs.notebook import exists_table, prepare_wflow_subbasin_fabric, domain_summary, subbasins
 
@@ -94,6 +96,14 @@ class EvaluationFootprint:
     evaluation_output_path: Path
     evaluation_footprint: gpd.GeoDataFrame
     summary: pd.Series
+
+
+@dataclass(frozen=True)
+class AoiBuildResult:
+    output_path: Path
+    source_format: str
+    n_points: int
+    bounds: tuple[float, float, float, float]
 
 
 @dataclass(frozen=True)
@@ -357,7 +367,7 @@ def build_domains(runtime: RegionSetupNotebookRuntime | CoastalRegionSetupRuntim
 
 def _build_coastal_domains(runtime: CoastalRegionSetupRuntime) -> CoastalRegionDomain:
     """Build/read the AOI and read the configured SFINCS bbox from Region config."""
-    aoi_result = build_study_area(runtime.config, runtime.repo_root)
+    aoi_result = _build_aoi(runtime.config, runtime.repo_root)
     study_area_wgs = gpd.read_file(aoi_result.output_path).to_crs("EPSG:4326")
     bbox_path = runtime.region_setup.bbox_output
     if not bbox_path.exists():
@@ -627,7 +637,7 @@ def _plot_coastal_static(
 
 def build_smart_ds_evaluation_footprint(runtime: RegionSetupNotebookRuntime) -> EvaluationFootprint:
     """Build the study AOI and copy it to the configured evaluation footprint."""
-    aoi_result = build_study_area(runtime.runtime_config, runtime.repo_root)
+    aoi_result = _build_aoi(runtime.runtime_config, runtime.repo_root)
     study_area_wgs = gpd.read_file(aoi_result.output_path).to_crs("EPSG:4326")
     aoi_config = runtime.runtime_config.get("aoi", {})
 
@@ -1717,7 +1727,7 @@ def _location_record_table(location_root: Path, records: dict[str, object]) -> p
 
 
 def _split_disconnected_study_area(study_area_wgs, aoi_config) -> gpd.GeoDataFrame:
-    study_geom_split = preserve_disconnected_subregions(
+    study_geom_split = _preserve_disconnected_subregions(
         study_area_wgs.geometry.union_all(),
         max_bridge_edge_degrees=float(aoi_config.get("subregion_bridge_max_edge_degrees", 0.03)),
     )
@@ -1726,6 +1736,40 @@ def _split_disconnected_study_area(study_area_wgs, aoi_config) -> gpd.GeoDataFra
         geometry=[study_geom_split],
         crs="EPSG:4326",
     )
+
+
+def _build_aoi(config, repo_root) -> AoiBuildResult:
+    raw = build_study_area(config, repo_root)
+    if hasattr(raw, "output_path"):
+        return raw
+    name = config["project"]["name"]
+    aoi_config = config.get("aoi", {})
+    output = Path(repo_root) / "locations" / name / aoi_config.get("output", "data/static/aoi/study_area.geojson")
+    bounds = raw.get("bounds", gpd.read_file(output).total_bounds)
+    return AoiBuildResult(
+        output_path=output,
+        source_format=str(raw.get("source_format", aoi_config.get("source_format", "asset_registry"))),
+        n_points=int(raw.get("n_points", 0)),
+        bounds=tuple(float(value) for value in bounds),
+    )
+
+
+def _preserve_disconnected_subregions(geometry, *, max_bridge_edge_degrees: float):
+    if geometry.geom_type != "Polygon":
+        return geometry
+    coords = list(geometry.exterior.coords)
+    long_edges = [
+        (coords[index], coords[index + 1])
+        for index in range(len(coords) - 1)
+        if LineString([coords[index], coords[index + 1]]).length > max_bridge_edge_degrees
+    ]
+    if len(long_edges) != 2:
+        return geometry
+    p0 = LineString(long_edges[0]).interpolate(0.5, normalized=True)
+    p1 = LineString(long_edges[1]).interpolate(0.5, normalized=True)
+    parts = split(geometry, LineString([p0, p1]))
+    geoms = [part for part in parts.geoms if part.geom_type == "Polygon"]
+    return geometry if len(geoms) < 2 else shapely.MultiPolygon(geoms)
 
 
 def _subregion_count(study_area_wgs, study_union) -> int:

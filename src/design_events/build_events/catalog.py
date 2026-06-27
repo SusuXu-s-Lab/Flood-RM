@@ -456,17 +456,17 @@ def _soil_moisture_value_column(frame):
 
 
 def build_event_catalog(config, paths):
-    plan = plan(config, paths)
-    summary = pd.read_csv(plan.event_summary_csv)
+    catalog_plan = plan(config, paths)
+    summary = pd.read_csv(catalog_plan.event_summary_csv)
     scenario = paths.get("scenario", {})
     coastal_analog_id = _summary_values(summary, "template_id", pd.NA)
-    snapwave_required = plan.wave_analog_policy == "same_historical_analog"
+    snapwave_required = catalog_plan.wave_analog_policy == "same_historical_analog"
     catalog = pd.DataFrame(
         {
             "event_id": summary["event_id"].astype(str),
-            "study_location": plan.study_location,
+            "study_location": catalog_plan.study_location,
             "event_family": "surge_synthetic",
-            "scenario_name": plan.scenario_name or scenario.get("name", summary.get("scenario_name", "base")),
+            "scenario_name": catalog_plan.scenario_name or scenario.get("name", summary.get("scenario_name", "base")),
             "sample_rp_years": summary.get("sample_rp_years"),
             "severity_band": summary.get(
                 "severity_band",
@@ -479,7 +479,7 @@ def build_event_catalog(config, paths):
             "sampling_weight": summary.get("sampling_weight"),
             "probability_weight": summary.get("probability_weight"),
             "coastal_source": "cora",
-            "coastal_member_file": str(plan.event_members_nc),
+            "coastal_member_file": str(catalog_plan.event_members_nc),
             "coastal_member_id": summary["event_id"].astype(str),
             "coastal_template_peak_time": summary.get("template_peak_time"),
             "coastal_peak_m": summary.get("peak"),
@@ -497,7 +497,7 @@ def build_event_catalog(config, paths):
             "snapwave_valid_end_time": _event_window_time(summary, "template_peak_time", "valid_end_hour")
             if snapwave_required
             else pd.NA,
-            "snapwave_pairing_policy": plan.wave_analog_policy if snapwave_required else pd.NA,
+            "snapwave_pairing_policy": catalog_plan.wave_analog_policy if snapwave_required else pd.NA,
             "rainfall_source": pd.NA,
             "rainfall_member_file": pd.NA,
             "rainfall_member_id": pd.NA,
@@ -528,15 +528,15 @@ def build_event_catalog(config, paths):
             "infiltration_treatment": config.get("infiltration", {}).get("treatment", "none"),
         }
     )
-    catalog = _attach_configured_forcing(catalog, plan)
+    catalog = _attach_configured_forcing(catalog, catalog_plan)
     catalog = catalog[catalog_columns]
-    plan.event_catalog_csv.parent.mkdir(parents=True, exist_ok=True)
-    catalog.to_csv(plan.event_catalog_csv, index=False)
-    if plan.audit_json is not None:
+    catalog_plan.event_catalog_csv.parent.mkdir(parents=True, exist_ok=True)
+    catalog.to_csv(catalog_plan.event_catalog_csv, index=False)
+    if catalog_plan.audit_json is not None:
         write_event_catalog_audit(
             catalog,
-            plan.audit_json,
-            required_forcings=plan.required_forcings,
-            wave_analog_policy=plan.wave_analog_policy,
+            catalog_plan.audit_json,
+            required_forcings=catalog_plan.required_forcings,
+            wave_analog_policy=catalog_plan.wave_analog_policy,
         )
     return catalog

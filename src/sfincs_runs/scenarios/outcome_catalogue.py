@@ -83,8 +83,14 @@ def build_flood_event_outcome_catalogue(
     design_attrs: dict,
     ensure_grid_files: bool = True,
     progress_every: int = 50,
+    workers: int | None = None,
 ) -> FloodOutcomeCatalogue:
-    """Assemble the evaluation table used by risk, QA, and ranking plots."""
+    """Assemble the evaluation table used by risk, QA, and ranking plots.
+
+    ``workers`` controls the per-event outcome-metric read parallelism (see
+    ``scenario_stats.event_stats_table``): ``None`` -> auto (up to 16 / cpu count),
+    ``1`` -> serial.
+    """
     outdir = Path(outdir)
     catalogue_path = outdir / "flood_event_outcome_catalogue.csv"
     events = [Path(d) for d in completed_events]
@@ -103,6 +109,7 @@ def build_flood_event_outcome_catalogue(
         design_rows=design_rows,
         design_attrs=design_attrs,
         progress_every=progress_every,
+        workers=workers,
     )
 
     event_catalog = _event_catalog(paths["design_outputs_root"] / "catalog" / "event_catalog.csv")
@@ -181,6 +188,7 @@ def _outcomes(
     design_rows: dict,
     design_attrs: dict,
     progress_every: int,
+    workers: int | None = None,
 ) -> tuple[pd.DataFrame, list[str]]:
     stats = _scenario_stats()
     stats_path = Path(paths["stats_root"]) / "scenario_stats.csv"
@@ -199,27 +207,23 @@ def _outcomes(
 
     if missing_ids:
         mode = "Rebuilding" if rerun else "Building missing"
-        print(f"{mode} catalogue outcome metrics for {len(missing_ids)} completed events...")
-        fresh = []
         missing = set(missing_ids)
         selected = [d for d in events if d.name in missing]
-        for i, event_dir in enumerate(selected, start=1):
-            fresh.append(
-                stats.event_stats(
-                    event_dir,
-                    paths["storage_root"],
-                    settings["land_threshold_m"],
-                    settings["huthresh_m"],
-                    settings["impact_threshold_m"],
-                    scenario_summary,
-                    scenario_rows,
-                    design_rows,
-                    design_attrs,
-                )
-            )
-            if progress_every and (i % progress_every == 0 or i == len(selected)):
-                print(f"  {i}/{len(selected)} outcome rows")
-        outcomes = pd.concat([outcomes, pd.DataFrame(fresh)], ignore_index=True)
+        print(f"{mode} catalogue outcome metrics for {len(selected)} completed events...")
+        fresh = stats.event_stats_table(
+            selected,
+            paths["storage_root"],
+            land_threshold_m=settings["land_threshold_m"],
+            huthresh_m=settings["huthresh_m"],
+            impact_threshold_m=settings["impact_threshold_m"],
+            scenario_summary=scenario_summary,
+            scenario_rows=scenario_rows,
+            design_rows=design_rows,
+            design_attrs=design_attrs,
+            workers=workers,
+        )
+        outcomes = pd.concat([outcomes, fresh], ignore_index=True)
+        print(f"  {len(fresh)}/{len(selected)} outcome rows")
 
     return outcomes[outcomes["event_id"].astype(str).isin(set(run_index["event_id"]))], missing_ids
 

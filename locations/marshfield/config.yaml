@@ -14,6 +14,10 @@ event_drivers:
 - rainfall
 - soil_moisture
 
+collection:
+  start: "1979-02-01"
+  end: "2022-12-31"
+
 coastal_waves: true
 
 # Sea-level-rise offsets for years 2050 and 2100

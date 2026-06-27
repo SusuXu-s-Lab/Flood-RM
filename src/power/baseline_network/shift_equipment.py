@@ -1,10 +1,8 @@
 """SHIFT equipment helpers for the Marshfield Baseline Network."""
 
 from __future__ import annotations
-
 import math
 from functools import cached_property
-
 import numpy as np
 from gdm.distribution import DistributionSystem
 from gdm.distribution.components import DistributionBranchBase
@@ -30,7 +28,6 @@ from infrasys.quantities import ActivePower
 from infrasys.quantities import Angle
 from infrasys.quantities import Resistance
 from shift import EdgeEquipmentMapper
-
 
 def equipment_catalog(prefix: str = "example") -> DistributionSystem:
     """Build a local equipment catalog compatible with current SHIFT/GDM objects."""

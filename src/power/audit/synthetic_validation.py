@@ -6,7 +6,6 @@ model; it records which validation checks the current artifacts can support.
 """
 
 from __future__ import annotations
-
 import heapq
 import json
 import math
@@ -16,25 +15,39 @@ from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
-
 import pandas as pd
+from paths import default_location_config_path, find_repo_root
+from study_location import define_location
 
-from power.artifacts import location_id
-from power.artifacts import parse_float
-from power.artifacts import repo_root
-from power.artifacts import power_grid
+repo_root = find_repo_root(Path(__file__).resolve())
 
+def _location_definition():
+    return define_location(default_location_config_path(repo_root))
 
-# SMART-DS reference helpers used by the Synthetic Validation Audit
+def _location_id():
+    definition = _location_definition()
+    return os.environ.get("FLOOD_RM_LOCATION_ID") or os.environ.get("FLOOD_RM_SANDBOX_ID") or str(
+        definition.config.get("project", {}).get("name") or definition.root.name
+    )
 
-# Region configuration
+def _power_grid_root():
+    definition = _location_definition()
+    path = Path(definition.grid.get("power_grid_root", "data/power_grid"))
+    return path if path.is_absolute() else definition.root / path
 
-"""Static configuration for SMART-DS Regional Case Domains used as audit references."""
+def parse_float(value, default=None):
+    if value is None or value == "":
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
+location_id = _location_id()
+power_grid = _power_grid_root()
 
 from dataclasses import dataclass
 from pathlib import Path
-
 
 @dataclass(frozen=True)
 class RegionConfig:
@@ -45,13 +58,11 @@ class RegionConfig:
     smart_ds_subregions: tuple[str, ...]
     artifact_root: Path
 
-
 _sfo_subregions = tuple(
     [f"P{i}R" for i in range(1, 6)] + [f"P{i}U" for i in range(1, 36)]
 )
 _austin_subregions = ("P1R", "P1U", "P2U", "P3U", "P4U", "P5U")
 _greensboro_subregions = ("industrial", "rural", "urban-suburban")
-
 
 def _region(region_id: str, code: str, subregions: tuple[str, ...]) -> RegionConfig:
     return RegionConfig(
@@ -61,13 +72,11 @@ def _region(region_id: str, code: str, subregions: tuple[str, ...]) -> RegionCon
         Path("locations") / region_id / "data",
     )
 
-
 regions: dict[str, RegionConfig] = {
     "sfo": _region("sfo", "SFO", _sfo_subregions),
     "austin": _region("austin", "AUS", _austin_subregions),
     "greensboro": _region("greensboro", "GSO", _greensboro_subregions),
 }
-
 
 def get_region_config(region_id: str) -> RegionConfig:
     """Return the configured Regional Case Domain."""
@@ -78,28 +87,23 @@ def get_region_config(region_id: str) -> RegionConfig:
 
 
 # SMART-DS reference helpers
-
 """Public SMART-DS v1.0 OpenDSS model locations on the OEDI data lake.
 
 SMART-DS publishes synthetic distribution feeders per region/subregion; we use
 them only as audit references. ``SmartDsModelRef`` is the single source of truth
 for the OEDI key layout — the URL list and the download plan both derive from it.
 """
-
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
-
 
 oedi_s3_base_url = "https://oedi-data-lake.s3.amazonaws.com"
 oedi_bucket = "oedi-data-lake"
 valid_years = (2016, 2017, 2018)  # snapshots published in the public OEDI catalog
 
-
 @dataclass(frozen=True)
 class SmartDsModelRef:
     """OEDI location of one subregion's OpenDSS Master model."""
-
     region_id: str
     dataset_code: str
     year: int

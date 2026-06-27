@@ -1,24 +1,26 @@
 # Flood-depth fragility curves
-
 """ERAD-derived flood-depth fragility curves for grid assets."""
-
 from __future__ import annotations
-
 import csv
 import math
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-
-from power.artifacts import power_grid
-
+from paths import default_location_config_path, find_repo_root
+from study_location import define_location
 
 project_root = Path(__file__).resolve().parents[3]
+repo_root = find_repo_root(Path(__file__).resolve())
+
+def power_grid_root():
+    definition = define_location(default_location_config_path(repo_root))
+    path = Path(definition.grid.get("power_grid_root", "data/power_grid"))
+    return path if path.is_absolute() else definition.root / path
+
 shared_fragility_dir = project_root / "artifacts" / "fragility"
 default_curves_csv = shared_fragility_dir / "erad_flood_depth_curves.csv"
-fragility_dir = power_grid / "fragility"
+fragility_dir = power_grid_root() / "fragility"
 default_mapping_csv = fragility_dir / "asset_type_mapping.csv"
-
 
 @dataclass(frozen=True)
 class FloodDepthFragilityCurve:
@@ -47,7 +49,6 @@ class FloodDepthFragilityCurve:
         z = math.log((x - self.loc_m) / self.scale_m) / self.shape
         return min(max(0.5 * (1.0 + math.erf(z / math.sqrt(2.0))), 0.0), 1.0)
 
-
 @lru_cache(maxsize=None)
 def load_flood_depth_curves(
     path: str | Path = default_curves_csv,
@@ -69,7 +70,6 @@ def load_flood_depth_curves(
             curves[curve.erad_asset_type] = curve
     return curves
 
-
 @lru_cache(maxsize=None)
 def load_asset_type_mapping(path: str | Path = default_mapping_csv) -> dict[str, str]:
     """Load the Marshfield Asset Registry type to ERAD asset type mapping."""
@@ -79,7 +79,6 @@ def load_asset_type_mapping(path: str | Path = default_mapping_csv) -> dict[str,
             row["local_asset_type"]: row["erad_asset_type"]
             for row in csv.DictReader(f)
         }
-
 
 def erad_asset_type(
     local_asset_type: str, mapping: dict[str, str] | None = None
@@ -92,7 +91,6 @@ def erad_asset_type(
     except KeyError as exc:
         raise KeyError(f"No ERAD fragility mapping for local asset type {key!r}") from exc
 
-
 def line_local_asset_type(line_class: str | None) -> str:
     """Map an Asset Registry line class to a local fragility asset type."""
     value = (line_class or "").strip().lower()
@@ -103,7 +101,6 @@ def line_local_asset_type(line_class: str | None) -> str:
     if value == "overhead":
         return "line_overhead"
     return "line_other"
-
 
 def failure_probability(
     local_asset_type: str,

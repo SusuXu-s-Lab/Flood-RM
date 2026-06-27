@@ -15,11 +15,15 @@ import yaml
 from shapely.geometry import Point
 from shapely.ops import unary_union
 
-from generated_artifact import write_generated_yaml
-from wflow_runs.coupled_handoff import (
+from wflow_runs.handoff_locations import (
     STREAM_BOUNDARY_HANDOFF_MODES,
     read_stream_boundary_handoff_location_artifacts,
     read_stream_boundary_handoff_locations,
+)
+
+_GENERATED_NOTICE = (
+    "# GENERATED FILE — do not edit. Overwritten when {source} runs.\n"
+    "# Source of truth is the location config and the code that produces this file.\n"
 )
 
 
@@ -320,7 +324,11 @@ def build_wflow_data_catalog(config, paths) -> Path:
         ),
     }
     catalog = _normalize_catalog_metadata(catalog)
-    write_generated_yaml(catalog_path, catalog, source="the Wflow data-catalog build")
+    catalog_path.write_text(
+        _GENERATED_NOTICE.format(source="the Wflow data-catalog build")
+        + yaml.safe_dump(catalog, sort_keys=False),
+        encoding="utf-8",
+    )
     return catalog_path
 
 
@@ -1338,7 +1346,11 @@ def write_wflow_domain_set_manifest(plan: WflowDomainSetPlan, config, paths) -> 
             for submodel in plan.submodels
         ],
     }
-    write_generated_yaml(manifest_path, manifest, source="the Wflow domain-set build")
+    manifest_path.write_text(
+        _GENERATED_NOTICE.format(source="the Wflow domain-set build")
+        + yaml.safe_dump(manifest, sort_keys=False),
+        encoding="utf-8",
+    )
     return manifest_path
 
 
@@ -3299,7 +3311,11 @@ def _ensure_model_recipe_file(config: dict, key: str, path: Path) -> Path:
     if recipe is None:
         return path
     path.parent.mkdir(parents=True, exist_ok=True)
-    write_generated_yaml(path, recipe, source=f"the {key} model YAML extraction")
+    path.write_text(
+        _GENERATED_NOTICE.format(source=f"the {key} model YAML extraction")
+        + yaml.safe_dump(recipe, sort_keys=False),
+        encoding="utf-8",
+    )
     return path
 
 

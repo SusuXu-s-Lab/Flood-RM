@@ -10,12 +10,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from sfincs_runs.config import build_paths, load_runtime
-
-paths = build_paths()
-default_scenarios_root = paths["scenarios_root"]
-default_storage_root = paths["storage_root"]
-default_run_root = paths["run_root"]
+from sfincs_runs.config import load_runtime
 stale_run_files = {"sfincs_map.nc", "sfincs_his.nc", "sfincs_rst.nc", "sfincs.log", "sfincs_log.txt"}
 retained_output_files = {
     "sfincs_map.nc",

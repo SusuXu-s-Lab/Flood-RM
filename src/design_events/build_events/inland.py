@@ -9,13 +9,17 @@ import pandas as pd
 import yaml
 from scipy.signal import find_peaks
 
-from generated_artifact import write_generated_yaml
 from design_events.build_events.catalog import (
     attach_forcing_members,
     validate_event_catalog,
 )
 from design_events.build_events.selection import assign_severity_bands
 from design_events.build_events.coastal import hybrid_peak_sample_frame
+
+_GENERATED_NOTICE = (
+    "# GENERATED FILE — do not edit. Overwritten when {source} runs.\n"
+    "# Source of truth is the location config and the code that produces this file.\n"
+)
 
 
 @dataclass(frozen=True)
@@ -207,7 +211,11 @@ def write_handoff(catalog, config, paths):
         ),
         "events": events,
     }
-    write_generated_yaml(manifest_path, manifest, source="the inland event-catalog build")
+    manifest_path.write_text(
+        _GENERATED_NOTICE.format(source="the inland event-catalog build")
+        + yaml.safe_dump(manifest, sort_keys=False),
+        encoding="utf-8",
+    )
     return manifest_path
 
 
@@ -447,7 +455,12 @@ def _write_event_manifest(catalog, artifacts, config, paths, output_path, audit)
         "audit_passed": bool(audit["passed"]),
         "artifacts": {name: str(path) for name, path in artifacts.items()},
     }
-    write_generated_yaml(output_path, manifest, source="the inland event-catalog build")
+    output_path = Path(output_path)
+    output_path.write_text(
+        _GENERATED_NOTICE.format(source="the inland event-catalog build")
+        + yaml.safe_dump(manifest, sort_keys=False),
+        encoding="utf-8",
+    )
 
 
 def _with_missing_columns(frame, columns):

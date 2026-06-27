@@ -1,26 +1,5 @@
-"""Build a normalized asset registry from generated OpenDSS artifacts.
-
-This script is intentionally deterministic: it parses the named properties
-emitted by the SHIFT -> GDM -> DiTTo -> OpenDSS pipeline
-(`notebooks/regions/marshfield/grid_network/base_network.ipynb`) and writes
-CSV tables that later layers can reuse. It does not synthesize DERs,
-controllable switches, sensors, fragility states, or any other assets.
-
-Input layout (per DiTTo's OpenDSS writer):
-    <dss_dir>/<region_name>/Master.dss
-    <dss_dir>/<region_name>/Lines.dss
-    <dss_dir>/<region_name>/Loads.dss
-    <dss_dir>/<region_name>/Transformers.dss   (when transformers exist)
-    <dss_dir>/<region_name>/BusCoords.dss
-    <dss_dir>/<region_name>/LineCodes.dss
-
-Each `<region_name>` becomes a feeder. Bus names parsed from a region are
-prefixed with `<region_name>__` so the global registry is unambiguous when
-two regions happen to use the same bus identifier.
-"""
-
+"""Build a normalized asset registry from generated OpenDSS artifacts.""" 
 from __future__ import annotations
-
 import csv
 import hashlib
 import json
@@ -29,11 +8,29 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Iterator
+from paths import default_location_config_path, find_repo_root
+from study_location import define_location
 
+repo_root = find_repo_root(Path(__file__).resolve())
 
-from power.artifacts import parse_float, parse_int
-from power.artifacts import power_grid
+def power_grid_root():
+    definition = define_location(default_location_config_path(repo_root))
+    path = Path(definition.grid.get("power_grid_root", "data/power_grid"))
+    return path if path.is_absolute() else definition.root / path
 
+def parse_float(value, default=None):
+    if value is None or value == "":
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+def parse_int(value, default=None):
+    parsed = parse_float(value)
+    return default if parsed is None else int(parsed)
+
+power_grid = power_grid_root()
 dss_dir = power_grid / "derived_opendss"
 default_output_dir = power_grid / "asset_registry"
 

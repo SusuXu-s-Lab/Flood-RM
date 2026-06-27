@@ -5,7 +5,10 @@ import os
 
 import yaml
 
-from generated_artifact import write_generated_yaml
+_GENERATED_NOTICE = (
+    "# GENERATED FILE — do not edit. Overwritten when {source} runs.\n"
+    "# Source of truth is the location config and the code that produces this file.\n"
+)
 
 
 def build_static_data_catalog(config, paths):
@@ -81,7 +84,11 @@ def build_static_data_catalog(config, paths):
             _relative_to_catalog(catalog_path, location_root / handoff),
             category="wflow_sfincs_handoff",
         )
-    write_generated_yaml(catalog_path, catalog, source="static intake (build_static_data_catalog)")
+    catalog_path.write_text(
+        _GENERATED_NOTICE.format(source="static intake (build_static_data_catalog)")
+        + yaml.safe_dump(catalog, sort_keys=False),
+        encoding="utf-8",
+    )
     return catalog_path
 
 

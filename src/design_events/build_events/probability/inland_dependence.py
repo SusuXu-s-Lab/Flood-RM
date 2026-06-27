@@ -19,6 +19,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from design_events.build_events.inland_timing import attach_inland_rainfall_timing
 from design_events.build_events.probability.design_catalog import fit_index_marginal
 from design_events.build_events.probability.realization import attach_field_preserving_realization
 from design_events.build_events.selection import (
@@ -135,13 +136,14 @@ def build_inland_catalog(
     catalog["scenario_name"] = "base"
 
     # Field-preserving rainfall realization (observed AORC SST analog + scale + lag).
+    rainfall_member_id_column = "member_id" if "member_id" in members else members.columns[0]
     catalog = attach_field_preserving_realization(
         catalog,
         members,
         driver="rainfall",
         target_column="rainfall_mm",
         index_column=value_column,
-        member_id_column="member_id" if "member_id" in members else members.columns[0],
+        member_id_column=rainfall_member_id_column,
         member_file_column="member_file" if "member_file" in members else "member_file",
         time_column=time_column if time_column in members else None,
         design_method="rainfall_marginal_scaled_aorc_sst_analog",
@@ -151,14 +153,20 @@ def build_inland_catalog(
     catalog["rainfall_member_time"] = catalog.get("rainfall_member_time")
     catalog["rainfall_source"] = "aorc_sst"
 
-    # Antecedent moisture: conditioning state, not a copula axis.
+    # Antecedent moisture: conditioning state, not a copula axis. Paired at storm onset
+    # (rainfall_member_time) before the Event Reference Time is moved to the peak.
     if soil_moisture_members is not None:
         catalog = attach_antecedent_soil_moisture(catalog, soil_moisture_members, config=config)
 
-    # Event reference time defaults to the rainfall member time (the storm onset anchor);
-    # Wflow + AMC then generate the discharge response.
-    if "rainfall_member_time" in catalog:
-        catalog["event_reference_time"] = pd.to_datetime(catalog["rainfall_member_time"], errors="coerce")
+    # Inland Event Reference Time = true rainfall peak (ADR-0019). rainfall_member_time stays
+    # the storm onset (the AORC event-window lookup key); the rainfall peak centres the Wflow
+    # forcing window and the storm-loading descriptors are attached for the stress set.
+    catalog = attach_inland_rainfall_timing(
+        catalog,
+        members,
+        member_id_column=rainfall_member_id_column,
+        start_time_column=time_column if time_column in members else "storm_start",
+    )
 
     catalog["forcing_pairing_policy"] = "rainfall_marginal_with_antecedent_moisture_wflow_response"
     catalog["event_drivers"] = "rainfall"

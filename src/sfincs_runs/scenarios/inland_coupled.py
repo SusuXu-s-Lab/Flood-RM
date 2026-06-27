@@ -189,7 +189,7 @@ def handoff_readiness(
         event_id = str(event_id)
         paths = dynamic_handoff_paths(config, location_root, event_id)
         try:
-            accepted = require_handoff(config, location_root, event_id)
+            accepted = require_handoff(config, location_root, event_id, catalog_path=catalog_path)
             rows.append(
                 {
                     "event_id": event_id,

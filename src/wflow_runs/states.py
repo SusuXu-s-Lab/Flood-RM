@@ -11,7 +11,10 @@ import tomli_w
 import xarray as xr
 import yaml
 
-from generated_artifact import write_generated_yaml
+_GENERATED_NOTICE = (
+    "# GENERATED FILE — do not edit. Overwritten when {source} runs.\n"
+    "# Source of truth is the location config and the code that produces this file.\n"
+)
 
 
 def warmup_window(reference_time, *, warmup_days: float = 90.0, timestep_seconds: int = 3600):
@@ -40,7 +43,11 @@ def write_cold_state_workflow(out_path, *, timestamp=None) -> Path:
     out_path = Path(out_path)
     step = {"setup_cold_states": {} if timestamp is None else {"timestamp": pd.Timestamp(timestamp).isoformat()}}
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    write_generated_yaml(out_path, {"steps": [step]}, source="the Wflow cold-state setup")
+    out_path.write_text(
+        _GENERATED_NOTICE.format(source="the Wflow cold-state setup")
+        + yaml.safe_dump({"steps": [step]}, sort_keys=False),
+        encoding="utf-8",
+    )
     return out_path
 
 

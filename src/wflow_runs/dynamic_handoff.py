@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 import xarray as xr
 
-from wflow_runs.coupled_handoff import read_stream_boundary_handoff_location_artifacts
+from wflow_runs.handoff_locations import read_stream_boundary_handoff_location_artifacts
 from wflow_runs.coupling_qa import (
     read_dynamic_handoff_acceptance,
     validate_dynamic_handoff,

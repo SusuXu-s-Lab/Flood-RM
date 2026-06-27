@@ -23,8 +23,11 @@ import hashlib
 import importlib.metadata
 import json
 import math
+import os
 import platform
 import random
+import re
+import subprocess
 import sys
 import warnings
 from collections import Counter, defaultdict
@@ -34,26 +37,101 @@ from typing import Any, Iterable
 
 import pandas as pd
 import pyarrow as pa
+import pyarrow.parquet as pq
 
-from power.artifacts import count_by
-from power.artifacts import finite_lon_lat
-from power.artifacts import git_info
-from power.artifacts import location_id
-from power.artifacts import maybe_sha256
-from power.artifacts import parse_float
-from power.artifacts import parse_int
-from power.artifacts import sha256
-from power.artifacts import short_hash
-from power.artifacts import stable_asset_id
-from power.artifacts import stable_control_unit_id
-from power.artifacts import validation_error
-from power.artifacts import write_parquet
-from power.artifacts import protocol_version
-from power.artifacts import power_grid
+from paths import default_location_config_path, find_repo_root
+from study_location import define_location
 
+repo_root = find_repo_root(Path(__file__).resolve())
+protocol_version = "v0.1"
+
+
+def _location_definition():
+    return define_location(default_location_config_path(repo_root))
+
+
+def _location_id():
+    definition = _location_definition()
+    return os.environ.get("FLOOD_RM_LOCATION_ID") or os.environ.get("FLOOD_RM_SANDBOX_ID") or str(
+        definition.config.get("project", {}).get("name") or definition.root.name
+    )
+
+
+def _power_grid_root():
+    definition = _location_definition()
+    path = Path(definition.grid.get("power_grid_root", "data/power_grid"))
+    return path if path.is_absolute() else definition.root / path
+
+
+def parse_float(value, default=None):
+    if value is None or value == "":
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def parse_int(value, default=None):
+    parsed = parse_float(value)
+    return default if parsed is None else int(parsed)
+
+
+def slug(value: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
+    return normalized or "unknown"
+
+
+location_id = _location_id()
+power_grid = _power_grid_root()
 default_registry_dir = power_grid / "asset_registry"
 default_output_dir = power_grid / "augmented"
 schema_version = "stage_a1.v0.1"
+
+
+def _count_by(rows: Iterable[dict[str, Any]], field: str) -> dict[str, int]:
+    counts = Counter(str(row.get(field, "")) for row in rows)
+    return dict(sorted(counts.items()))
+
+
+def _finite_lon_lat(lon: float | None, lat: float | None) -> bool:
+    return lon is not None and lat is not None and -180.0 <= lon <= 180.0 and -90.0 <= lat <= 90.0
+
+
+def _file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with Path(path).open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _short_hash(payload: Any) -> str:
+    encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:8]
+
+
+def _git_info() -> dict[str, Any]:
+    def run(args: list[str]) -> str:
+        try:
+            return subprocess.check_output(args, cwd=repo_root, text=True).strip()
+        except Exception:
+            return ""
+
+    status = run(["git", "status", "--short"])
+    return {
+        "commit": run(["git", "rev-parse", "HEAD"]),
+        "dirty": bool(status),
+        "status_short": status.splitlines(),
+    }
+
+
+def _stable_asset_id(source_table: str, source_name: str) -> str:
+    return f"{location_id}:asset:{slug(source_table)}:{slug(source_name)}"
+
+
+def _stable_control_unit_id(feeder_id: str) -> str:
+    return f"{location_id}:control_unit:feeder:{slug(feeder_id)}"
 
 
 def midpoint(a: float | None, b: float | None) -> float | None:
@@ -71,7 +149,7 @@ def coordinate_fields(
     spatial_join_required: bool,
     exemption_reason: str = "",
 ) -> dict[str, Any]:
-    if finite_lon_lat(lon, lat):
+    if _finite_lon_lat(lon, lat):
         status = "valid"
         reason = ""
     elif is_flood_relevant or spatial_join_required:
@@ -116,7 +194,7 @@ def base_asset(
 ) -> dict[str, Any]:
     return {
         "sandbox_id": location_id,
-        "asset_id": stable_asset_id(source_table, source_name),
+        "asset_id": _stable_asset_id(source_table, source_name),
         "asset_type": asset_type,
         "source_asset_table": source_table,
         "source_asset_name": source_name,
@@ -303,7 +381,7 @@ def build_control_units(
         control_units.append(
             {
                 "sandbox_id": location_id,
-                "control_unit_id": stable_control_unit_id(feeder_id),
+                "control_unit_id": _stable_control_unit_id(feeder_id),
                 "control_unit_type": "feeder",
                 "control_unit_stage": "stage_a",
                 "source_feeder_id": feeder_id,
@@ -382,32 +460,32 @@ def control_units_schema() -> Any:
 def validate_assets(assets: list[dict[str, Any]], report: dict[str, Any]) -> None:
     ids = [row["asset_id"] for row in assets]
     if len(ids) != len(set(ids)):
-        validation_error(report, "asset_id values are not unique")
+        report["errors"].append("asset_id values are not unique")
     for row in assets:
         asset_id = row["asset_id"]
         if not asset_id.startswith(f"{location_id}:asset:"):
-            validation_error(report, f"{asset_id}: invalid asset namespace")
+            report["errors"].append(f"{asset_id}: invalid asset namespace")
         if row["is_flood_relevant"] and row["coordinate_status"] != "valid":
-            validation_error(report, f"{asset_id}: flood-relevant asset lacks valid coordinates")
+            report["errors"].append(f"{asset_id}: flood-relevant asset lacks valid coordinates")
         if row["spatial_join_required"] and row["coordinate_status"] != "valid":
-            validation_error(report, f"{asset_id}: spatial-join asset lacks valid coordinates")
-        if row["coordinate_status"] == "valid" and not finite_lon_lat(row["lon"], row["lat"]):
-            validation_error(report, f"{asset_id}: coordinate_status valid but lon/lat invalid")
+            report["errors"].append(f"{asset_id}: spatial-join asset lacks valid coordinates")
+        if row["coordinate_status"] == "valid" and not _finite_lon_lat(row["lon"], row["lat"]):
+            report["errors"].append(f"{asset_id}: coordinate_status valid but lon/lat invalid")
         if row["coordinate_status"] == "missing_exempt" and not row["coordinate_exemption_reason"]:
-            validation_error(report, f"{asset_id}: missing coordinate exemption reason")
+            report["errors"].append(f"{asset_id}: missing coordinate exemption reason")
         if row["asset_type"] == "overhead_line":
             if row["is_flood_relevant"] or row["spatial_join_required"]:
-                validation_error(report, f"{asset_id}: overhead_line must be topology-only")
+                report["errors"].append(f"{asset_id}: overhead_line must be topology-only")
         if row["asset_type"] == "underground_line_proxy" and row["coordinate_source"] not in {
             "line_midpoint",
             "from_bus",
             "to_bus",
             "splice_vault_inventory",
         }:
-            validation_error(report, f"{asset_id}: underground proxy coordinate source is invalid")
+            report["errors"].append(f"{asset_id}: underground proxy coordinate source is invalid")
     report["checks"]["asset_ids_unique"] = len(ids) == len(set(ids))
     report["checks"]["asset_count"] = len(assets)
-    report["checks"]["asset_counts_by_type"] = count_by(assets, "asset_type")
+    report["checks"]["asset_counts_by_type"] = _count_by(assets, "asset_type")
 
 
 def validate_control_units(
@@ -420,23 +498,23 @@ def validate_control_units(
     asset_ids = {row["asset_id"] for row in assets}
     unit_ids = [row["control_unit_id"] for row in control_units]
     if len(unit_ids) != len(set(unit_ids)):
-        validation_error(report, "control_unit_id values are not unique")
+        report["errors"].append("control_unit_id values are not unique")
     unit_feeders = {row["source_feeder_id"] for row in control_units}
     missing = sorted(feeder_ids - unit_feeders)
     extra = sorted(unit_feeders - feeder_ids)
     if missing:
-        validation_error(report, f"missing Feeder Control Units: {missing}")
+        report["errors"].append(f"missing Feeder Control Units: {missing}")
     if extra:
-        validation_error(report, f"unexpected Feeder Control Units: {extra}")
+        report["errors"].append(f"unexpected Feeder Control Units: {extra}")
     for unit in control_units:
         unit_id = unit["control_unit_id"]
         if not unit_id.startswith(f"{location_id}:control_unit:"):
-            validation_error(report, f"{unit_id}: invalid control unit namespace")
+            report["errors"].append(f"{unit_id}: invalid control unit namespace")
         if unit["control_unit_type"] != "feeder" or unit["control_unit_stage"] != "stage_a":
-            validation_error(report, f"{unit_id}: Stage A1 supports feeder control units only")
+            report["errors"].append(f"{unit_id}: Stage A1 supports feeder control units only")
         for asset_id in unit["member_asset_ids"]:
             if asset_id not in asset_ids:
-                validation_error(report, f"{unit_id}: unknown member asset {asset_id}")
+                report["errors"].append(f"{unit_id}: unknown member asset {asset_id}")
     report["checks"]["control_unit_ids_unique"] = len(unit_ids) == len(set(unit_ids))
     report["checks"]["control_unit_count"] = len(control_units)
     report["checks"]["feeder_count"] = len(feeder_ids)
@@ -449,17 +527,17 @@ def _build_static_grid_manifest(
     debug_outputs: dict[str, Path],
 ) -> dict[str, Any]:
     registry_inputs = {
-        path.name: {"path": str(path), "sha256": sha256(path)}
+        path.name: {"path": str(path), "sha256": _file_sha256(path)}
         for path in sorted(registry_dir.glob("*.csv"))
     }
     registry_summary = registry_dir / "summary.json"
     if registry_summary.exists():
         registry_inputs[registry_summary.name] = {
             "path": str(registry_summary),
-            "sha256": sha256(registry_summary),
+            "sha256": _file_sha256(registry_summary),
         }
     return {
-        "run_id": f"{location_id}:run:{protocol_version}:stage_a1:{short_hash(registry_inputs)}",
+        "run_id": f"{location_id}:run:{protocol_version}:stage_a1:{_short_hash(registry_inputs)}",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "sandbox_id": location_id,
         "stage": "stage_a1",
@@ -467,27 +545,29 @@ def _build_static_grid_manifest(
         "protocol_version": protocol_version,
         "python": sys.version,
         "platform": platform.platform(),
-        "git": git_info(),
+        "git": _git_info(),
         "inputs": registry_inputs,
         "outputs": {
-            name: {"path": str(path), "sha256": maybe_sha256(path)}
+            name: {"path": str(path), "sha256": _file_sha256(path) if path.exists() else None}
             for name, path in outputs.items()
         },
         "debug_outputs": {
-            name: {"path": str(path), "sha256": maybe_sha256(path)}
+            name: {"path": str(path), "sha256": _file_sha256(path) if path.exists() else None}
             for name, path in debug_outputs.items()
         }
     }
 
 
 def export_base(registry_dir: Path, output_dir: Path, *, debug_csv: bool) -> dict[str, Any]:
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
     assets = build_assets(registry_dir)
     control_units = build_control_units(registry_dir, assets)
 
     assets_path = output_dir / "assets.parquet"
     control_units_path = output_dir / "control_units.parquet"
-    write_parquet(assets_path, assets, assets_schema())
-    write_parquet(control_units_path, control_units, control_units_schema())
+    pq.write_table(pa.Table.from_pylist(assets, schema=assets_schema()), assets_path)
+    pq.write_table(pa.Table.from_pylist(control_units, schema=control_units_schema()), control_units_path)
 
     debug_outputs: dict[str, Path] = {}
     if debug_csv:
@@ -637,7 +717,7 @@ def flood_relevant_assets(assets: Iterable[dict[str, Any]]) -> list[dict[str, An
         for row in assets
         if row.get("is_flood_relevant")
         and row.get("coordinate_status") == "valid"
-        and finite_lon_lat(row.get("lon"), row.get("lat"))
+        and _finite_lon_lat(row.get("lon"), row.get("lat"))
     ]
     return sorted(rows, key=lambda row: row["asset_id"])
 
@@ -696,7 +776,7 @@ def build_csv_event_samples(path: Path) -> tuple[dict[str, list[dict[str, Any]]]
     metadata = {
         "event_source_kind": "sampled_asset_depth_csv",
         "path": str(path),
-        "sha256": sha256(path),
+        "sha256": _file_sha256(path),
         "required_columns": sorted(required),
         "description": "Asset-keyed flood depths sampled from an external FLOOD-RM/SFINCS workflow.",
     }
@@ -812,7 +892,7 @@ def build_sfincs_event_samples(
         "event_source_kind": "sfincs_map_peak_depth",
         "event_dir": str(event_dir),
         "sfincs_map_path": str(map_path),
-        "sfincs_map_sha256": sha256(map_path),
+        "sfincs_map_sha256": _file_sha256(map_path),
         "max_sample_distance_m": max_sample_distance_m,
         "asset_crs": "EPSG:4326",
         "sfincs_model_crs_assumption": "EPSG:26919",
@@ -997,14 +1077,14 @@ def validate_event_samples(
     unknown = sorted(sample_ids - expected_ids)
     missing = sorted(expected_ids - sample_ids)
     if unknown:
-        validation_error(report, f"event depth samples reference unknown assets: {unknown[:10]}")
+        report["errors"].append(f"event depth samples reference unknown assets: {unknown[:10]}")
     if missing:
-        validation_error(report, f"event depth samples missing flood-relevant assets: {missing[:10]}")
+        report["errors"].append(f"event depth samples missing flood-relevant assets: {missing[:10]}")
     for asset_id, samples in event_samples.items():
         for sample in samples:
             depth = sample["sampled_depth_m"]
             if not math.isfinite(depth) or depth < 0.0:
-                validation_error(report, f"{asset_id}: sampled_depth_m must be finite and non-negative")
+                report["errors"].append(f"{asset_id}: sampled_depth_m must be finite and non-negative")
     report["checks"]["event_sample_asset_count"] = len(sample_ids & expected_ids)
     report["checks"]["event_sample_timestamp_count"] = len(
         {sample["timestamp"].isoformat() for samples in event_samples.values() for sample in samples}
@@ -1020,15 +1100,15 @@ def validate_asset_states(
         asset_id = row["asset_id"]
         probability = row["failure_probability"]
         if asset_id not in known_asset_ids:
-            validation_error(report, f"{asset_id}: asset state references unknown asset")
+            report["errors"].append(f"{asset_id}: asset state references unknown asset")
         if not (0.0 <= probability <= 1.0):
-            validation_error(report, f"{asset_id}: failure_probability outside [0, 1]")
+            report["errors"].append(f"{asset_id}: failure_probability outside [0, 1]")
         if row["state"] not in {"available", "failed"}:
-            validation_error(report, f"{asset_id}: invalid state {row['state']!r}")
+            report["errors"].append(f"{asset_id}: invalid state {row['state']!r}")
         if row["rng_seed"] is None:
-            validation_error(report, f"{asset_id}: missing rng_seed")
+            report["errors"].append(f"{asset_id}: missing rng_seed")
     report["checks"]["asset_state_count"] = len(asset_states)
-    report["checks"]["asset_state_counts_by_state"] = count_by(asset_states, "state")
+    report["checks"]["asset_state_counts_by_state"] = _count_by(asset_states, "state")
     report["checks"]["binary_state_signature"] = binary_state_signature(asset_states)
 
 
@@ -1041,18 +1121,18 @@ def validate_telemetry_observations(
     for row in telemetry:
         target_id = row["target_id"]
         if row["target_type"] == "asset" and target_id not in known_asset_ids:
-            validation_error(report, f"{target_id}: telemetry references unknown asset")
+            report["errors"].append(f"{target_id}: telemetry references unknown asset")
         elif row["target_type"] == "control_unit" and target_id not in known_control_unit_ids:
-            validation_error(report, f"{target_id}: telemetry references unknown Control Unit")
+            report["errors"].append(f"{target_id}: telemetry references unknown Control Unit")
         elif row["target_type"] not in {"asset", "control_unit"}:
-            validation_error(report, f"{target_id}: invalid telemetry target_type")
+            report["errors"].append(f"{target_id}: invalid telemetry target_type")
         if row["unit"] == "":
-            validation_error(report, f"{target_id}: telemetry unit is missing")
+            report["errors"].append(f"{target_id}: telemetry unit is missing")
         if row["rng_seed"] is None:
-            validation_error(report, f"{target_id}: telemetry rng_seed is missing")
+            report["errors"].append(f"{target_id}: telemetry rng_seed is missing")
     report["checks"]["telemetry_observation_count"] = len(telemetry)
-    report["checks"]["telemetry_counts_by_target_type"] = count_by(telemetry, "target_type")
-    report["checks"]["telemetry_counts_by_quantity"] = count_by(telemetry, "measured_quantity")
+    report["checks"]["telemetry_counts_by_target_type"] = _count_by(telemetry, "target_type")
+    report["checks"]["telemetry_counts_by_quantity"] = _count_by(telemetry, "measured_quantity")
 
 
 def load_a1_validation(output_dir: Path) -> dict[str, Any]:
@@ -1090,10 +1170,10 @@ def _build_event_conditioned_grid_manifest(
         "validation_report.json": output_dir / "validation_report.json",
     }
     input_hashes = {
-        name: {"path": str(path), "sha256": maybe_sha256(path)}
+        name: {"path": str(path), "sha256": _file_sha256(path) if path.exists() else None}
         for name, path in stage_a1_inputs.items()
     }
-    run_hash = short_hash(
+    run_hash = _short_hash(
         {
             "inputs": input_hashes,
             "event": event_metadata,
@@ -1122,16 +1202,16 @@ def _build_event_conditioned_grid_manifest(
         ),
         "python": sys.version,
         "platform": platform.platform(),
-        "git": git_info(),
+        "git": _git_info(),
         "dependencies": dependency_versions(),
         "inputs": input_hashes,
         "event_source": event_metadata,
         "outputs": {
-            name: {"path": str(path), "sha256": maybe_sha256(path)}
+            name: {"path": str(path), "sha256": _file_sha256(path) if path.exists() else None}
             for name, path in outputs.items()
         },
         "debug_outputs": {
-            name: {"path": str(path), "sha256": maybe_sha256(path)}
+            name: {"path": str(path), "sha256": _file_sha256(path) if path.exists() else None}
             for name, path in debug_outputs.items()
         }
     }
@@ -1189,8 +1269,12 @@ def export_stage_a2(
 
     asset_states_path = output_dir / "asset_states.parquet"
     telemetry_path = output_dir / "telemetry_observations.parquet"
-    write_parquet(asset_states_path, asset_states, asset_states_schema())
-    write_parquet(telemetry_path, telemetry, telemetry_observations_schema())
+    output_dir.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.Table.from_pylist(asset_states, schema=asset_states_schema()), asset_states_path)
+    pq.write_table(
+        pa.Table.from_pylist(telemetry, schema=telemetry_observations_schema()),
+        telemetry_path,
+    )
 
     debug_outputs: dict[str, Path] = {}
     if debug_csv:
@@ -1222,7 +1306,7 @@ def export_stage_a2(
     }
     a1_report = load_a1_validation(output_dir)
     if not a1_report.get("passed"):
-        validation_error(report, "Gate A1 has not passed for the referenced inputs")
+        report["errors"].append("Gate A1 has not passed for the referenced inputs")
     report["checks"]["gate_a1_passed"] = bool(a1_report.get("passed"))
     report["checks"]["flood_relevant_asset_count"] = len(flood_assets)
     report["checks"]["mc_draw_count"] = mc_draws

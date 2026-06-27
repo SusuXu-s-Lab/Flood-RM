@@ -1,9 +1,9 @@
 from __future__ import annotations
 import numpy as np
 import pandas as pd
+import geopandas as gpd
 import matplotlib.pyplot as plt
 from scipy import stats
-from pyproj import Transformer
 
 from .fit_history.extreme_value import (
     fit_distribution,
@@ -13,29 +13,45 @@ from .fit_history.extreme_value import (
 )
 from .build_events.selection import assign_severity_bands
 
+
+def _finish(fig):
+    fig.tight_layout()
+    return fig
+
+
+def _axis(ax, figsize):
+    if ax is None:
+        return plt.subplots(figsize=figsize)
+    return None, ax
+
+
+def _finish_created(fig):
+    if fig is not None:
+        fig.tight_layout()
+    return fig
+
+
 # Stage 1.1: SFINCS offshore boundary + chosen CORA snap node centroid.
 def plot_boundary_and_node(paths, config):
-    boundary_pts = []
-    for line in paths["sfincs_boundary_file"].read_text().splitlines():
-        parts = line.split()
-        if len(parts) >= 2:
-            boundary_pts.append([float(parts[0]), float(parts[1])])
-    boundary_pts = np.asarray(boundary_pts, dtype=float)
     crs = config["collection"]["cora"].get("boundary_points_crs", "EPSG:26919")
-    tr = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
-    lon, lat = tr.transform(boundary_pts[:, 0], boundary_pts[:, 1])
-    cx, cy = tr.transform(boundary_pts[:, 0].mean(), boundary_pts[:, 1].mean())
+    boundary = pd.read_csv(paths["sfincs_boundary_file"], sep=r"\s+", header=None, usecols=[0, 1])
+    boundary = gpd.GeoDataFrame(
+        boundary,
+        geometry=gpd.points_from_xy(boundary[0], boundary[1]),
+        crs=crs,
+    )
+    centroid = gpd.GeoSeries([boundary.geometry.union_all().centroid], crs=crs).to_crs(4326).iloc[0]
+    boundary = boundary.to_crs(4326)
     fig, ax = plt.subplots(figsize=(7, 5))
-    ax.plot(lon, lat, "-o", color="steelblue", lw=2, ms=4, label="SFINCS boundary nodes")
-    ax.scatter(cx, cy, color="crimson", s=120, marker="*", zorder=3,
-               label=f"boundary centroid ({cx:.4f}, {cy:.4f})")
+    ax.plot(boundary.geometry.x, boundary.geometry.y, "-o", color="steelblue", lw=2, ms=4, label="SFINCS boundary nodes")
+    ax.scatter(centroid.x, centroid.y, color="crimson", s=120, marker="*", zorder=3,
+               label=f"boundary centroid ({centroid.x:.4f}, {centroid.y:.4f})")
     ax.set_xlabel("longitude")
     ax.set_ylabel("latitude")
     ax.set_title("Stage 1.1 — SFINCS boundary and CORA snap target")
     ax.legend(loc="best", fontsize=9)
     ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 # Stage 2.1: raw hourly water level: sample window + full distribution.
 def plot_raw_waterlevel(waterlevel, window_slice=("2018-01-01", "2018-03-31")):
@@ -49,8 +65,7 @@ def plot_raw_waterlevel(waterlevel, window_slice=("2018-01-01", "2018-03-31")):
     axes[1].set_title(f"Full record (n={len(waterlevel):,})")
     axes[1].set_xlabel("water level [m+MSL]")
     axes[1].grid(True, alpha=0.3)
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 # Stage 2.2: linear MSL trend used to detrend hourly water level to a reference epoch.
 def plot_detrending(waterlevel, detrend_meta):
@@ -80,8 +95,7 @@ def plot_detrending(waterlevel, detrend_meta):
     ax.set_title("Detrending: secular MSL trend at the CORA boundary node")
     ax.legend(loc="lower right", fontsize=9)
     ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 # Stage 2.3: POT thresholding on a sample window + magnitude histogram.
 def plot_pot_extraction(waterlevel, peaks, threshold_m,
@@ -103,8 +117,7 @@ def plot_pot_extraction(waterlevel, peaks, threshold_m,
     axes[1].set_title(f"Historical peak magnitudes (n={peaks.dropna().size})")
     axes[1].set_xlabel("peak [m+MSL_ref]")
     axes[1].grid(True, alpha=0.3)
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 # Stage 2.4: candidate distributions (Exp vs GPD) with AIC scores. Use the
 # same fitting and scoring path as production so the figure cannot disagree
@@ -154,8 +167,7 @@ def plot_aic_model_selection(peaks, marginal):
     axes[1].set_title("Tail diagnostic — Exp = straight line on log-survival axis")
     axes[1].legend(loc="upper right", fontsize=9)
     axes[1].grid(True, alpha=0.3, which="both")
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 # Stage 2.5: the 3-step conversion chain that turns a fitted distribution
 # into a return-period curve. Each panel is one substitution:
@@ -235,8 +247,7 @@ def plot_return_curve_with_ci(peaks, marginal, bootstrap, rps=None,
         f"(per-peak P  →  × {rate:.1f}/yr  →  invert)",
         y=1.02, fontsize=11,
     )
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 # Stage 2.6: peak series + Theil-Sen line + Mann-Kendall p-value annotation.
 def plot_stationarity(peaks, report):
@@ -258,8 +269,7 @@ def plot_stationarity(peaks, report):
     ax.set_ylabel("peak [m+MSL_ref]")
     ax.legend(loc="best", fontsize=9)
     ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 # Stage 3.1: hybrid splice between empirical body and parametric tail.
 def plot_hybrid_splice(historical_peaks, sampled_peaks, splice_q):
@@ -284,8 +294,7 @@ def plot_hybrid_splice(historical_peaks, sampled_peaks, splice_q):
     axes[1].set_ylabel("coastal driver return period [yr]")
     axes[1].set_title("Synthetic coastal-driver RP coverage (log)")
     axes[1].grid(True, alpha=0.3, which="both")
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 def _annual_chance_label(return_period_years):
     aep = 100.0 / float(return_period_years)
@@ -745,8 +754,7 @@ def plot_return_period_benchmark_coverage(catalog, stress_catalog=None, *, bench
         rendered.set_fontsize(8)
         rendered.scale(1, 1.45)
     axes[1].set_title("Nearest catalog rows used for benchmark slices")
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 # Stage 4.1: normalized historical templates + shape-diversity scatter.
 def plot_template_bank(template_frame, n_show=8):
@@ -767,8 +775,7 @@ def plot_template_bank(template_frame, n_show=8):
     axes[1].set_ylabel("duration > 50% peak [hr]")
     axes[1].set_title(f"Template diversity (n={len(template_frame)})")
     axes[1].grid(True, alpha=0.3)
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 # Stage 4.2: tail-morph time-stretch as a function of target peak magnitude.
 def plot_tail_morph(historical_peaks, settings):
@@ -796,8 +803,7 @@ def plot_tail_morph(historical_peaks, settings):
     ax.set_title("Stage 4.2 — Tail-morph factor for out-of-sample peaks")
     ax.legend(loc="lower right", fontsize=9)
     ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 # Stage 4.3: Gaussian kernel weights for one target peak + reuse distribution.
 def plot_template_matching(template_frame, summary, target_peak, settings):
@@ -836,8 +842,7 @@ def plot_template_matching(template_frame, summary, target_peak, settings):
         f"={settings.get('reuse_penalty_lambda', 1.0):.2f})"
     )
     axes[1].grid(True, alpha=0.3)
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 def _circular_day_gap(a, b):
     diff = np.abs(np.asarray(a, dtype=float) - np.asarray(b, dtype=float))
@@ -1011,8 +1016,7 @@ def plot_antecedent_pairing(catalog, forcing, *, ax=None):
     ax.set_ylabel("event count")
     ax.set_title(f"Stage 5.2 — Antecedent pairing: {forcing} (n={len(lag_hours):,})")
     ax.grid(True, alpha=0.3, axis="y")
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 def plot_configured_pairing(catalog, forcing, *, policy=None, ax=None):
     policy = policy or {}
@@ -1071,8 +1075,7 @@ def plot_rainfall_member_distribution(members):
     axes[1].set_xticks(range(1, 13))
     axes[1].set_title("AORC SST member seasonality")
     axes[1].grid(True, alpha=0.3, axis="y")
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 def _shade_circular_window(ax, window):
     window = float(window)
@@ -1121,8 +1124,7 @@ def plot_seasonal_pairing(catalog, forcing, *, window_days=None, ax=None):
     ax.set_ylim(0, 367)
     ax.legend(loc="lower right", fontsize=9)
     ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 # Stage 6.1: tail-enrichment audit. Sampling-region split (body vs tail) and
 # the per-row sampling_weight that records simulation-budget enrichment.
@@ -1146,8 +1148,7 @@ def plot_sampling_weights(catalog):
     axes[1].set_title("Per-row sampling-budget weights")
     axes[1].legend(loc="best", fontsize=9)
     axes[1].grid(True, alpha=0.3)
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 def _catalog_with_severity(catalog, *, severity_bands=None):
     frame = catalog.copy()
@@ -1226,8 +1227,7 @@ def plot_severity_bands(catalog, *, band_order=None):
     for ax in axes:
         ax.tick_params(axis="x", rotation=20)
     fig.suptitle("Severity-band coverage", y=1.03)
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 def plot_catalog_set_severity_comparison(probability_catalog, stress_catalog, *, band_order=None):
     band_order = band_order or ["mild", "common", "significant", "rare", "extreme", "beyond_design"]
@@ -1254,8 +1254,7 @@ def plot_catalog_set_severity_comparison(probability_catalog, stress_catalog, *,
     ax.set_title(f"Stage 6.3 — {catalog_label} vs Resilience Stress/Training Set")
     ax.legend(loc="best", fontsize=9)
     ax.grid(True, alpha=0.3, axis="y")
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 def plot_original_vs_design_severity(original_catalog, design_catalog, *, band_order=None, severity_bands=None):
     band_order = band_order or ["mild", "common", "significant", "rare", "extreme", "beyond_design"]
@@ -1302,8 +1301,7 @@ def plot_original_vs_design_severity(original_catalog, design_catalog, *, band_o
 
     for ax in axes:
         ax.set_xticks(x, bands, rotation=20, ha="right")
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 # Stage 5.5: pairing-policy sensitivity. Overlay seasonal-window vs independent permutation
 # for one forcing. Independent permutation is the baseline sensitivity case, not production.
@@ -1322,8 +1320,7 @@ def plot_independent_vs_seasonal(catalog_seasonal, catalog_independent, forcing,
             f"median gap={stats['median_gap_days']:.0f} d"
         )
     fig.suptitle("Stage 5.5 — Pairing-policy sensitivity (in-memory comparison)", y=1.02)
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 def _forcing_value_column(members, forcing, value_column=None):
     if value_column is not None:
@@ -1473,8 +1470,7 @@ def plot_forcing_marginal_comparison(catalog, members, forcing, *, value_column=
     ax.set_title(f"Stage 5.4 — {forcing} marginal comparison")
     ax.legend(loc="best", fontsize=9)
     ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 def _streamflow_member_frame(members):
     frame = members.copy()
@@ -1571,8 +1567,7 @@ def plot_streamflow_pot_extraction(records, members, *, threshold_quantile=0.98,
     axes[1].set_title(f"Historical streamflow peak magnitudes (n={len(values)})")
     axes[1].set_xlabel("peak discharge [cfs]")
     axes[1].grid(True, alpha=0.3)
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 def plot_streamflow_pot_members(members):
     frame = _streamflow_member_frame(members)
@@ -1584,8 +1579,7 @@ def plot_streamflow_pot_members(members):
     ax.grid(True, alpha=0.3)
     if frame["site_no"].nunique() <= 10:
         ax.legend(loc="best", fontsize=8)
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 def plot_streamflow_return_period_distribution(members):
     frame = _streamflow_member_frame(members).dropna(subset=["sample_rp_years"])
@@ -1604,8 +1598,7 @@ def plot_streamflow_return_period_distribution(members):
     ax.set_ylabel("peak discharge [cfs]")
     ax.set_title("Return-period ranked streamflow members")
     ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 def plot_coastal_forcing_joint(catalog, members, forcing, *, value_column=None):
     axis = _return_period_axis_context(catalog)
@@ -1622,8 +1615,7 @@ def plot_coastal_forcing_joint(catalog, members, forcing, *, value_column=None):
     ax.set_ylabel(value_label.replace("_", " "))
     ax.set_title(f"Stage 5.5 — {axis['joint_label']} vs {forcing} forcing")
     ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 # Stage 4.4: synthetic-vs-historical descriptor distributions for QC acceptance.
 def plot_acceptance_descriptors(template_frame, summary):
@@ -1641,8 +1633,7 @@ def plot_acceptance_descriptors(template_frame, summary):
         ax.grid(True, alpha=0.3)
     axes[0].legend(loc="best", fontsize=9)
     fig.suptitle("Stage 4.4 — Acceptance: synthetic descriptors vs historical templates", y=1.02)
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 def plot_distinct_oscillatory_proxies(
     member_dataset,
@@ -1719,7 +1710,6 @@ def plot_distinct_oscillatory_proxies(
     axes = np.atleast_1d(axes)
     axes[-1].set_xlabel("relative hour")
     fig.suptitle("Stage 4.5 — Distinct oscillatory water-level proxies", y=1.01, fontsize=11)
-    fig.tight_layout()
     selected_columns = [
         "template_id",
         "sample_rp_years",
@@ -1732,7 +1722,7 @@ def plot_distinct_oscillatory_proxies(
     selected = picked_rows[selected_columns].join(
         score_df[["sign_changes", "roughness", "oscillation_score"]]
     )
-    return fig, selected
+    return _finish(fig), selected
 
 def plot_msl_shift_scenario_comparison(
     scenario_datasets,
@@ -1818,8 +1808,7 @@ def plot_msl_shift_scenario_comparison(
     params = marginal_params if isinstance(marginal_params, pd.DataFrame) else pd.DataFrame(marginal_params)
     ref_epoch = float(params["detrend_reference_epoch_year"].dropna().iloc[0])
     fig.suptitle(f"Stage 7 — MSL-shift scenarios | reference epoch {ref_epoch:.1f}", y=1.02, fontsize=11)
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 # --- Copula-Joint compound-dependence figures ------------------------------------------
 # These visualize the production copula_joint method: the paired co-occurrence sample,
@@ -1830,9 +1819,7 @@ def plot_driver_cooccurrence(paired, x, y, *, ax=None):
     """Scatter the two-sided POT co-occurrence sample, colored by conditioning driver."""
     from scipy.stats import kendalltau
 
-    fig = None
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(6.5, 5.5))
+    fig, ax = _axis(ax, (6.5, 5.5))
     for cond, color in zip(sorted(paired["conditioned_on"].unique()), ["#4c78a8", "#f58518", "#54a24b"]):
         sub = paired[paired["conditioned_on"] == cond]
         ax.scatter(sub[x], sub[y], s=16, alpha=0.55, color=color, label=f"conditioned on {cond} (n={len(sub)})")
@@ -1842,9 +1829,7 @@ def plot_driver_cooccurrence(paired, x, y, *, ax=None):
     ax.set_title(f"Two-sided POT co-occurrence — Kendall τ={tau:.2f} (p={p:.1e})")
     ax.legend(loc="best", fontsize=9)
     ax.grid(True, alpha=0.3)
-    if fig is not None:
-        fig.tight_layout()
-    return fig
+    return _finish_created(fig)
 
 def plot_copula_fit_diagnostics(model, paired, *, n=5000, seed=11):
     """Observed vs simulated dependence on the uniform (pseudo-observation) scale."""
@@ -1871,8 +1856,7 @@ def plot_copula_fit_diagnostics(model, paired, *, n=5000, seed=11):
     ax.set_title(f"Vine copula fit (semiparametric, simulated n={len(simulated):,})\nfamilies: {families}")
     ax.legend(loc="best", fontsize=9)
     ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 def plot_and_joint_isolines(
     model,
@@ -1915,9 +1899,7 @@ def plot_and_joint_isolines(
     rp_filled = np.clip(np.where(np.isfinite(rp_grid), rp_grid, fill), 1e-3, rp_cap)
     rp_smooth = 10.0 ** gaussian_filter(np.log10(rp_filled), sigma=1.2)
 
-    fig = None
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(7.0, 5.6))
+    fig, ax = _axis(ax, (7.0, 5.6))
     finite = np.isfinite(rp_points)
     sc = ax.scatter(x[finite], y[finite], c=np.log10(np.clip(rp_points[finite], 1e-3, None)), s=10, alpha=0.5, cmap="viridis")
     contour = ax.contour(xx, yy, rp_smooth, levels=sorted(return_periods), colors="crimson", linewidths=1.6)
@@ -1953,9 +1935,7 @@ def plot_and_joint_isolines(
     if paired is not None or catalog is not None:
         ax.legend(loc="best", fontsize=8)
     ax.grid(True, alpha=0.3)
-    if fig is not None:
-        fig.tight_layout()
-    return fig
+    return _finish_created(fig)
 
 def plot_tide_ntr_decomposition(components, window_slice=("2018-01-01", "2018-03-31")):
     """CORA total water level split into MSL + tide + non-tidal residual (Fix 2)."""
@@ -1974,14 +1954,11 @@ def plot_tide_ntr_decomposition(components, window_slice=("2018-01-01", "2018-03
     axes[1].legend(fontsize=9)
     axes[1].grid(True, alpha=0.3)
     axes[1].set_title("Non-tidal residual = storm surge — the coastal copula axis and scaled quantity")
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 def plot_storm_type_cooccurrence(paired, x, y, *, ax=None):
     """Scatter the co-occurrence sample colored by storm-type population (Fix 3)."""
-    fig = None
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(6.5, 5.5))
+    fig, ax = _axis(ax, (6.5, 5.5))
     palette = {"nor_easter": "#4c78a8", "other_non_tropical": "#54a24b", "tc": "#e45756", "unresolved": "#bab0ac"}
     for storm_type in [s for s in palette if s in set(paired["storm_type"])]:
         sub = paired[paired["storm_type"] == storm_type]
@@ -1991,9 +1968,7 @@ def plot_storm_type_cooccurrence(paired, x, y, *, ax=None):
     ax.set_title("Compound drivers by storm-type population")
     ax.legend(loc="best", fontsize=9)
     ax.grid(True, alpha=0.3)
-    if fig is not None:
-        fig.tight_layout()
-    return fig
+    return _finish_created(fig)
 
 def plot_population_copula_fits(model, paired, *, n=4000, seed=11):
     """Per-population observed vs fitted dependence on the uniform scale (small multiples)."""
@@ -2015,8 +1990,7 @@ def plot_population_copula_fits(model, paired, *, n=4000, seed=11):
         ax.set_ylabel(f"u[{names[1]}]")
         ax.grid(True, alpha=0.3)
     fig.suptitle("Per-storm-type vine fits: observed pseudo-obs (red) vs fitted sample (grey)")
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 def plot_combined_and_isolines(model, *, return_periods=(10, 50, 100, 500), grid=60, n_sample=4000, seed=11, paired=None, catalog=None, ax=None):
     """Combined AND isolines across storm-type populations."""
@@ -2044,9 +2018,7 @@ def plot_combined_and_isolines(model, *, return_periods=(10, 50, 100, 500), grid
     finite = rp_grid[np.isfinite(rp_grid)]
     fill = float(finite.max()) if finite.size else rp_cap
     rp_smooth = 10.0 ** gaussian_filter(np.log10(np.clip(np.where(np.isfinite(rp_grid), rp_grid, fill), 1e-3, rp_cap)), sigma=1.2)
-    fig = None
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(7.0, 5.6))
+    fig, ax = _axis(ax, (7.0, 5.6))
     palette = {"nor_easter": "#4c78a8", "other_non_tropical": "#54a24b", "tc": "#e45756", "unresolved": "#bab0ac"}
     pool_type = np.concatenate(type_parts)
     for storm_type in [s for s in palette if s in set(pool_type)]:
@@ -2061,9 +2033,7 @@ def plot_combined_and_isolines(model, *, return_periods=(10, 50, 100, 500), grid
     ax.set_title("Combined AND isolines across storm-type populations")
     ax.legend(loc="best", fontsize=8)
     ax.grid(True, alpha=0.3)
-    if fig is not None:
-        fig.tight_layout()
-    return fig
+    return _finish_created(fig)
 
 def plot_joint_tail_budget(catalog, stress_settings, *, severity_bands=None, band_order=None):
     """Compare the fitted candidate pool against the selected design/stress set."""
@@ -2119,16 +2089,13 @@ def plot_joint_tail_budget(catalog, stress_settings, *, severity_bands=None, ban
     axes[2].set_title("Fitted probability mass by band")
     for ax in axes:
         ax.grid(True, alpha=0.3, axis="y")
-    fig.tight_layout()
-    return fig
+    return _finish(fig)
 
 def plot_realization_scaling(catalog, driver, *, ax=None):
     """Field-Preserving Realization diagnostics: scale-factor spread + analog diversity."""
     scale_col, member_col = f"{driver}_scale_factor", f"{driver}_template_member_id"
     scales = pd.to_numeric(catalog[scale_col], errors="coerce").dropna()
-    fig = None
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(6.5, 4.5))
+    fig, ax = _axis(ax, (6.5, 4.5))
     ax.hist(scales, bins=40, color="#4c78a8", alpha=0.8)
     ax.axvline(1.0, color="crimson", ls="--", lw=1.5, label="K=1 (no scaling)")
     distinct = int(catalog[member_col].nunique()) if member_col in catalog else 0
@@ -2137,12 +2104,96 @@ def plot_realization_scaling(catalog, driver, *, ax=None):
     ax.set_title(f"{driver}: field-preserving realization\n{distinct} distinct observed analogs used (n={len(scales)})")
     ax.legend(loc="best", fontsize=9)
     ax.grid(True, alpha=0.3)
-    if fig is not None:
-        fig.tight_layout()
-    return fig
+    return _finish_created(fig)
+
+def plot_storm_loading_pattern(catalog, *, ax=None):
+    """Inland Storm Timing Descriptor: where storms peak within their accumulation window.
+
+    Histogram of normalized peak position (0=onset, 1=window end) with front/center/back
+    tercile bands — a diversity axis for the Resilience Stress/Training Set (ADR-0019).
+    """
+    position = pd.to_numeric(catalog.get("storm_loading_position"), errors="coerce").dropna()
+    fig, ax = _axis(ax, (6.5, 4.5))
+    ax.hist(position, bins=np.linspace(0, 1, 25), color="#4c78a8", alpha=0.85)
+    for edge in (1 / 3, 2 / 3):
+        ax.axvline(edge, color="0.4", ls="--", lw=1.0)
+    ymax = ax.get_ylim()[1]
+    for x, label in ((1 / 6, "front"), (0.5, "center"), (5 / 6, "back")):
+        ax.text(x, ymax * 0.92, label, ha="center", fontsize=9, color="0.3")
+    if "storm_loading_pattern" in catalog:
+        counts = catalog["storm_loading_pattern"].value_counts().to_dict()
+        subtitle = "  ".join(f"{k}={v}" for k, v in counts.items() if k != "unresolved")
+    else:
+        subtitle = ""
+    ax.set_xlabel("normalized rainfall-peak position in storm window")
+    ax.set_ylabel("events")
+    ax.set_title(f"Storm loading pattern (n={len(position)})\n{subtitle}", fontsize=10)
+    ax.grid(True, alpha=0.3, axis="y")
+    return _finish_created(fig)
+
+
+def plot_observed_basin_lag(basin_lag_frame):
+    """Observed catchment basin lag at the Primary Reference Gage.
+
+    Left: distribution of observed-discharge-peak minus rainfall-peak lag (the observed
+    reference for the Wflow Readiness peak-timing check). Right: lag vs antecedent soil
+    moisture colored by season (the observed side of the Soil-Moisture Modulation
+    Diagnostic).
+    """
+    frame = basin_lag_frame.copy()
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+    lag = pd.to_numeric(frame.get("basin_lag_hours"), errors="coerce").dropna()
+    axes[0].hist(lag, bins=30, color="#54a24b", alpha=0.85)
+    if len(lag):
+        axes[0].axvline(float(lag.median()), color="crimson", ls="--", lw=1.5,
+                        label=f"median {lag.median():.0f} h")
+        axes[0].legend(loc="best", fontsize=9)
+    axes[0].set_xlabel("observed basin lag (h): discharge peak − rainfall peak")
+    axes[0].set_ylabel("storms")
+    axes[0].set_title(f"Observed basin lag @ reference gage (n={len(lag)})", fontsize=10)
+    axes[0].grid(True, alpha=0.3, axis="y")
+
+    soil = pd.to_numeric(frame.get("antecedent_soil_moisture"), errors="coerce")
+    if soil.notna().any():
+        for season, sub in frame.assign(_soil=soil).dropna(subset=["_soil", "basin_lag_hours"]).groupby("season"):
+            axes[1].scatter(sub["_soil"], sub["basin_lag_hours"], s=22, alpha=0.6, label=str(season))
+        axes[1].set_xlabel("antecedent soil moisture at onset")
+        axes[1].legend(loc="best", fontsize=8, title="season")
+    else:
+        axes[1].text(0.5, 0.5, "no antecedent soil moisture joined", ha="center", va="center",
+                     transform=axes[1].transAxes, color="0.5")
+        axes[1].set_xlabel("antecedent soil moisture at onset")
+    axes[1].set_ylabel("observed basin lag (h)")
+    axes[1].set_title("Lag vs antecedent moisture (response-side modulation)", fontsize=10)
+    axes[1].grid(True, alpha=0.3)
+    return _finish(fig)
+
+
+def plot_timing_seasonality(seasonality_frame):
+    """Rainfall-peak month and hour distributions (convective vs frontal/tropical split)."""
+    frame = seasonality_frame.copy()
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+    months = pd.to_numeric(frame.get("month"), errors="coerce").dropna().astype(int)
+    axes[0].hist(months, bins=np.arange(0.5, 13.5, 1), color="#e45756", alpha=0.85)
+    axes[0].set_xticks(range(1, 13))
+    axes[0].set_xlabel("rainfall-peak month")
+    axes[0].set_ylabel("storms")
+    axes[0].set_title("Peak seasonality", fontsize=10)
+    axes[0].grid(True, alpha=0.3, axis="y")
+    hours = pd.to_numeric(frame.get("hour"), errors="coerce").dropna().astype(int)
+    axes[1].hist(hours, bins=np.arange(-0.5, 24.5, 1), color="#f58518", alpha=0.85)
+    axes[1].set_xlabel("rainfall-peak hour (UTC)")
+    axes[1].set_ylabel("storms")
+    axes[1].set_title("Peak diurnal timing", fontsize=10)
+    axes[1].grid(True, alpha=0.3, axis="y")
+    return _finish(fig)
+
 
 # Short notebook-facing plot names.
 plot_rainfall = plot_rainfall_member_distribution
 plot_return_periods = plot_streamflow_return_period_distribution
 plot_tail_budget = plot_joint_tail_budget
 plot_scaling = plot_realization_scaling
+plot_loading = plot_storm_loading_pattern
+plot_basin_lag = plot_observed_basin_lag
+plot_seasonality = plot_timing_seasonality

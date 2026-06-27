@@ -1,5 +1,11 @@
 # Austin Wflow collection overrides.
 collection:
+  usgs_streamgages:
+    reviewed_network: data/sources/usgs_streamgages/streamgage_network.geojson
+    streamflow_records: data/sources/usgs_streamgages/streamflow_records.csv
+    discovery:
+      search_geometry: data/static/aoi/wflow_nhdplus_watersheds.geojson
+
   lcra_hydromet:
     output: data/sources/lcra_hydromet/flow_sites.geojson
     current_output: data/sources/lcra_hydromet/flow_sites_current.csv
@@ -11,7 +17,10 @@ collection:
     status: supplemental_current_flow_discovery
 
   national_hydrography:
+    collect_review_vectors: true
     basemap_source_resolution_degrees: 0.000925925925925926
+    river_geometry: data/sources/national_hydrography/nhdplus_hr_river_geometry.gpkg
+    catchments: data/sources/national_hydrography/nhdplus_hr_catchments.gpkg
     reservoirs:
       enabled: true
       output: data/sources/national_hydrography/nhdplus_hr_wflow_reservoirs.gpkg
@@ -46,25 +55,98 @@ collection:
 
 # Wflow domain selection.
 wflow:
+  build_config: data/wflow/config/wflow_build.yml
+  update_forcing_config: data/wflow/config/wflow_update_forcing.yml
+  run:
+    command: wflow_cli {run_config}
+  streamgage_network:
+    reviewed_network: data/sources/usgs_streamgages/streamgage_network.geojson
+  dynamic_handoff:
+    state_policy: shared_baseline
+    baseline_id: baseline_90d
+    baseline_reference_time: "2020-11-14T00:00:00"
+    baseline_root: data/wflow/warmup/baseline_90d
+    warmup_days: 90
   domain_set:
     outlet_source: encompassing_huc
+    allow_multiple_submodels: true
     review_required: true
+    huc: {}
+    crossings:
+      min_uparea_km2: 10
 
 # Native HydroMT-Wflow recipe deltas.
 hydromt:
   build:
-    inherits: default_wflow_sbm
     steps:
+      - setup_config:
+          data:
+            time.starttime: "2000-01-01T00:00:00"
+            time.endtime: "2000-01-02T00:00:00"
+            time.timestepsecs: 3600
+            input.path_static: staticmaps.nc
+            input.path_forcing: inmaps.nc
+            output.csv.path: output.csv
+            output.csv.header:
+              - river_q
+              - precip
+            output.csv.params:
+              - river_water__volume_flow_rate
+              - atmosphere_water__precipitation_volume_flux
       - setup_basemaps:
+          hydrography_fn: us_hydrography_basemap
+          basin_index_fn: null
           region:
             bbox: [-98.19382, 30.01264, -97.36073, 30.64317]
           res: 0.0009
+          upscale_method: ihu
+      - setup_rivers:
+          hydrography_fn: us_hydrography_basemap
+          river_geom_fn: nhdplus_hr_river_geometry
+          river_upa: 10
+          rivdph_method: powlaw
+          min_rivwth: 30
+          slope_len: 2000
+          smooth_len: 5000
       - setup_reservoirs_no_control:
           reservoirs_fn: nhdplus_hr_wflow_reservoirs
           min_area: 1.0
           duplicate_id: skip
+      - setup_lulcmaps:
+          lulc_fn: esa_worldcover
+      - setup_soilmaps:
+          soil_fn: ssurgo_wflow_soil_parameters
+          ptf_ksatver: brakensiek
+      - setup_constant_pars:
+          subsurface_water__horizontal_to_vertical_saturated_hydraulic_conductivity_ratio: 100
+          soil_water_saturated_zone_bottom__max_leakage_volume_flux: 0
       - setup_gauges:
+          index_col: site_no
+          snap_to_river: true
+          snap_uparea: true
+          max_dist: 10000
+          toml_output: csv
+          gauge_toml_header:
+            - river_q
+            - precip
+          gauge_toml_param:
+            - river_water__volume_flow_rate
+            - atmosphere_water__precipitation_volume_flux
           gauges_fn: austin_streamgage_network
 
   update_forcing:
-    inherits: default_wflow_sbm
+    steps:
+      - setup_config:
+          data:
+            time.starttime: "2000-01-01T00:00:00"
+            time.endtime: "2000-01-04T00:00:00"
+            time.timestepsecs: 3600
+            input.path_forcing: inmaps-event.nc
+            dir_output: run_event
+      - setup_precip_forcing:
+          precip_fn: event_precip
+      - setup_temp_pet_forcing:
+          temp_pet_fn: event_temp_pet
+          press_correction: false
+          temp_correction: true
+          pet_method: makkink

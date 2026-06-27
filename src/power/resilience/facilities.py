@@ -4,8 +4,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+import re
 from pathlib import Path
 from collections.abc import Iterable, Mapping
 from typing import Any
@@ -13,8 +15,6 @@ from typing import Any
 import geopandas as gpd
 import pandas as pd
 from shapely.geometry import Point
-
-from power.artifacts import stable_token
 
 
 facility_version = "stage_b_critical_facilities.v0.2"
@@ -43,6 +43,27 @@ facility_columns = [
     "source_provenance",
     "schema_version",
 ]
+
+
+def _slug(value: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
+    return normalized or "unknown"
+
+
+def stable_token(*parts: object, max_len: int = 48) -> str:
+    raw = "_".join(str(part) for part in parts if part is not None)
+    token = re.sub(r"[^a-z0-9]+", "_", raw.lower()).strip("_")
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
+    return f"{token[:max_len].strip('_')}_{digest}"
+
+
+def _present(value) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, float) and math.isnan(value):
+        return False
+    text = str(value).strip()
+    return bool(text) and text.lower() != "nan"
 
 
 def load_critical_facilities(path: Path, *, location_name: str) -> gpd.GeoDataFrame:
@@ -141,8 +162,6 @@ are synthetic Grid Dataset assets. This module builds the auditable bridge betwe
 those two data channels without treating nearest-neighbor matches as utility
 truth.
 """
-
-from power.artifacts import present as _present, slug as _slug
 
 load_match_version = "stage_b_load_matches.v0.2"
 

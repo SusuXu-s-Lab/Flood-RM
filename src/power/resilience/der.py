@@ -11,8 +11,6 @@ from typing import Any
 
 import pandas as pd
 
-from power.artifacts import present as _present
-
 der_version = "stage_b_der_inventory.v0.1"
 placement_rule_layer_1 = "evidence_anchored_mhmp"
 placement_rule_layer_2 = "reopt_resilience_sizing"
@@ -35,6 +33,15 @@ default_reopt_load_year = 2024
 fema_community_lifelines_outage_hours = 72
 
 hours_per_year = 8760
+
+
+def _present(value) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, float) and math.isnan(value):
+        return False
+    text = str(value).strip()
+    return bool(text) and text.lower() != "nan"
 
 class DERAssignmentViolation(ValueError):
     """Raised when DER assignment completeness is not explicit enough."""

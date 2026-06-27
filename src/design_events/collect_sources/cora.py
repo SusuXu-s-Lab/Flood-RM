@@ -4,14 +4,45 @@ import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
+import json
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import requests
 import xarray as xr
 from pyproj import Transformer
 
-from design_events.utils import iter_progress
-from design_events.utils import write_source_artifact
+from tqdm.auto import tqdm as iter_progress
+
+
+def _timestamp(value):
+    return None if value is None else pd.Timestamp(value).isoformat()
+
+
+def _relative_path(path, root):
+    path = Path(path)
+    root = Path(root)
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def write_source_artifact(paths, source, kind, start=None, end=None, artifacts=None, metadata=None, status="complete"):
+    manifest = {
+        "study_location": paths["location_name"],
+        "source": source,
+        "kind": kind,
+        "status": status,
+        "start": _timestamp(start),
+        "end": _timestamp(end),
+        "artifacts": {key: _relative_path(value, paths["repo_root"]) for key, value in (artifacts or {}).items()},
+        "metadata": metadata or {},
+    }
+    path = paths["source_artifacts_root"] / f"{source}_{kind}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return path
 
 
 # prevent reruns if data already exists

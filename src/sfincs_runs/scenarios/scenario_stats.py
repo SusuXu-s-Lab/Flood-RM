@@ -10,8 +10,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from sfincs_runs.config import build_paths, load_runtime
-from sfincs_runs.scenarios.io import parse_sfincs_inp
+from sfincs_runs.config import build_paths, load_runtime, parse_sfincs_inp
 
 
 paths = build_paths()
@@ -358,6 +357,68 @@ def event_stats(event_dir, storage_dir, land_threshold_m, huthresh_m, impact_thr
     for hours in [6, 12, 24]:
         out[f"area_incremental_flooded_ge_{hours:02d}h_km2"] = area(np.isfinite(duration) & (duration >= hours), cell_area)
     return out
+
+
+_EVENT_STATS_CTX = {}
+
+
+def _event_stats_init(storage_dir, thresholds, scenario_summary, scenario_rows, design_rows, design_attrs):
+    _EVENT_STATS_CTX.update(
+        storage_dir=storage_dir,
+        thresholds=thresholds,
+        scenario_summary=scenario_summary,
+        scenario_rows=scenario_rows,
+        design_rows=design_rows,
+        design_attrs=design_attrs,
+    )
+
+
+def _event_stats_worker(event_dir):
+    c = _EVENT_STATS_CTX
+    land_threshold_m, huthresh_m, impact_threshold_m = c["thresholds"]
+    return event_stats(
+        event_dir, c["storage_dir"], land_threshold_m, huthresh_m, impact_threshold_m,
+        c["scenario_summary"], c["scenario_rows"], c["design_rows"], c["design_attrs"],
+    )
+
+
+def event_stats_table(
+    completed_events,
+    storage_dir,
+    *,
+    land_threshold_m,
+    huthresh_m,
+    impact_threshold_m,
+    scenario_summary,
+    scenario_rows,
+    design_rows,
+    design_attrs,
+    workers=None,
+):
+    """Build the per-event stats table, reading the (heavy 3-D) SFINCS maps in parallel.
+
+    ``event_stats`` loads each event's full ``zs`` time series, so for hundreds of events the
+    serial loop is I/O bound. This fans the per-event reads across processes (default: up to
+    16 / ``os.cpu_count()``). The shared per-scenario metadata is sent once per worker via the
+    pool initializer, so only the event Path is pickled per task. Set ``workers=1`` to force
+    the serial path (e.g. for debugging). Returns a DataFrame (one row per event).
+    """
+    events = list(completed_events)
+    if not events:
+        return pd.DataFrame()
+    if workers is None:
+        workers = min(os.cpu_count() or 1, 16)
+    thresholds = (land_threshold_m, huthresh_m, impact_threshold_m)
+    if workers <= 1 or len(events) == 1:
+        _event_stats_init(storage_dir, thresholds, scenario_summary, scenario_rows, design_rows, design_attrs)
+        return pd.DataFrame([_event_stats_worker(d) for d in events])
+    with ProcessPoolExecutor(
+        max_workers=workers,
+        initializer=_event_stats_init,
+        initargs=(storage_dir, thresholds, scenario_summary, scenario_rows, design_rows, design_attrs),
+    ) as executor:
+        rows = list(executor.map(_event_stats_worker, events, chunksize=4))
+    return pd.DataFrame(rows)
 
 
 def series_summary(df, col):

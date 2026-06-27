@@ -1,5 +1,3 @@
-"""Notebook-facing exports for grid simulation and restoration artifacts."""
-
 from power.exports.smart_ds_grid import default_output_dir
 from power.exports.smart_ds_grid import default_registry_dir
 from power.exports.smart_ds_grid import control_registry
@@ -15,7 +13,6 @@ from power.exports.restoration import materialize_onm_run_bundle
 from power.exports.restoration import run_dynagrid_smoke
 from power.exports.restoration import run_powermodels_onm_smoke
 from power.exports.restoration import slice_annual_profile_to_event_window
-
 
 __all__ = [
     "default_output_dir",

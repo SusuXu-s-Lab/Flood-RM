@@ -1,13 +1,11 @@
 """Readiness gates for Marshfield PowerModelsONM/DNMG artifacts."""
 
 from __future__ import annotations
-
 import os
 import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
-
 
 def summarize_der_export_readiness(manifest: Mapping[str, Any]) -> dict[str, Any]:
     """Summarize whether exported DER rows are REopt-sized for DNMG studies."""
@@ -28,7 +26,6 @@ def summarize_der_export_readiness(manifest: Mapping[str, Any]) -> dict[str, Any
         "provisional_rows": provisional_rows,
         "blockers": blockers,
     }
-
 
 def summarize_powermodels_onm_smoke_readiness(smoke: Mapping[str, Any]) -> dict[str, Any]:
     """Summarize PowerModelsONM parser and strict-settings validation evidence."""

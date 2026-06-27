@@ -9,7 +9,7 @@ from pathlib import Path
 import pandas as pd
 import xarray as xr
 
-from design_events.utils import progress_bar
+from tqdm.auto import tqdm as progress_bar
 
 
 earthdatahub_era5_ocean_zarr = (

@@ -36,6 +36,12 @@ hydromt:
     write_config:
 
 # SFINCS structure layers.
+sfincs:
+  build_config: data/sfincs/config/sfincs_build.yml
+  update_forcing_config: data/sfincs/config/sfincs_update_forcing.yml
+  snapwave_build_config: data/sfincs/config/snapwave_build.yml
+  snapwave_update_forcing_config: data/sfincs/config/snapwave_update_forcing.yml
+
 sfincs_structures:
   enabled: true
   source_root: data/static/structures/sources

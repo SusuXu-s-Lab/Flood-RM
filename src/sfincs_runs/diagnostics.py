@@ -18,8 +18,10 @@ plot_runup        Runup gauge map + per-gauge crest overtopping screen
 """
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 
 import contextily as ctx
@@ -36,6 +38,23 @@ from shapely.geometry import LineString
 
 M_TO_FT = 3.28084
 DEFAULT_PROBABILITY_DEPTHS_FT = (0.5, 1.0, 2.0)
+
+# Canonical storm-type colors and display labels, shared by every storm-type figure so
+# legends stay consistent. ``tc`` is a strong red that separates clearly from the
+# ``other_non_tropical`` green; ``tc`` = tropical cyclone (the standard term covering
+# hurricanes/tropical storms).
+STORM_TYPE_COLORS = {
+    "nor_easter": "#4c78a8",          # blue
+    "other_non_tropical": "#54a24b",  # green
+    "tc": "#d62728",                  # strong red — stands out
+    "unresolved": "#bab0ac",          # muted gray
+}
+STORM_TYPE_LABELS = {
+    "nor_easter": "Nor'Easter",
+    "other_non_tropical": "Other",
+    "tc": "Tropical Cyclone",
+    "unresolved": "Unresolved",
+}
 
 
 @dataclass(frozen=True)
@@ -249,7 +268,14 @@ def plot_flood_response_diagnostics(response: FloodResponseDiagnostics):
         mask = np.isfinite(x) & np.isfinite(y)
         if mask.any():
             area = pd.to_numeric(group.loc[mask, "anytime_incremental_flooded_area_km2"], errors="coerce").fillna(0.0)
-            axes[2].scatter(x[mask], y[mask], s=np.clip(area * 2.0, 12, 90), alpha=0.55, label=storm_type)
+            axes[2].scatter(
+                x[mask],
+                y[mask],
+                s=np.clip(area * 2.0, 12, 90),
+                alpha=0.55,
+                color=STORM_TYPE_COLORS.get(str(storm_type)),
+                label=STORM_TYPE_LABELS.get(str(storm_type), str(storm_type)),
+            )
             plotted = True
     axes[2].set_xlabel("72h mean rainfall (mm)")
     axes[2].set_ylabel(coastal_label)
@@ -794,7 +820,7 @@ def plot_driver_outcome_matrix(
     outcomes = _usable_numeric_columns(data, [o for o in outcomes if o in data], min_unique=1)
     if not drivers or not outcomes:
         raise ValueError("no requested drivers/outcomes are present in data")
-    palette = {"nor_easter": "#4c78a8", "other_non_tropical": "#54a24b", "tc": "#e45756", "unresolved": "#bab0ac"}
+    palette = STORM_TYPE_COLORS
     fig, axes = plt.subplots(len(outcomes), len(drivers), figsize=(4.1 * len(drivers), 3.4 * len(outcomes)), squeeze=False)
     storm_values = data[storm_col].fillna("unresolved").astype(str) if storm_col in data else pd.Series("all", index=data.index)
     max_weight = pd.to_numeric(data[weight_col], errors="coerce").max() if weight_col in data else np.nan
@@ -814,7 +840,7 @@ def plot_driver_outcome_matrix(
                         sizes = 18 + 90 * np.sqrt(weights / max_weight)
                     else:
                         sizes = 28
-                    ax.scatter(x[mask], y[mask], s=sizes, alpha=0.62, color=palette[storm_type], label=storm_type)
+                    ax.scatter(x[mask], y[mask], s=sizes, alpha=0.62, color=palette[storm_type], label=STORM_TYPE_LABELS.get(storm_type, storm_type))
                     plotted = True
             pooled = _tau_with_ci(data[driver], data[outcome])
             if pooled is not None:
@@ -1625,7 +1651,7 @@ def plot_standard_animation(
     -------
     Path to the saved mp4 file.
     """
-    from sfincs_runs.scenarios.io import parse_sfincs_inp
+    from sfincs_runs.config import parse_sfincs_inp
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1818,7 +1844,7 @@ def plot_animation(
     -------
     Path to the saved mp4 file.
     """
-    from sfincs_runs.scenarios.io import parse_sfincs_inp
+    from sfincs_runs.config import parse_sfincs_inp
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -2479,3 +2505,311 @@ def plot_runup(
     display(pd.DataFrame(summary_rows))
     print(f"Saved runup/structure QA figure → {out_path}")
     return out_path
+
+
+# ── SLR scenario flood-depth comparison (Figure-10-style) ─────────────────────
+# Compare a selected design event's flood depth across MSL-Shift Scenarios
+# (base / 2050 / 2100). Adapts Maduwantha et al. (2026) Fig. 10 (flood-depth
+# change with m.s.l. variability) to SLR *projection* scenarios: absolute depth
+# per scenario plus the depth change relative to base. SLR is a what-if boundary
+# offset, so each scenario is evaluated on its own completed run set; this is a
+# controlled per-event comparison, not a pooled exceedance surface.
+
+SLR_BENCHMARK_RETURN_PERIODS = (10, 100, 500)
+
+
+@dataclass(frozen=True)
+class SlrDepthComparison:
+    """Per-scenario masked flood depth (ft) and depth deltas vs base for one event."""
+
+    event_id: str
+    return_period_years: float
+    scenarios: tuple
+    offsets_m: dict
+    x: np.ndarray
+    y: np.ndarray
+    depth_ft: dict
+    delta_ft: dict
+
+
+def slr_scenario_storage_roots(storage_root, scenarios, *, base_key: str = "base") -> dict:
+    """Map ``scenarios:`` keys to their per-scenario SFINCS run-output directories.
+
+    Convention: the base scenario reuses ``storage_root`` (``run_outputs``); every
+    other key uses the sibling ``<storage_root>_<key>`` (e.g. ``run_outputs_noaa_int_2050``).
+    Only existing directories are returned.
+    """
+    storage_root = Path(storage_root)
+    roots = {}
+    for key in scenarios:
+        root = storage_root if key == base_key else storage_root.with_name(f"{storage_root.name}_{key}")
+        if root.exists():
+            roots[key] = root
+    return roots
+
+
+def common_completed_events(scenario_roots: dict) -> set:
+    sets = []
+    for root in scenario_roots.values():
+        sets.append({p.parent.name for p in Path(root).glob("*/sfincs_map.nc")})
+    return set.intersection(*sets) if sets else set()
+
+
+def scenario_paths(paths: dict, scenario: str, *, base_key: str = "base") -> dict:
+    """Per-scenario copy of the notebook ``paths`` dict for one SLR projection.
+
+    Overrides ``storage_root`` and ``scenarios_root`` to the scenario's sibling dirs
+    (``<root>_<scenario>``) and isolates ``stats_root`` under a ``<scenario>`` subdir so
+    per-scenario outputs don't clobber base. The shared ``design_outputs_root`` (catalog
+    drivers are scenario-independent — the same events re-run under a fixed MSL offset) is
+    kept as-is. The base scenario returns ``paths`` unchanged.
+    """
+    if scenario == base_key:
+        return dict(paths)
+    out = dict(paths)
+    storage_root = Path(paths["storage_root"])
+    scenarios_root = Path(paths["scenarios_root"])
+    out["storage_root"] = storage_root.with_name(f"{storage_root.name}_{scenario}")
+    out["scenarios_root"] = scenarios_root.with_name(f"{scenarios_root.name}_{scenario}")
+    out["stats_root"] = Path(paths["stats_root"]) / scenario
+    return out
+
+
+def completed_runs_by_scenario(scenario_roots: dict) -> pd.DataFrame:
+    """Every completed SFINCS run (has ``sfincs_map.nc``) across all scenario storage roots.
+
+    One row per (scenario, event): ``design_scenario``, ``event_id``, ``run_dir``,
+    ``map_path``. The single enumeration the notebook iterates so QA and evaluation span
+    base + all SLR projections without per-scenario boilerplate.
+    """
+    rows = []
+    for scenario, root in scenario_roots.items():
+        for map_path in sorted(Path(root).glob("*/sfincs_map.nc")):
+            rows.append(
+                {
+                    "design_scenario": scenario,
+                    "event_id": map_path.parent.name,
+                    "run_dir": map_path.parent,
+                    "map_path": map_path,
+                }
+            )
+    return pd.DataFrame(rows, columns=["design_scenario", "event_id", "run_dir", "map_path"])
+
+
+def _health_check_one(item):
+    design_scenario, event_id, run_dir, map_path = item
+    rec = {"design_scenario": design_scenario, "event_id": event_id, "open_error": ""}
+    meta_path = Path(run_dir) / "run_metadata.json"
+    if meta_path.exists():
+        meta = json.loads(meta_path.read_text())
+        rec["returncode"] = int(meta.get("returncode", -1))
+        rec["duration_min"] = float(meta.get("duration_sec", float("nan"))) / 60.0
+    else:
+        rec["returncode"] = None
+        rec["duration_min"] = float("nan")
+    map_path = Path(map_path)
+    rec["map_mb"] = map_path.stat().st_size / (1024 * 1024) if map_path.exists() else 0.0
+    try:
+        with xr.open_dataset(map_path, decode_times=False) as ds:
+            zs_last = ds["zs"].isel(time=-1).values
+            rec["zs_finite_frac"] = float(np.isfinite(zs_last).mean())
+            rec["zs_max_last_m"] = float(np.nanmax(zs_last)) if np.any(np.isfinite(zs_last)) else float("nan")
+            rec["n_timesteps"] = int(ds.sizes.get("time", 0))
+    except Exception as exc:
+        rec["zs_finite_frac"] = float("nan")
+        rec["zs_max_last_m"] = float("nan")
+        rec["n_timesteps"] = 0
+        rec["open_error"] = str(exc)[:120]
+    return rec
+
+
+def health_check_table(runs: pd.DataFrame, *, workers=None) -> pd.DataFrame:
+    """Per-run completion health across scenarios, reading maps in parallel.
+
+    For every completed run (a row of :func:`completed_runs_by_scenario`) record the solver
+    ``returncode``, map file size, final-timestep ``zs`` finite fraction, timestep count, and
+    wall-clock duration. Each check opens one NetCDF, so for hundreds of runs the serial loop
+    is I/O bound; this fans the opens across processes (default: up to 16 / ``os.cpu_count()``;
+    ``workers=1`` forces serial). Returns a DataFrame (one row per run).
+    """
+    items = list(runs[["design_scenario", "event_id", "run_dir", "map_path"]].itertuples(index=False, name=None))
+    if not items:
+        return pd.DataFrame()
+    if workers is None:
+        workers = min(os.cpu_count() or 1, 16)
+    if workers <= 1 or len(items) == 1:
+        return pd.DataFrame([_health_check_one(it) for it in items])
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        rows = list(executor.map(_health_check_one, items, chunksize=8))
+    return pd.DataFrame(rows)
+
+
+def select_benchmark_events(
+    catalogue,
+    return_periods=SLR_BENCHMARK_RETURN_PERIODS,
+    *,
+    rp_column: str = "sample_rp_years",
+    rank_column: str = "peak_incremental_land_depth_m",
+    rank_ascending: bool = False,
+    id_column: str = "event_id",
+    eligible_ids=None,
+    log_band: float = 0.35,
+) -> pd.DataFrame:
+    """Representative design event near each benchmark return period.
+
+    Restricts to events within a ``log_band`` neighborhood of each target RP (in log
+    space), then ranks by ``rank_column`` to choose the representative event. The default
+    ``peak_incremental_land_depth_m`` (descending) selects the **most consequential** event
+    near each RP, which is what makes a usable SLR depth-comparison figure — in a
+    tail-enriched catalog, ranking by ``probability_weight`` ("most-likely") systematically
+    favors mild, near-dry combinations. Pass ``rank_column="probability_weight"`` for the
+    most-likely event instead. Falls back to the RP-closest event when ``rank_column`` is
+    absent. ``eligible_ids`` (e.g. events completed in every scenario) restricts the pool.
+    """
+    df = catalogue.copy()
+    if eligible_ids is not None:
+        df = df[df[id_column].astype(str).isin({str(i) for i in eligible_ids})]
+    df[rp_column] = pd.to_numeric(df[rp_column], errors="coerce")
+    df = df.dropna(subset=[rp_column, id_column])
+    df = df[df[rp_column] > 0].drop_duplicates(id_column)
+    if df.empty:
+        return pd.DataFrame(columns=["return_period_years", "event_id", "sample_rp_years"])
+    rows = []
+    for rp in return_periods:
+        dist = (np.log(df[rp_column]) - np.log(float(rp))).abs()
+        scored = df.assign(_dist=dist).sort_values("_dist")
+        band = scored[scored["_dist"] <= float(log_band)]
+        if not band.empty and rank_column in band and band[rank_column].notna().any():
+            pick = band.sort_values(rank_column, ascending=rank_ascending).iloc[0]
+        else:
+            pick = scored.iloc[0]
+        rows.append(
+            {
+                "return_period_years": float(rp),
+                "event_id": str(pick[id_column]),
+                "sample_rp_years": float(pick[rp_column]),
+                "rank_value": float(pd.to_numeric(pd.Series([pick.get(rank_column)]), errors="coerce").iloc[0]),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def slr_event_depth_comparison(
+    event_id,
+    scenario_roots,
+    *,
+    offsets_m=None,
+    base_key: str = "base",
+    return_period_years: float = float("nan"),
+    huthresh_m: float = 0.1,
+    land_min_elev_m: float | None = -0.5,
+) -> SlrDepthComparison:
+    """Load one event's masked flood depth (ft) per scenario and the deltas vs base.
+
+    Deltas treat non-flooded cells as 0 depth so newly-inundated area appears as a
+    positive change (mirrors the notebook's incremental-depth convention and Fig. 10).
+    """
+    offsets_m = offsets_m or {}
+    depth, coords = {}, None
+    for key, root in scenario_roots.items():
+        map_path = Path(root) / str(event_id) / "sfincs_map.nc"
+        if not map_path.exists():
+            continue
+        data = masked_sfincs_depth(map_path, huthresh_m=huthresh_m, land_min_elev_m=land_min_elev_m)
+        depth[key] = np.asarray(data["depth_ft"], dtype=float)
+        if coords is None:
+            coords = (np.asarray(data["x"], dtype=float), np.asarray(data["y"], dtype=float))
+    if base_key not in depth:
+        raise ValueError(f"base scenario '{base_key}' has no completed map for event {event_id}")
+    base = np.nan_to_num(depth[base_key], nan=0.0)
+    delta = {}
+    for key, d in depth.items():
+        if key == base_key:
+            continue
+        scn = np.nan_to_num(d, nan=0.0)
+        union_wet = (scn > 0) | (base > 0)
+        delta[key] = np.where(union_wet, scn - base, np.nan)
+    ordered = [base_key] + [k for k in depth if k != base_key]
+    x, y = coords
+    return SlrDepthComparison(
+        event_id=str(event_id),
+        return_period_years=float(return_period_years),
+        scenarios=tuple(ordered),
+        offsets_m={k: float(offsets_m.get(k, float("nan"))) for k in ordered},
+        x=x,
+        y=y,
+        depth_ft=depth,
+        delta_ft=delta,
+    )
+
+
+def plot_slr_depth_comparison(
+    comparison: SlrDepthComparison,
+    *,
+    basemap_style: str = "osm",
+    crs: str = "EPSG:32619",
+):
+    """Figure-10-style SLR comparison: absolute depth per scenario (row 1) + depth
+    change vs base (row 2), shared scales, OSM basemap."""
+    ordered = list(comparison.scenarios)
+    deltas = [k for k in ordered if k in comparison.delta_ft]
+    ncols = max(len(ordered), len(deltas), 1)
+    fig, axes = plt.subplots(2, ncols, figsize=(6 * ncols, 11), squeeze=False)
+    x, y = comparison.x, comparison.y
+
+    def _finite(arrays):
+        vals = [a[np.isfinite(a)] for a in arrays if a is not None]
+        vals = [v for v in vals if v.size]
+        return np.concatenate(vals) if vals else np.array([0.01])
+
+    abs_pos = _finite([comparison.depth_ft[k] for k in ordered])
+    abs_pos = abs_pos[abs_pos > 0]
+    abs_vmax = max(float(np.nanpercentile(abs_pos, 99)) if abs_pos.size else 0.5, 0.1)
+    delta_abs = np.abs(_finite([comparison.delta_ft[k] for k in deltas]))
+    delta_vmax = max(float(np.nanpercentile(delta_abs, 99)) if delta_abs.size else 0.5, 0.1)
+
+    def _draw(ax, field, *, cmap, vmin, vmax, title):
+        ax.set_xlim(float(np.nanmin(x)), float(np.nanmax(x)))
+        ax.set_ylim(float(np.nanmin(y)), float(np.nanmax(y)))
+        try:
+            _add_evaluation_basemap(ax, crs=crs, style=basemap_style)
+        except Exception as exc:  # basemap is best-effort
+            ax.text(0.01, 0.01, f"Basemap unavailable: {exc}", transform=ax.transAxes, fontsize=8)
+        mesh = ax.pcolormesh(
+            x, y, np.ma.masked_invalid(field), shading="auto", cmap=cmap, vmin=vmin, vmax=vmax, alpha=0.85, zorder=3
+        )
+        ax.set_title(title, fontsize=10)
+        ax.set_xlabel("x")
+        ax.set_ylabel("y")
+        fig.colorbar(mesh, ax=ax, shrink=0.8, label="water depth [ft]")
+
+    for j in range(ncols):
+        if j < len(ordered):
+            key = ordered[j]
+            offset = comparison.offsets_m.get(key, float("nan"))
+            tag = f"{key} (+{offset:g} m)" if np.isfinite(offset) else key
+            _draw(axes[0][j], comparison.depth_ft[key], cmap="Blues", vmin=0.0, vmax=abs_vmax, title=f"{tag}  flood depth")
+        else:
+            axes[0][j].axis("off")
+        if j < len(deltas):
+            key = deltas[j]
+            _draw(
+                axes[1][j],
+                comparison.delta_ft[key],
+                cmap="RdBu_r",
+                vmin=-delta_vmax,
+                vmax=delta_vmax,
+                title=f"{key} − {ordered[0]}  Δ depth",
+            )
+        else:
+            axes[1][j].axis("off")
+
+    rp = comparison.return_period_years
+    rp_label = f"RP ≈ {rp:g} yr" if np.isfinite(rp) else "selected event"
+    fig.suptitle(
+        f"SLR flood-depth comparison ({rp_label}, most-likely event {comparison.event_id})\n"
+        "top: absolute depth per SLR projection · bottom: change vs base",
+        y=1.0,
+    )
+    fig.tight_layout()
+    return fig

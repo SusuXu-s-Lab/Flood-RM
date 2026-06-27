@@ -1,31 +1,11 @@
-"""Run the Delft-FIAT engine per event via the isolated conda env.
-
-The FIAT model built by :mod:`fiat_runs.build_model` provides the exposure
-(``exposure/exposure.csv`` + ``exposure/buildings.gpkg``) and vulnerability
-(``vulnerability/vulnerability_curves.csv``) files. For each event we write a fresh
-``settings.toml`` in the delft_fiat 0.4.0 schema (the hydromt_fiat-written settings use
-an incompatible ``[global] crs`` block), point ``hazard.file`` at the event water-level
-raster, and invoke ``fiat run``. The hazard is a datum-referenced water-level map in feet,
-so ``hazard.elevation_reference = "datum"``.
-
-Single-event (``risk = false``) gives per-asset and total damage; the probability
-weighting into Expected Annual Damage is done in :mod:`fiat_runs.risk` (main env).
-"""
-
 from __future__ import annotations
-
 from pathlib import Path
-
 import geopandas as gpd
 import pandas as pd
-
 from ._env import run_in_fiat_env
 
-
 def _toml_path(p) -> str:
-    # forward slashes are safe on all platforms in TOML and avoid escaping
     return str(Path(p).resolve()).replace("\\", "/")
-
 
 def write_event_settings(
     settings_path,
@@ -83,14 +63,12 @@ crs = "{srs}"
     settings_path.write_text(lines, encoding="utf-8")
     return settings_path
 
-
 def read_fiat_damages(out_dir) -> gpd.GeoDataFrame:
     """Read the per-asset FIAT output (geometry + damage columns) for one run."""
     gpkg = Path(out_dir) / "spatial.gpkg"
     if not gpkg.exists():
         raise RuntimeError(f"FIAT produced no spatial.gpkg in {out_dir}")
     return gpd.read_file(gpkg)
-
 
 def run_event(model_root, hazard_tif, out_dir, *, event_id=None, srs="EPSG:4326") -> dict:
     """Run FIAT for a single event; return total + per-asset damage summary."""

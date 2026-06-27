@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from design_events.utils import progress_bar
+from tqdm.auto import tqdm as progress_bar
 
 
 # canonical ERA5 single-levels variable long names for ocean waves

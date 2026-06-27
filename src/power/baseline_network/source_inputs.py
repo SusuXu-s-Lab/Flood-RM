@@ -1,16 +1,11 @@
 """Baseline Network source-input adapters.
-
-This module owns the geospatial inputs that feed SHIFT generation: the Study
-Location source area, reviewed source anchors, and OSM building parcels.
 """
 
 from __future__ import annotations
-
 import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
-
 import pandas as pd
 import osmnx as ox
 from geopandas import GeoDataFrame

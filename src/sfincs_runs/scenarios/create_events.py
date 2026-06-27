@@ -8,10 +8,9 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from sfincs_runs.config import build_paths, load_runtime
+from sfincs_runs.config import load_runtime
 from sfincs_runs.scenarios import event_forcing
 from sfincs_runs.scenarios.event_forcing import EventForcing
-from sfincs_runs.scenarios.io import write_json
 from sfincs_runs.scenarios.scenarios import (
     assert_event_catalog_audit,
     build_event_timeseries,
@@ -19,11 +18,6 @@ from sfincs_runs.scenarios.scenarios import (
     events_dir,
     select_zsini_from_series,
 )
-
-paths = build_paths()
-default_design_outputs = paths["design_outputs_root"]
-default_base_model = paths["base_model_root"]
-default_scenarios = paths["scenarios_root"]
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description="Create SFINCS event folders from design-event hydrographs.")
@@ -448,23 +442,34 @@ def build_scenarios(args, *, config=None, runtime_paths=None, sf_model=None):
     report = pd.DataFrame(rows).sort_values("event_id")
     report[["event_id", "run_root"]].to_csv(root / "scenario_catalog.csv", index=False)
     report.to_csv(root / "scenario_build_report.csv", index=False)
-    write_json(root / "scenario_summary.json", {
-        "base_model_root": str(args.base_dir),
-        "target_scenarios_dir": str(root),
-        "event_count": len(report),
-        "elapsed_seconds": time.time() - wall_t0,
-        "design_outputs_root": str(args.design_outputs),
-        "design_scenario": args.design_scenario,
-        "surge_dataset": str(events_dir(args.design_outputs, args.design_scenario) / "surge_event_members.nc"),
-        "forcing_variable": args.forcing_variable,
-        "zsini_mode": args.zsini_mode,
-        "include_waves": bool(args.include_waves),
-        "include_precip": bool(args.include_precip),
-        "static_file_strategy": "hardlink_then_copy",
-        "resume": bool(args.resume),
-        "written_count": int((report["scenario_status"] == "written").sum()) if "scenario_status" in report else len(report),
-        "skipped_existing_count": int((report["scenario_status"] == "skipped_existing").sum()) if "scenario_status" in report else 0,
-    })
+    (root / "scenario_summary.json").write_text(
+        json.dumps(
+            {
+                "base_model_root": str(args.base_dir),
+                "target_scenarios_dir": str(root),
+                "event_count": len(report),
+                "elapsed_seconds": time.time() - wall_t0,
+                "design_outputs_root": str(args.design_outputs),
+                "design_scenario": args.design_scenario,
+                "surge_dataset": str(events_dir(args.design_outputs, args.design_scenario) / "surge_event_members.nc"),
+                "forcing_variable": args.forcing_variable,
+                "zsini_mode": args.zsini_mode,
+                "include_waves": bool(args.include_waves),
+                "include_precip": bool(args.include_precip),
+                "static_file_strategy": "hardlink_then_copy",
+                "resume": bool(args.resume),
+                "written_count": int((report["scenario_status"] == "written").sum())
+                if "scenario_status" in report
+                else len(report),
+                "skipped_existing_count": int((report["scenario_status"] == "skipped_existing").sum())
+                if "scenario_status" in report
+                else 0,
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
     print(f"Wrote {len(report)} scenarios to {root}")
     return report
 

@@ -1,6 +1,8 @@
 # Flood-Resilient Microgrids
 
-Flood-RM builds:
+![Flood-RM](artifacts/FLOOD-RM_README_img.png)
+
+Flood-RM :
 
 1. Synthetic distribution-scale feeder network, augmented with operational components needed for dynamic microgrid studies.
 2. Stochastic flood-driver catalogues from historical reanalysis and observation products. These are sampled into coupled SFINCS-Snapwave for coastal regions and coupled Wflow-SFINCS forcings for inland regions.
@@ -66,9 +68,3 @@ Suggested local paths:
 - EarthDataHub ERA5 via `EARTHDATAHUB_TOKEN` or `artifacts/credentials/earthdatahub-api-key.txt`
 - CDS ERA5 via `~/.cdsapirc`
 - REopt/NLR via `NLR_API_KEY` or `artifacts/credentials/nlr_api.txt`.
-
-## References
-
-[1] Usberti, F. L., Vizcaino Gonzalez, J. F., de Assis, L. S., & Cavellucci, C. (2025). A polynomial-time exact algorithm for the sectionalizing switch allocation problem. *Electric Power Systems Research, 249*, Article 112016. https://doi.org/10.1016/j.epsr.2025.112016
-
-[2] Krishnan, V., Bugbee, B., Elgindy, T., Mateo, C., Duenas, P., Postigo, F., Lacroix, J. S., Gomez San Roman, T., & Palmintier, B. (2020). Validation of synthetic U.S. electric power distribution system data sets. *IEEE Transactions on Smart Grid, 11*(5), 4477-4489. https://doi.org/10.1109/TSG.2020.2981077

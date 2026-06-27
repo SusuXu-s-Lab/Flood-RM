@@ -38,8 +38,11 @@ hydromt:
 # SFINCS model settings and domain selection.
 sfincs:
   grid_resolution_m: 60
+  build_config: data/sfincs/config/sfincs_build.yml
+  update_forcing_config: data/sfincs/config/sfincs_update_forcing.yml
 
 sfincs_domain_set:
+  allow_multiple_domains: true
   include_domain_ids:
     - greensboro_rural
 
@@ -88,8 +91,21 @@ inland_coupling:
 event_catalog:
   dependence:
     driver_records:
+      streamflow:
+        path: data/sources/usgs_streamgages/streamflow_records.csv
+        time_column: time
+        value_column: discharge_cfs
+        aggregate: max
       rainfall:
         path: data/sources/aorc_sst/greensboro/72hr-events/storm-stats.csv
+        time_column: storm_date
+        value_column: mean
+    driver_vector:
+      - streamflow
+      - rainfall
+    cooccurrence:
+      condition_on:
+        - streamflow
 
 static_sources:
   ssurgo:

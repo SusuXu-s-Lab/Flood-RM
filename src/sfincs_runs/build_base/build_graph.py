@@ -10,8 +10,7 @@ import numpy as np
 import xarray as xr
 import xugrid as xu
 
-from sfincs_runs.config import build_paths, load_config
-from sfincs_runs.scenarios.io import parse_sfincs_inp
+from sfincs_runs.config import build_paths, load_config, parse_sfincs_inp
 
 
 def read_points(path):

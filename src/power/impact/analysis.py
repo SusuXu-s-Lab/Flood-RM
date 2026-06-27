@@ -1,18 +1,15 @@
 # Asset impact analysis
-
 """Compute flood exposure and fragility-based affected assets."""
-
 
 import csv
 import json
+import math
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-
 import pandas as pd
-
-from power.artifacts import finite_float as _finite_float
-from power.artifacts import power_grid
+from paths import default_location_config_path, find_repo_root
+from study_location import define_location
 from power.impact.fragility import (
     failure_probability,
     line_local_asset_type,
@@ -20,6 +17,21 @@ from power.impact.fragility import (
     load_flood_depth_curves,
 )
 
+repo_root = find_repo_root(Path(__file__).resolve())
+
+def power_grid_root():
+    definition = define_location(default_location_config_path(repo_root))
+    path = Path(definition.grid.get("power_grid_root", "data/power_grid"))
+    return path if path.is_absolute() else definition.root / path
+
+def _finite_float(value):
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
+
+power_grid = power_grid_root()
 smart_ds_compat = power_grid / "augmented"
 impacts_dir = power_grid / "figures" / "impacts"
 default_event_dir = (
@@ -27,7 +39,6 @@ default_event_dir = (
 )
 default_probability_threshold = 0.50
 default_max_sample_distance_m = 150.0
-
 
 @dataclass(frozen=True)
 class AssetPoint:
@@ -37,7 +48,6 @@ class AssetPoint:
     lon: float
     lat: float
     label: str
-
 
 def load_asset_points(registry_dir: Path = smart_ds_compat, *, include_lines: bool = False) -> list[AssetPoint]:
     """Load flood-relevant point assets from the Asset Registry."""

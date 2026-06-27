@@ -4,7 +4,6 @@ from sfincs_runs.build_base.plan import (
     build_baseline_build_plan,
     build_static_intake_plan,
 )
-from sfincs_runs.build_base.region_setup import RegionSetup, build_region_setup
 from sfincs_runs.build_base.static_catalog import build_static_data_catalog
 from sfincs_runs.build_base.inland_base import (
     InlandSfincsBasePlan,
@@ -29,6 +28,8 @@ from sfincs_runs.build_base.inland_base import (
 )
 from sfincs_runs.hydrology import validate_physics
 from sfincs_runs.build_base.static_intake import (
+    RegionSetup,
+    build_region_setup,
     clip_dem_and_landcover_to_bbox,
     collect_ssurgo_infiltration_inputs,
     collect_static_region_inputs,

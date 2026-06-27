@@ -18,12 +18,7 @@ locations/*/data/smart_ds/
 
 # general folders
 code
-tests
-!tests/
-tests/**
-!tests/test_run_pipeline.py
 cluster
-docs
 
 # data
 artifacts/credentials/earthdatahub-api-key.txt
@@ -42,3 +37,4 @@ runs/*
 # unfinished
 locations/*/02_flood/07*
 locations/*/02_flood/08*
+src/fiat_runs

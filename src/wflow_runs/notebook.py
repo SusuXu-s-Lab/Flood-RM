@@ -13,7 +13,7 @@ import sys
 import pandas as pd
 import yaml
 
-from design_events.utils import load_runtime as load_design_runtime
+from design_events.runtime import load_runtime as load_design_runtime
 from sfincs_runs.config import load_runtime as load_sfincs_runtime
 from study_location import define_location
 from wflow_runs.build_plan import (

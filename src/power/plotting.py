@@ -1,43 +1,57 @@
-from __future__ import annotations
-
-import csv
-import io
 import json
-import math
-import urllib.request
-from collections.abc import Iterable, Iterator
-from dataclasses import dataclass
+import sys
 from pathlib import Path
-from typing import Any
 
+import contextily as ctx
 import geopandas as gpd
-import matplotlib.colors as mcolors
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import shapely
-from matplotlib.collections import LineCollection
 from matplotlib.lines import Line2D
-from PIL import Image
-from pyproj import Transformer
 from scipy.cluster.vq import kmeans2
-from shapely.geometry import LineString, MultiPoint, Point, Polygon, box, mapping
-from shapely.geometry.base import BaseGeometry
-from shapely.ops import transform as shapely_transform
+from shapely.geometry import LineString, MultiPoint, box
 from shapely.ops import unary_union
 
-from power.artifacts import power_grid
+_SOURCE_ROOT = Path(__file__).resolve().parents[1]
+if (_SOURCE_ROOT / "paths.py").exists():
+    sys.path = [entry for entry in sys.path if entry != str(_SOURCE_ROOT)]
+    sys.path.insert(0, str(_SOURCE_ROOT))
 
-# Switch line-overlay convention shared by the block and switch review figures:
-# sectionalizers (normally-closed, intra-feeder) vs ties (normally-open,
-# cross-feeder). DNMG reconfiguration treats them differently.
+from paths import default_location_config_path, find_repo_root
+from study_location import define_location
+
+
+repo_root = find_repo_root(Path(__file__).resolve())
+
 sectionalizing_switch_color = "#f97316"
 tie_switch_color = "#dc2626"
+ocean_bluff_bbox = {"min_lon": -70.666, "max_lon": -70.635, "min_lat": 42.078, "max_lat": 42.105}
+webster_substation_bus = "marshfield_shift_synthetic_region_044__66050127"
+block_alpha = 0.22
 
 
-def save_review_figure(fig, output_path: Path, *, dpi: int, pad: float | None = None) -> None:
-    """Finalize a review figure: ensure the output dir, tight-layout, save, close."""
+def power_grid_root():
+    definition = define_location(default_location_config_path(repo_root))
+    value = Path(definition.grid.get("power_grid_root", "data/power_grid"))
+    return value if value.is_absolute() else definition.root / value
+
+
+def _default_registry_dir():
+    return power_grid_root() / "asset_registry"
+
+
+def _default_smart_ds_compat_dir():
+    return power_grid_root() / "augmented"
+
+
+def _default_figure_path():
+    return power_grid_root() / "figures" / "switch_line_overlay.png"
+
+
+def save_review_figure(fig, output_path, *, dpi, pad=None):
+    output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.tight_layout(**({"pad": pad} if pad is not None else {}))
     fig.savefig(output_path, dpi=dpi)
@@ -52,72 +66,174 @@ def _patch_handle(**kwargs):
     return mpatches.Patch(**kwargs)
 
 
-# Switch overlay plots
-
-default_registry_dir = power_grid / "asset_registry"
-default_smart_ds_compat_dir = power_grid / "augmented"
-default_figure_path = power_grid / "figures" / "switch_line_overlay.png"
+def _read_table(path):
+    path = Path(path)
+    return pd.read_parquet(path) if path.suffix == ".parquet" else pd.read_csv(path)
 
 
-def plot_switches(
-    *,
-    registry_dir: Path = default_registry_dir,
-    smart_ds_compat_dir: Path = default_smart_ds_compat_dir,
-    output_path: Path = default_figure_path,
-) -> dict[str, Any]:
-    """Render SFO-style switch line notation for qualitative switch-placement review."""
+def _optional_table(path):
+    return _read_table(path) if Path(path).exists() else pd.DataFrame()
 
-    buses = pd.read_csv(registry_dir / "buses.csv")
-    lines = pd.read_csv(registry_dir / "lines.csv")
-    switches = pd.read_parquet(smart_ds_compat_dir / "controllable_switches.parquet")
-    switch_role_counts = switches["switch_role"].value_counts()
 
-    bus_xy = {
-        row.bus: (float(row.lon), float(row.lat))
-        for row in buses.dropna(subset=["lon", "lat"]).itertuples(index=False)
-    }
-    line_xy = {
-        row.line_name: ((float(row.from_lon), float(row.from_lat)), (float(row.to_lon), float(row.to_lat)))
-        for row in lines.dropna(subset=["from_lon", "from_lat", "to_lon", "to_lat"]).itertuples(index=False)
-    }
+def _first_coord_pair(df, candidates):
+    for x, y in candidates:
+        if x in df and y in df:
+            return x, y
+    lon_cols = [c for c in df.columns if "lon" in c.lower()]
+    lat_cols = [c for c in df.columns if "lat" in c.lower()]
+    return (lon_cols[0], lat_cols[0]) if lon_cols and lat_cols else (None, None)
 
-    base_segments = [
-        ((float(row.from_lon), float(row.from_lat)), (float(row.to_lon), float(row.to_lat)))
-        for row in lines.dropna(subset=["from_lon", "from_lat", "to_lon", "to_lat"]).itertuples(index=False)
+
+def _point_gdf(df, x="lon", y="lat", crs=4326):
+    if df.empty or x not in df or y not in df:
+        return gpd.GeoDataFrame(df.copy(), geometry=[], crs=crs)
+    rows = df.dropna(subset=[x, y]).copy()
+    return gpd.GeoDataFrame(rows, geometry=gpd.points_from_xy(rows[x], rows[y]), crs=crs)
+
+
+def _line_gdf(df):
+    required = ["from_lon", "from_lat", "to_lon", "to_lat"]
+    if df.empty or any(c not in df for c in required):
+        return gpd.GeoDataFrame(df.copy(), geometry=[], crs=4326)
+    rows = df.dropna(subset=required).copy()
+    if "has_buscoords" in rows:
+        rows = rows[rows["has_buscoords"].astype(str).str.lower().eq("true")]
+    rows["geometry"] = [
+        LineString([(r.from_lon, r.from_lat), (r.to_lon, r.to_lat)])
+        for r in rows.itertuples()
     ]
-    sectionalizing_segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
-    tie_segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
-    zero_length_ties = 0
+    return gpd.GeoDataFrame(rows, geometry="geometry", crs=4326)
 
-    for row in switches.itertuples(index=False):
-        if row.switch_role == "sectionalizing" and bool(row.opens_existing_line):
-            segment = line_xy.get(str(row.associated_line_name))
-            if segment is None:
-                segment = _bus_segment(bus_xy, str(row.from_bus), str(row.to_bus))
-            if segment is not None:
-                sectionalizing_segments.append(segment)
-        elif row.switch_role == "tie":
-            segment = _bus_segment(bus_xy, str(row.from_bus), str(row.to_bus))
-            if segment is None:
-                continue
-            if segment[0] == segment[1]:
-                zero_length_ties += 1
-                lon, lat = segment[0]
-                segment = (lon - 0.00018, lat - 0.00018), (lon + 0.00018, lat + 0.00018)
-            tie_segments.append(segment)
+
+def _asset_registry(registry_dir, compat_dir):
+    r, c = Path(registry_dir), Path(compat_dir)
+    return {
+        "buses": _optional_table(r / "buses.csv"),
+        "lines": _optional_table(r / "lines.csv"),
+        "load_buses": _optional_table(r / "load_buses.csv"),
+        "transformers": _optional_table(r / "transformers.csv"),
+        "sources": _optional_table(r / "sources.csv"),
+        "switches": _optional_table(c / "controllable_switches.parquet"),
+        "blocks": _optional_table(c / "switch_bounded_load_blocks.parquet"),
+        "facilities": _optional_table(c / "critical_facilities.parquet"),
+        "assignments": _optional_table(c / "critical_load_assignments.parquet"),
+    }
+
+
+def _web_mercator_bbox(bbox_dict):
+    b = bbox_dict
+    return gpd.GeoSeries([box(b["min_lon"], b["min_lat"], b["max_lon"], b["max_lat"])], crs=4326).to_crs(3857).iloc[0]
+
+
+def _add_basemap(ax):
+    try:
+        ctx.add_basemap(ax, crs=3857, source=ctx.providers.CartoDB.PositronNoLabels)
+        return True
+    except Exception:
+        return False
+
+
+def _clip(gdf, geom):
+    return gdf.clip(geom) if not gdf.empty else gdf
+
+
+def _block_hulls(blocks, buses_3857):
+    if blocks.empty or buses_3857.empty or "buses_json" not in blocks:
+        return gpd.GeoDataFrame(geometry=[], crs=3857)
+    bus_geom = buses_3857.dropna(subset=["bus"]).set_index("bus").geometry
+    records = []
+    for i, row in enumerate(blocks.sort_values([c for c in ["feeder_id", "block_id"] if c in blocks]).itertuples()):
+        names = [b for b in json.loads(row.buses_json) if b in bus_geom.index]
+        if len(names) < 3:
+            continue
+        geom = MultiPoint(list(bus_geom.loc[names])).convex_hull.envelope
+        if geom.is_empty:
+            continue
+        records.append(
+            {
+                "block_id": getattr(row, "block_id", f"block_{i:04d}"),
+                "feeder_id": getattr(row, "feeder_id", ""),
+                "bus_count": int(getattr(row, "bus_count", len(names))),
+                "load_kw": float(getattr(row, "load_kw", 0.0)),
+                "color_id": i,
+                "bus_names": names,
+                "geometry": geom,
+            }
+        )
+    if not records:
+        return gpd.GeoDataFrame(geometry=[], crs=3857)
+    return gpd.GeoDataFrame(records, geometry="geometry", crs=3857)
+
+
+def _switch_lines(switches, buses_3857, lines_3857):
+    if switches.empty:
+        return gpd.GeoDataFrame(geometry=[], crs=3857), 0
+    bus_geom = buses_3857.dropna(subset=["bus"]).set_index("bus").geometry
+    line_key = "line_name" if "line_name" in lines_3857 else "line"
+    line_geom = lines_3857.dropna(subset=[line_key]).set_index(line_key).geometry if line_key in lines_3857 else {}
+    records, zero_length = [], 0
+    for row in switches.itertuples():
+        role = str(getattr(row, "switch_role", ""))
+        geom = None
+        if role == "sectionalizing" and bool(getattr(row, "opens_existing_line", False)):
+            geom = line_geom.get(str(getattr(row, "associated_line_name", "")), None)
+        elif role == "tie":
+            left = bus_geom.get(str(getattr(row, "from_bus", "")), None)
+            right = bus_geom.get(str(getattr(row, "to_bus", "")), None)
+            if left is not None and right is not None:
+                if left.equals(right):
+                    zero_length += 1
+                    geom = LineString([(left.x - 20, left.y - 20), (left.x + 20, left.y + 20)])
+                else:
+                    geom = LineString([left, right])
+        if geom is not None and not geom.is_empty:
+            records.append({**row._asdict(), "geometry": geom})
+    return gpd.GeoDataFrame(records, geometry="geometry", crs=3857), zero_length
+
+
+def _facility_connectors(facilities, assignments, buses):
+    if facilities.empty or assignments.empty or "matched_bus" not in assignments:
+        return gpd.GeoDataFrame(geometry=[], crs=3857)
+    bus_geom = buses.dropna(subset=["bus"]).set_index("bus").geometry
+    rows = assignments.merge(facilities.drop(columns="geometry"), on="facility_id", how="inner")
+    lines = []
+    for row in rows.itertuples():
+        bus = bus_geom.get(str(row.matched_bus), None)
+        fac = facilities.loc[facilities["facility_id"].astype(str).eq(str(row.facility_id)), "geometry"]
+        if bus is not None and not fac.empty:
+            lines.append({"facility_id": row.facility_id, "geometry": LineString([fac.iloc[0], bus])})
+    return gpd.GeoDataFrame(lines, geometry="geometry", crs=3857)
+
+
+def _plot_gdf(gdf, ax, **kwargs):
+    if not gdf.empty:
+        gdf.plot(ax=ax, **kwargs)
+
+
+def plot_switches(*, registry_dir=None, smart_ds_compat_dir=None, output_path=None):
+    registry_dir = Path(registry_dir or _default_registry_dir())
+    smart_ds_compat_dir = Path(smart_ds_compat_dir or _default_smart_ds_compat_dir())
+    output_path = Path(output_path or _default_figure_path())
+    buses = _point_gdf(pd.read_csv(Path(registry_dir) / "buses.csv")).to_crs(3857)
+    lines = _line_gdf(pd.read_csv(Path(registry_dir) / "lines.csv")).to_crs(3857)
+    switches = _point_gdf(pd.read_parquet(Path(smart_ds_compat_dir) / "controllable_switches.parquet")).to_crs(3857)
+    switch_lines, zero_length = _switch_lines(switches, buses, lines)
+    role_counts = switches["switch_role"].value_counts() if "switch_role" in switches else pd.Series(dtype=int)
 
     fig, ax = plt.subplots(figsize=(10, 10))
-    ax.add_collection(LineCollection(base_segments, colors="#486b7d", linewidths=0.35, alpha=0.40))
-    if sectionalizing_segments:
-        ax.add_collection(LineCollection(sectionalizing_segments, colors=sectionalizing_switch_color, linewidths=1.2, alpha=0.95))
-    if tie_segments:
-        ax.add_collection(LineCollection(tie_segments, colors=tie_switch_color, linewidths=1.6, alpha=0.95))
-    ax.scatter(buses["lon"], buses["lat"], s=0.45, c="#1f2933", alpha=0.28, linewidths=0)
+    _plot_gdf(lines, ax, color="#486b7d", linewidth=0.35, alpha=0.40)
+    if not switch_lines.empty:
+        switch_lines.plot(
+            ax=ax,
+            color=switch_lines["switch_role"].map({"sectionalizing": sectionalizing_switch_color, "tie": tie_switch_color}),
+            linewidth=switch_lines["switch_role"].map({"sectionalizing": 1.2, "tie": 1.6}).fillna(1.2),
+            alpha=0.95,
+        )
+    _plot_gdf(buses, ax, color="#1f2933", markersize=0.45, alpha=0.28)
     ax.set_title(
         "Grid Dataset: SFO-style switch line overlay\n"
         f"{len(lines):,} plotted lines, {len(buses):,} buses, {len(switches):,} controllable switches"
     )
-    ax.set_aspect("equal", adjustable="box")
     ax.axis("off")
     ax.legend(
         handles=[
@@ -135,724 +251,142 @@ def plot_switches(
         "line_count": len(lines),
         "bus_count": len(buses),
         "switch_count": len(switches),
-        "sectionalizing_switch_count": int(switch_role_counts.get("sectionalizing", 0)),
-        "tie_switch_count": int(switch_role_counts.get("tie", 0)),
-        "sectionalizing_switch_segments_plotted": len(sectionalizing_segments),
-        "tie_switch_segments_plotted": len(tie_segments),
-        "zero_length_tie_ticks": zero_length_ties,
+        "sectionalizing_switch_count": int(role_counts.get("sectionalizing", 0)),
+        "tie_switch_count": int(role_counts.get("tie", 0)),
+        "sectionalizing_switch_segments_plotted": int((switch_lines["switch_role"] == "sectionalizing").sum()) if not switch_lines.empty else 0,
+        "tie_switch_segments_plotted": int((switch_lines["switch_role"] == "tie").sum()) if not switch_lines.empty else 0,
+        "zero_length_tie_ticks": zero_length,
     }
 
 
-def _bus_segment(
-    bus_xy: dict[str, tuple[float, float]],
-    from_bus: str,
-    to_bus: str,
-) -> tuple[tuple[float, float], tuple[float, float]] | None:
-    if from_bus not in bus_xy or to_bus not in bus_xy:
-        return None
-    return bus_xy[from_bus], bus_xy[to_bus]
-
-
-# Block overview/detail plots
-
-ocean_bluff_bbox = {
-    "min_lon": -70.666,
-    "max_lon": -70.635,
-    "min_lat": 42.078,
-    "max_lat": 42.105,
-}
-webster_substation_bus = "marshfield_shift_synthetic_region_044__66050127"
-carto_light_nolabels_url = "https://a.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}.png"
-block_alpha = 0.20
-basemap_zoom = 15
-block_palette = (
-    "#2563eb",
-    "#16a34a",
-    "#dc2626",
-    "#9333ea",
-    "#ca8a04",
-    "#0891b2",
-    "#ea580c",
-    "#0f766e",
-    "#c026d3",
-    "#65a30d",
-    "#4f46e5",
-    "#d97706",
-    "#0284c7",
-    "#15803d",
-    "#be185d",
-    "#7c2d12",
-    "#4338ca",
-    "#84cc16",
-    "#0e7490",
-    "#a21caf",
-    "#b45309",
-    "#0369a1",
-    "#166534",
-    "#e11d48",
-)
-
-
-def block_overview(
-    *,
-    registry_dir: Path,
-    smart_ds_compat_dir: Path,
-    output_path: Path,
-) -> dict[str, Any]:
-    """Render the DFT-style full-network block hull and switch overlay."""
-
-    artifacts = _load_block_plot_artifacts(registry_dir, smart_ds_compat_dir)
-    buses = artifacts["buses"]
-    lines = artifacts["lines"]
-    transformers = artifacts["transformers"]
-    switches = artifacts["switches"]
-    facilities = artifacts["critical_facilities"]
-    assignments = artifacts["critical_load_assignments"]
-
-    line_gdf = _line_gdf(lines, aliases=True)
-    bus_gdf = _point_gdf(buses)
-    switch_gdf = _point_gdf(switches)
-    facility_gdf = _point_gdf(facilities)
-    block_line_gdf, block_root_by_bus = _derive_switch_bounded_block_lines(
-        line_gdf,
-        lines,
-        buses,
-        switches,
-        transformers,
-    )
-    block_plot_lines = block_line_gdf.to_crs(3857)
-    all_plot_lines = line_gdf.to_crs(3857)
-    all_plot_buses = bus_gdf.to_crs(3857)
-    plot_switches = switch_gdf.to_crs(3857) if not switch_gdf.empty else switch_gdf
-    plot_critical = facility_gdf.to_crs(3857) if not facility_gdf.empty else facility_gdf
-
-    projected_buses_by_bus = {
-        row.bus: (row.geometry.x, row.geometry.y)
-        for row in all_plot_buses.dropna(subset=["bus"]).itertuples(index=False)
-    }
-    coords_by_root: dict[str, list[tuple[float, float]]] = {}
-    for bus_name, root in block_root_by_bus.items():
-        pt = projected_buses_by_bus.get(bus_name)
-        if pt is not None:
-            coords_by_root.setdefault(root, []).append(pt)
-    roots_sorted = sorted(coords_by_root, key=lambda root: (-len(coords_by_root[root]), root))
+def block_overview(*, registry_dir, smart_ds_compat_dir, output_path):
+    a = _asset_registry(registry_dir, smart_ds_compat_dir)
+    buses = _point_gdf(a["buses"]).to_crs(3857)
+    lines = _line_gdf(a["lines"]).to_crs(3857)
+    switches = _point_gdf(a["switches"]).to_crs(3857)
+    facilities = _point_gdf(a["facilities"]).to_crs(3857)
+    blocks = _block_hulls(a["blocks"], buses)
+    switch_lines, zero_length = _switch_lines(switches, buses, lines)
+    connectors = _facility_connectors(facilities, a["assignments"], buses)
 
     fig, ax = plt.subplots(figsize=(11, 11))
-    block_hull_records = []
-    for root in roots_sorted:
-        coords = coords_by_root.get(root, [])
-        if len(coords) < 6:
-            continue
-        hull = _block_hull_polygon(coords)
-        if hull is not None:
-            block_hull_records.append({"root": root, "hull": hull, "area": hull.area})
-
-    block_color_by_root = _assign_contrasting_block_colors(block_hull_records, block_palette)
-    block_plot_lines["block_color"] = block_plot_lines["block_root"].map(block_color_by_root)
-    missing = block_plot_lines["block_color"].isna()
-    block_plot_lines.loc[missing, "block_color"] = block_plot_lines.loc[missing, "block_color_index"].map(
-        lambda idx: block_palette[int(idx) % len(block_palette)]
-    )
-    for record in block_hull_records:
-        record["color"] = block_color_by_root.get(record["root"], block_palette[0])
-
-    covered_hulls = []
-    for record in sorted(block_hull_records, key=lambda item: (item["area"], item["root"])):
-        hull = record["hull"]
-        display_hull = hull.difference(unary_union(covered_hulls)) if covered_hulls else hull
-        display_hull = _polygonal_geometry(display_hull)
-        if display_hull is None or display_hull.is_empty:
-            covered_hulls.append(hull)
-            continue
-        display_series = gpd.GeoSeries([display_hull], crs="EPSG:3857")
-        display_series.plot(ax=ax, color=record["color"], alpha=0.14, linewidth=0, zorder=1)
-        display_series.boundary.plot(ax=ax, color=record["color"], alpha=0.55, linewidth=0.7, zorder=2)
-        covered_hulls.append(hull)
-
-    if not block_plot_lines.empty:
-        block_plot_lines.plot(ax=ax, color=block_plot_lines["block_color"], linewidth=0.45, alpha=0.7, zorder=5)
-
-    sectionalizing, ties, _, zero_length_tie_ticks = _switch_line_layers(
-        plot_switches,
-        all_plot_lines,
-        all_plot_buses,
-        line_key="line",
-        draw_zero_length_ties=True,
-    )
-    if sectionalizing:
-        ax.add_collection(LineCollection(sectionalizing, colors=sectionalizing_switch_color, linewidths=1.2, alpha=0.95, zorder=6))
-    if ties:
-        ax.add_collection(LineCollection(ties, colors=tie_switch_color, linewidths=1.6, alpha=0.95, zorder=7))
-    facility_segments = _critical_connector_segments_3857(plot_critical, assignments, all_plot_buses)
-    if facility_segments:
-        ax.add_collection(LineCollection(facility_segments, colors="#7c3aed", linewidths=0.72, alpha=0.58, linestyles=":", zorder=7))
-    if not plot_critical.empty:
-        plot_critical.plot(ax=ax, color="#7c3aed", marker="*", markersize=52, alpha=0.96, edgecolor="white", linewidth=0.45, zorder=8)
-
-    ax.set_title(
-        f"Grid Dataset: {len(set(block_root_by_bus.values())):.1f} switch-bounded blocks "
-        "after opening Controllable Switches",
-        fontsize=13,
-    )
-    ax.set_aspect("equal", adjustable="box")
+    _plot_gdf(blocks, ax, column="color_id", cmap="tab20", alpha=0.25, edgecolor="#374151", linewidth=0.5)
+    _plot_gdf(lines, ax, color="#4b5563", linewidth=0.35, alpha=0.45)
+    if not switch_lines.empty:
+        switch_lines.plot(
+            ax=ax,
+            color=switch_lines["switch_role"].map({"sectionalizing": sectionalizing_switch_color, "tie": tie_switch_color}),
+            linewidth=1.2,
+            alpha=0.95,
+        )
+    _plot_gdf(connectors, ax, color="#7c3aed", linewidth=0.7, alpha=0.6, linestyle=":")
+    _plot_gdf(facilities, ax, color="#7c3aed", marker="*", markersize=52, edgecolor="white", linewidth=0.45)
+    ax.set_title(f"Grid Dataset: {len(blocks):.1f} switch-bounded blocks after opening Controllable Switches", fontsize=13)
     ax.axis("off")
     ax.legend(handles=_overview_legend(), loc="lower left", frameon=False)
     save_review_figure(fig, output_path, dpi=180)
-    block_sizes = pd.Series(block_root_by_bus).value_counts()
+    block_sizes = blocks["bus_count"] if "bus_count" in blocks else pd.Series(dtype=float)
     return {
         "output_path": str(output_path),
-        "switch_bounded_blocks": int(len(block_sizes)),
-        "opened_existing_lines_for_blocks": int(switches["opens_existing_line"].fillna(False).sum()) if "opens_existing_line" in switches else 0,
+        "switch_bounded_blocks": int(len(blocks)),
+        "opened_existing_lines_for_blocks": int(a["switches"].get("opens_existing_line", pd.Series(dtype=bool)).fillna(False).sum()) if not a["switches"].empty else 0,
         "median_block_bus_count": float(block_sizes.median()) if not block_sizes.empty else 0.0,
         "max_block_bus_count": int(block_sizes.max()) if not block_sizes.empty else 0,
-        "display_block_hulls": len(block_hull_records),
-        "block_line_segments": len(block_plot_lines),
-        "sectionalizing_switch_segments": len(sectionalizing),
-        "tie_switch_segments": len(ties),
-        "zero_length_tie_ticks": zero_length_tie_ticks,
-        "critical_facility_segments": len(facility_segments),
+        "display_block_hulls": len(blocks),
+        "block_line_segments": len(lines),
+        "sectionalizing_switch_segments": int((switch_lines["switch_role"] == "sectionalizing").sum()) if not switch_lines.empty else 0,
+        "tie_switch_segments": int((switch_lines["switch_role"] == "tie").sum()) if not switch_lines.empty else 0,
+        "zero_length_tie_ticks": zero_length,
+        "critical_facility_segments": len(connectors),
     }
 
 
-def block_detail(
-    *,
-    registry_dir: Path,
-    smart_ds_compat_dir: Path,
-    output_path: Path,
-    bbox: dict[str, float] | None = None,
-    add_basemap: bool = True,
-) -> dict[str, Any]:
-    """Render the Ocean Bluff / Brant Rock block detail figure."""
-
-    artifacts = _load_block_plot_artifacts(registry_dir, smart_ds_compat_dir)
-    buses = artifacts["buses"]
-    lines = artifacts["lines"]
-    load_buses = artifacts["load_buses"]
-    transformers = artifacts["transformers"]
-    sources = artifacts["sources"]
-    switches = artifacts["switches"]
-    blocks = artifacts["blocks"]
-    facilities = artifacts["critical_facilities"]
-    assignments = artifacts["critical_load_assignments"]
+def block_detail(*, registry_dir, smart_ds_compat_dir, output_path, bbox=None, add_basemap=True):
+    a = _asset_registry(registry_dir, smart_ds_compat_dir)
     bbox = bbox or ocean_bluff_bbox
-
-    bbox_4326 = box(bbox["min_lon"], bbox["min_lat"], bbox["max_lon"], bbox["max_lat"])
-    selection_bbox = gpd.GeoSeries([bbox_4326], crs="EPSG:4326").to_crs(3857).iloc[0]
-    bus_gdf = _point_gdf(buses).to_crs(3857)
-    load_bus_gdf = _point_gdf(load_buses).to_crs(3857)
-    transformer_gdf = _point_gdf(transformers, lon_col="location_lon", lat_col="location_lat").to_crs(3857)
-    source_gdf = _point_gdf(sources).to_crs(3857)
-    facility_gdf = _point_gdf(facilities).to_crs(3857)
-    switch_gdf = _point_gdf(switches).to_crs(3857)
-    line_gdf = _line_gdf(lines).to_crs(3857)
-
-    bus_point_by_name = bus_gdf.dropna(subset=["bus"]).set_index("bus").geometry.to_dict()
-    block_records = []
-    for index, row in blocks.sort_values(["feeder_id", "block_id"]).reset_index(drop=True).iterrows():
-        block_buses = [bus for bus in json.loads(row.buses_json) if bus in bus_point_by_name]
-        hull = _block_hull_polygon([bus_point_by_name[bus].coords[0] for bus in block_buses])
-        if hull is None or not hull.intersects(selection_bbox):
-            continue
-        block_records.append(
-            {
-                "block_id": row.block_id,
-                "feeder_id": row.feeder_id,
-                "bus_count": int(row.bus_count),
-                "load_kw": float(row.load_kw),
-                "color": block_palette[index % len(block_palette)],
-                "raw_geometry": hull,
-                "buses": block_buses,
-                "area": hull.area,
-            }
-        )
-    if not block_records:
+    clip_box = _web_mercator_bbox(bbox)
+    buses = _point_gdf(a["buses"]).to_crs(3857)
+    loads = _point_gdf(a["load_buses"]).to_crs(3857)
+    transformers = _point_gdf(a["transformers"], "location_lon", "location_lat").to_crs(3857)
+    sources = _point_gdf(a["sources"]).to_crs(3857)
+    switches = _point_gdf(a["switches"]).to_crs(3857)
+    facilities = _point_gdf(a["facilities"]).to_crs(3857)
+    lines = _line_gdf(a["lines"]).to_crs(3857)
+    blocks = _clip(_block_hulls(a["blocks"], buses), clip_box)
+    if blocks.empty:
         raise RuntimeError(f"No switch-bounded load blocks intersect {bbox}.")
 
-    selected_block_buses = {bus for record in block_records for bus in record["buses"]}
-    _assign_visible_block_geometries(block_records)
-    block_gdf = gpd.GeoDataFrame(
-        [record for record in block_records if "geometry" in record],
-        geometry="geometry",
-        crs="EPSG:3857",
-    )
-    block_union = unary_union([record["raw_geometry"] for record in block_records])
-    plot_extent = block_union.envelope
-
-    selected_line_names = set(
-        lines.loc[
-            lines["from_bus"].isin(selected_block_buses) & lines["to_bus"].isin(selected_block_buses),
-            "line_name",
-        ].astype(str)
-    )
-    local_lines = line_gdf[line_gdf["line_name"].astype(str).isin(selected_line_names)].copy()
-    local_buses = bus_gdf[bus_gdf["bus"].isin(selected_block_buses)].copy()
-    local_demand_buses = load_bus_gdf[load_bus_gdf["bus"].isin(selected_block_buses)].copy()
-    local_sources = source_gdf[source_gdf["bus"].isin(selected_block_buses)].copy()
-    transformer_mask = (
-        transformers["location_bus"].isin(selected_block_buses)
-        | transformers["primary_bus"].isin(selected_block_buses)
-        | transformers["winding_buses"].apply(lambda value: _any_csv_token_in_set(value, selected_block_buses))
-    )
-    local_transformers = transformer_gdf[transformer_mask.to_numpy()].copy()
-    switch_mask = (
-        switches["associated_line_name"].astype(str).isin(selected_line_names)
-        | (switches["from_bus"].isin(selected_block_buses) & switches["to_bus"].isin(selected_block_buses))
-    )
-    local_switches = switch_gdf[switch_mask.to_numpy()].copy()
-    sectionalizing, ties, switch_markers, _ = _switch_line_layers(
-        local_switches,
-        local_lines,
-        local_buses,
-        bbox=plot_extent,
-        include_markers=True,
-    )
-    webster_sources = local_sources[local_sources["bus"].eq(webster_substation_bus)].copy()
-    generic_sources = local_sources[~local_sources["bus"].eq(webster_substation_bus)].copy()
-    local_facilities = _local_critical_facilities(facility_gdf, assignments, local_buses, plot_extent, selected_block_buses)
-    facility_segments = _critical_connector_segments_3857(local_facilities, assignments, local_buses)
-
+    selected_buses = set(np.concatenate(blocks["bus_names"].to_numpy()))
+    local_buses = buses[buses["bus"].isin(selected_buses)]
+    local_loads = loads[loads["bus"].isin(selected_buses)] if "bus" in loads else _clip(loads, clip_box)
+    local_lines = lines[lines["from_bus"].isin(selected_buses) & lines["to_bus"].isin(selected_buses)] if {"from_bus", "to_bus"} <= set(lines.columns) else _clip(lines, clip_box)
+    local_sources = sources[sources["bus"].isin(selected_buses)] if "bus" in sources else _clip(sources, clip_box)
+    local_transformers = _clip(transformers, clip_box)
+    local_switches = _clip(switches, clip_box)
+    local_facilities = _clip(facilities, clip_box)
+    connectors = _clip(_facility_connectors(local_facilities, a["assignments"], local_buses), clip_box)
+    switch_lines, _zero = _switch_lines(local_switches, local_buses, local_lines)
+    plot_extent = blocks.geometry.unary_union.envelope.buffer(120)
     minx, miny, maxx, maxy = plot_extent.bounds
-    pad_x = (maxx - minx) * 0.075
-    pad_y = (maxy - miny) * 0.075
-    plot_bounds = (minx - pad_x, miny - pad_y, maxx + pad_x, maxy + pad_y)
-    fig, ax = plt.subplots(figsize=_figure_size_for_bounds(plot_bounds))
-    ax.set_facecolor("#eef2f3")
-    basemap_added = _add_minimal_basemap(ax, plot_bounds) if add_basemap else False
-    for row in block_gdf.itertuples(index=False):
-        gpd.GeoSeries([row.geometry], crs="EPSG:3857").plot(
-            ax=ax,
-            facecolor=row.color,
-            edgecolor=row.color,
-            alpha=block_alpha,
-            linewidth=0.9,
-            zorder=1,
-        )
-    if not local_lines.empty:
-        local_lines.plot(ax=ax, color="#4b5563", linewidth=0.58, alpha=0.70, zorder=3)
-    if sectionalizing:
-        ax.add_collection(LineCollection(sectionalizing, colors=sectionalizing_switch_color, linewidths=2.0, alpha=0.96, zorder=5))
-    if ties:
-        ax.add_collection(LineCollection(ties, colors=tie_switch_color, linewidths=2.2, alpha=0.98, zorder=6))
-    _plot_points(ax, local_buses, "#111827", "o", 1.0, 7, alpha=0.36)
-    _plot_points(ax, local_demand_buses, "#2563eb", "o", 5.0, 8, alpha=0.78)
-    _plot_points(ax, local_transformers, "#ca8a04", "D", 22, 10)
-    _plot_points(ax, switch_markers, "#ef4444", "s", 18, 11)
-    if facility_segments:
-        ax.add_collection(LineCollection(facility_segments, colors="#7c3aed", linewidths=0.85, alpha=0.62, linestyles=":", zorder=12))
-    _plot_points(ax, local_facilities, "#7c3aed", "*", 86, 13)
-    _annotate_facilities(ax, local_facilities)
-    _plot_points(ax, generic_sources, "#111827", "^", 72, 14)
-    _plot_points(ax, webster_sources, "#f59e0b", "^", 135, 15, edgecolor="#111827")
 
-    ax.set_xlim(plot_bounds[0], plot_bounds[2])
-    ax.set_ylim(plot_bounds[1], plot_bounds[3])
-    ax.set_aspect("equal", adjustable="box")
+    fig, ax = plt.subplots(figsize=(10, 11))
+    ax.set_facecolor("#eef2f3")
+    basemap_added = _add_basemap(ax) if add_basemap else False
+    _plot_gdf(blocks, ax, column="color_id", cmap="tab20", alpha=block_alpha, edgecolor="k", linewidth=0.8)
+    _plot_gdf(local_lines, ax, color="#4b5563", linewidth=0.58, alpha=0.70)
+    if not switch_lines.empty:
+        switch_lines.plot(
+            ax=ax,
+            color=switch_lines["switch_role"].map({"sectionalizing": sectionalizing_switch_color, "tie": tie_switch_color}).fillna("#ef4444"),
+            linewidth=1.9,
+            alpha=0.96,
+        )
+    _plot_gdf(local_buses, ax, color="#111827", markersize=1.0, alpha=0.36)
+    _plot_gdf(local_loads, ax, color="#2563eb", markersize=5.0, alpha=0.78)
+    _plot_gdf(local_transformers, ax, color="#ca8a04", marker="D", markersize=22, edgecolor="white")
+    if not local_switches.empty:
+        local_switches.plot(ax=ax, color=local_switches["switch_role"].map({"sectionalizing": sectionalizing_switch_color, "tie": tie_switch_color}).fillna("#ef4444"), marker="s", markersize=18, edgecolor="white")
+    _plot_gdf(connectors, ax, color="#7c3aed", linewidth=0.85, alpha=0.62, linestyle=":")
+    _plot_gdf(local_facilities, ax, color="#7c3aed", marker="*", markersize=86, edgecolor="white")
+    _plot_gdf(local_sources[~local_sources.get("bus", pd.Series(dtype=str)).eq(webster_substation_bus)], ax, color="#111827", marker="^", markersize=72, edgecolor="white")
+    _plot_gdf(local_sources[local_sources.get("bus", pd.Series(dtype=str)).eq(webster_substation_bus)], ax, color="#f59e0b", marker="^", markersize=135, edgecolor="#111827")
+    ax.set_xlim(minx, maxx)
+    ax.set_ylim(miny, maxy)
     ax.axis("off")
     ax.set_title(
         "Ocean Bluff and Brant Rock\n"
-        f"{len(block_gdf):,} blocks | {len(local_lines):,} lines\n"
-        f"{len(local_buses):,} buses | {len(local_demand_buses):,} demand buses\n"
-        f"{len(local_transformers):,} transformers | {len(switch_markers):,} switch points | "
-        f"{len(local_facilities):,} critical facilities",
+        f"{len(blocks):,} blocks | {len(local_lines):,} lines\n"
+        f"{len(local_buses):,} buses | {len(local_loads):,} demand buses\n"
+        f"{len(local_transformers):,} transformers | {len(local_switches):,} switch points | {len(local_facilities):,} critical facilities",
         fontsize=10.5,
     )
-    legend = ax.legend(handles=_detail_legend(), loc="upper right", frameon=True, fontsize=8.8, ncol=1)
+    legend = ax.legend(handles=_detail_legend(), loc="upper right", frameon=True, fontsize=8.8)
     legend.get_frame().set_facecolor("white")
     legend.get_frame().set_alpha(0.88)
-    legend.get_frame().set_edgecolor("#e5e7eb")
     if basemap_added:
-        ax.text(
-            0.01,
-            0.01,
-            "Basemap: OpenStreetMap contributors, CARTO no-label tiles",
-            transform=ax.transAxes,
-            fontsize=6.5,
-            color="#6b7280",
-            ha="left",
-            va="bottom",
-            zorder=20,
-        )
+        ax.text(0.01, 0.01, "Basemap: OpenStreetMap contributors, CARTO no-label tiles", transform=ax.transAxes, fontsize=6.5, color="#6b7280")
     save_review_figure(fig, output_path, dpi=240, pad=0.3)
     return {
         "output_path": str(output_path),
-        "selected_block_bus_members": len(selected_block_buses),
+        "selected_block_bus_members": len(selected_buses),
         "local_lines": len(local_lines),
         "local_buses": len(local_buses),
-        "local_demand_buses": len(local_demand_buses),
+        "local_demand_buses": len(local_loads),
         "local_transformers": len(local_transformers),
         "local_sources": len(local_sources),
-        "local_switch_markers": len(switch_markers),
-        "local_sectionalizing_switch_segments": len(sectionalizing),
-        "local_tie_switch_segments": len(ties),
-        "visible_block_hulls": len(block_gdf),
+        "local_switch_markers": len(local_switches),
+        "local_sectionalizing_switch_segments": int((switch_lines["switch_role"] == "sectionalizing").sum()) if not switch_lines.empty else 0,
+        "local_tie_switch_segments": int((switch_lines["switch_role"] == "tie").sum()) if not switch_lines.empty else 0,
+        "visible_block_hulls": len(blocks),
         "critical_facilities_visible": len(local_facilities),
-        "critical_facility_proxy_segments": len(facility_segments),
+        "critical_facility_proxy_segments": len(connectors),
         "basemap_added": basemap_added,
     }
 
 
-def _load_block_plot_artifacts(registry_dir: Path, smart_ds_compat_dir: Path) -> dict[str, pd.DataFrame]:
-    return {
-        "buses": pd.read_csv(registry_dir / "buses.csv"),
-        "lines": pd.read_csv(registry_dir / "lines.csv"),
-        "load_buses": pd.read_csv(registry_dir / "load_buses.csv"),
-        "transformers": pd.read_csv(registry_dir / "transformers.csv"),
-        "sources": pd.read_csv(registry_dir / "sources.csv"),
-        "switches": pd.read_parquet(smart_ds_compat_dir / "controllable_switches.parquet"),
-        "blocks": pd.read_parquet(smart_ds_compat_dir / "switch_bounded_load_blocks.parquet"),
-        "critical_facilities": _optional_parquet(smart_ds_compat_dir / "critical_facilities.parquet"),
-        "critical_load_assignments": _optional_parquet(smart_ds_compat_dir / "critical_load_assignments.parquet"),
-    }
-
-
-def _optional_parquet(path: Path) -> pd.DataFrame:
-    return pd.read_parquet(path) if path.exists() else pd.DataFrame()
-
-
-def _point_gdf(rows: pd.DataFrame, *, lon_col: str = "lon", lat_col: str = "lat") -> gpd.GeoDataFrame:
-    if rows.empty or lon_col not in rows.columns or lat_col not in rows.columns:
-        return gpd.GeoDataFrame(rows.copy(), geometry=[], crs="EPSG:4326")
-    rows = rows.dropna(subset=[lon_col, lat_col]).copy()
-    return gpd.GeoDataFrame(rows, geometry=[Point(xy) for xy in zip(rows[lon_col], rows[lat_col])], crs="EPSG:4326")
-
-
-def _line_gdf(rows: pd.DataFrame, *, aliases: bool = False) -> gpd.GeoDataFrame:
-    rows = rows[rows["has_buscoords"].astype(str).str.lower().eq("true")].dropna(
-        subset=["from_lon", "from_lat", "to_lon", "to_lat"]
-    ).copy()
-    rows["geometry"] = [
-        LineString([(row.from_lon, row.from_lat), (row.to_lon, row.to_lat)])
-        for row in rows.itertuples(index=False)
-    ]
-    if aliases:
-        rows["line"] = rows["line_name"].astype(str)
-        rows["bus1"] = rows["from_bus"].astype(str)
-        rows["bus2"] = rows["to_bus"].astype(str)
-        rows["enabled"] = rows["enabled"] if "enabled" in rows else True
-    return gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326")
-
-
-def _derive_switch_bounded_block_lines(
-    line_gdf: gpd.GeoDataFrame,
-    lines: pd.DataFrame,
-    buses: pd.DataFrame,
-    switches: pd.DataFrame,
-    transformers: pd.DataFrame,
-) -> tuple[gpd.GeoDataFrame, dict[str, str]]:
-    parent = {str(bus): str(bus) for bus in buses["bus"].dropna().unique()}
-
-    def find(item: str) -> str:
-        parent.setdefault(item, item)
-        while parent[item] != item:
-            parent[item] = parent[parent[item]]
-            item = parent[item]
-        return item
-
-    def union(left: str, right: str) -> None:
-        left_root = find(left)
-        right_root = find(right)
-        if left_root != right_root:
-            parent[right_root] = left_root
-
-    opened_existing_lines = set(
-        switches.loc[switches["opens_existing_line"].fillna(False), "associated_line_name"].dropna()
-    )
-    active_lines = lines[
-        lines["line_class"].fillna("line").eq("line")
-        & ~lines["line_name"].isin(opened_existing_lines)
-    ].copy()
-
-    for edge in active_lines.itertuples(index=False):
-        union(str(edge.from_bus), str(edge.to_bus))
-
-    if not transformers.empty and "winding_buses" in transformers.columns:
-        for row in transformers.itertuples(index=False):
-            windings = [bus.strip() for bus in str(row.winding_buses).split(",") if bus.strip()]
-            unique = []
-            seen = set()
-            for bus in windings:
-                if bus in seen:
-                    continue
-                seen.add(bus)
-                unique.append(bus)
-            if len(unique) >= 2:
-                hub = unique[0]
-                for other in unique[1:]:
-                    union(hub, other)
-
-    block_root_by_bus = {str(bus): find(str(bus)) for bus in buses["bus"].dropna().unique()}
-    block_sizes = pd.Series(block_root_by_bus).value_counts()
-    root_to_block_id = {
-        root: f"block_{ordinal:04d}"
-        for ordinal, root in enumerate(block_sizes.index, start=1)
-    }
-    root_to_color_index = {
-        root: ordinal - 1
-        for ordinal, root in enumerate(block_sizes.index, start=1)
-    }
-
-    block_lines = line_gdf[line_gdf["enabled"] & line_gdf["line_class"].fillna("line").eq("line")].copy()
-    block_lines = block_lines[~block_lines["line"].isin(opened_existing_lines)].copy()
-    block_lines["block_root"] = block_lines["bus1"].map(block_root_by_bus)
-    block_lines["block_id"] = block_lines["block_root"].map(root_to_block_id)
-    block_lines["block_color_index"] = block_lines["block_root"].map(root_to_color_index).fillna(0).astype(int)
-    block_lines["block_bus_count"] = block_lines["block_root"].map(block_sizes).fillna(1).astype(int)
-    return block_lines, block_root_by_bus
-
-
-def _block_hull_polygon(coords):
-    if len(coords) < 3:
-        return None
-    hull = MultiPoint(coords).convex_hull
-    return hull if not hull.is_empty and hull.geom_type == "Polygon" else None
-
-
-def _assign_visible_block_geometries(block_records: list[dict[str, Any]]) -> None:
-    covered = []
-    for record in sorted(block_records, key=lambda item: (item["area"], item["block_id"])):
-        geometry = record["raw_geometry"].difference(unary_union(covered)) if covered else record["raw_geometry"]
-        geometry = _polygonal_geometry(geometry)
-        if geometry is not None and not geometry.is_empty:
-            record["geometry"] = geometry
-        covered.append(record["raw_geometry"])
-
-
-def _polygonal_geometry(geometry):
-    if geometry.is_empty:
-        return None
-    if geometry.geom_type in {"Polygon", "MultiPolygon"}:
-        return geometry
-    if hasattr(geometry, "geoms"):
-        polygons = [part for part in geometry.geoms if part.geom_type in {"Polygon", "MultiPolygon"}]
-        return unary_union(polygons) if polygons else None
-    return None
-
-
-def _block_color_distance(left: str, right: str) -> float:
-    left_rgb = mcolors.to_rgb(left)
-    right_rgb = mcolors.to_rgb(right)
-    return sum((left_rgb[channel] - right_rgb[channel]) ** 2 for channel in range(3)) ** 0.5
-
-
-def _assign_contrasting_block_colors(
-    block_hull_records: list[dict],
-    palette: tuple[str, ...],
-    *,
-    adjacency_distance_m: float = 24.0,
-) -> dict[str, str]:
-    if not block_hull_records:
-        return {}
-    adjacency = {record["root"]: set() for record in block_hull_records}
-    buffered = {
-        record["root"]: record["hull"].buffer(adjacency_distance_m)
-        for record in block_hull_records
-    }
-    for left_index, left_record in enumerate(block_hull_records):
-        left_root = left_record["root"]
-        for right_record in block_hull_records[left_index + 1:]:
-            right_root = right_record["root"]
-            if buffered[left_root].intersects(buffered[right_root]):
-                adjacency[left_root].add(right_root)
-                adjacency[right_root].add(left_root)
-
-    assigned: dict[str, str] = {}
-    color_use_count = {color: 0 for color in palette}
-    ordering = sorted(
-        block_hull_records,
-        key=lambda record: (-len(adjacency[record["root"]]), -record["area"], record["root"]),
-    )
-    for record in ordering:
-        root = record["root"]
-        neighbor_colors = [
-            assigned[neighbor]
-            for neighbor in adjacency[root]
-            if neighbor in assigned
-        ]
-
-        def score(color: str):
-            if not neighbor_colors:
-                return (1.0, 1.0, -color_use_count[color])
-            min_neighbor_distance = min(_block_color_distance(color, other) for other in neighbor_colors)
-            exact_match_penalty = 0.0 if color in neighbor_colors else 1.0
-            return (exact_match_penalty, min_neighbor_distance, -color_use_count[color])
-
-        assigned[root] = max(palette, key=score)
-        color_use_count[assigned[root]] += 1
-    return assigned
-
-
-def _any_csv_token_in_set(value, names: set[str]) -> bool:
-    if pd.isna(value):
-        return False
-    return any(token.strip() in names for token in str(value).split(","))
-
-
-def _switch_line_layers(
-    switches_3857,
-    lines_3857,
-    buses_3857,
-    *,
-    bbox=None,
-    line_key: str = "line_name",
-    include_markers: bool = False,
-    draw_zero_length_ties: bool = False,
-):
-    bus_xy = buses_3857.dropna(subset=["bus"]).set_index("bus").geometry.to_dict()
-    line_xy = {
-        str(getattr(row, line_key)): row.geometry
-        for row in lines_3857.dropna(subset=[line_key]).itertuples(index=False)
-    }
-    sectionalizing = []
-    ties = []
-    marker_rows = []
-    zero_length_tie_ticks = 0
-    for row in switches_3857.itertuples(index=False):
-        role = str(row.switch_role)
-        segment = None
-        if role == "sectionalizing" and bool(row.opens_existing_line):
-            segment = line_xy.get(str(row.associated_line_name))
-        elif role == "tie":
-            left = bus_xy.get(str(row.from_bus))
-            right = bus_xy.get(str(row.to_bus))
-            if left is None or right is None:
-                continue
-            if left.equals(right) and draw_zero_length_ties:
-                zero_length_tie_ticks += 1
-                ties.append([(left.x - 20.0, left.y - 20.0), (left.x + 20.0, left.y + 20.0)])
-                continue
-            segment = LineString([left, right])
-        if segment is not None and (bbox is None or segment.intersects(bbox)):
-            clipped = segment.intersection(bbox) if bbox is not None else segment
-            target = sectionalizing if role == "sectionalizing" else ties
-            target.extend(_clipped_line_segments(clipped))
-        if include_markers and row.geometry.within(bbox):
-            marker_rows.append(row._asdict())
-    markers = gpd.GeoDataFrame(marker_rows, geometry="geometry", crs="EPSG:3857") if marker_rows else gpd.GeoDataFrame(geometry=[], crs="EPSG:3857")
-    return sectionalizing, ties, markers, zero_length_tie_ticks
-
-
-def _clipped_line_segments(geometry):
-    if geometry.is_empty:
-        return []
-    if geometry.geom_type == "LineString":
-        coords = list(geometry.coords)
-        return [coords[:2]] if len(coords) >= 2 else []
-    if hasattr(geometry, "geoms"):
-        segments = []
-        for part in geometry.geoms:
-            segments.extend(_clipped_line_segments(part))
-        return segments
-    return []
-
-
-def _local_critical_facilities(facility_gdf, assignments, local_buses, plot_extent, selected_block_buses):
-    if facility_gdf.empty:
-        return facility_gdf
-    visible_ids = set()
-    if not assignments.empty and "matched_bus" in assignments.columns:
-        visible_ids.update(
-            assignments.loc[assignments["matched_bus"].isin(selected_block_buses), "facility_id"].astype(str)
-        )
-    visible_ids.update(facility_gdf[facility_gdf.geometry.within(plot_extent)]["facility_id"].astype(str))
-    return facility_gdf[facility_gdf["facility_id"].astype(str).isin(visible_ids)].copy()
-
-
-def _critical_connector_segments_3857(facilities_3857, assignments: pd.DataFrame, buses_3857):
-    if facilities_3857.empty or assignments.empty:
-        return []
-    bus_xy = buses_3857.dropna(subset=["bus"]).set_index("bus").geometry.to_dict()
-    assignment_by_facility = assignments.dropna(subset=["facility_id"]).set_index("facility_id")
-    segments = []
-    for row in facilities_3857.itertuples(index=False):
-        if row.facility_id not in assignment_by_facility.index:
-            continue
-        assignment = assignment_by_facility.loc[row.facility_id]
-        if isinstance(assignment, pd.DataFrame):
-            assignment = assignment.iloc[0]
-        bus_point = bus_xy.get(str(assignment.get("matched_bus", "")))
-        if bus_point is not None:
-            segments.append([(row.geometry.x, row.geometry.y), (bus_point.x, bus_point.y)])
-    return segments
-
-
-def _figure_size_for_bounds(bounds, *, height: float = 10.5):
-    minx, miny, maxx, maxy = bounds
-    aspect = max((maxy - miny) / max(maxx - minx, 1.0), 0.1)
-    return height / aspect, height
-
-
-def _add_minimal_basemap(ax, bounds, *, zoom: int = basemap_zoom, alpha: float = 0.78) -> bool:
-    x0, x1, y0, y1, tile_size_m, origin = _web_mercator_tile_range(bounds, zoom)
-    cols = x1 - x0 + 1
-    rows = y1 - y0 + 1
-    if cols <= 0 or rows <= 0 or cols * rows > 64:
-        return False
-    canvas = Image.new("RGB", (cols * 256, rows * 256), "white")
-    opener = urllib.request.build_opener()
-    opener.addheaders = [("User-Agent", "flood-rm-grid-plot/1.0")]
-    try:
-        for x in range(x0, x1 + 1):
-            for y in range(y0, y1 + 1):
-                url = carto_light_nolabels_url.format(z=zoom, x=x, y=y)
-                with opener.open(url, timeout=8) as response:
-                    tile = Image.open(io.BytesIO(response.read())).convert("RGB")
-                canvas.paste(tile, ((x - x0) * 256, (y - y0) * 256))
-    except Exception:
-        return False
-    extent = (
-        x0 * tile_size_m - origin,
-        (x1 + 1) * tile_size_m - origin,
-        origin - (y1 + 1) * tile_size_m,
-        origin - y0 * tile_size_m,
-    )
-    ax.imshow(np.asarray(canvas), extent=extent, origin="upper", alpha=alpha, zorder=0)
-    return True
-
-
-def _web_mercator_tile_range(bounds, zoom: int):
-    minx, miny, maxx, maxy = bounds
-    origin = 20037508.342789244
-    tile_size_m = (2 * origin) / (2**zoom)
-    max_tile = (2**zoom) - 1
-    x0 = max(0, min(max_tile, math.floor((minx + origin) / tile_size_m)))
-    x1 = max(0, min(max_tile, math.floor((maxx + origin) / tile_size_m)))
-    y0 = max(0, min(max_tile, math.floor((origin - maxy) / tile_size_m)))
-    y1 = max(0, min(max_tile, math.floor((origin - miny) / tile_size_m)))
-    return x0, x1, y0, y1, tile_size_m, origin
-
-
-def _plot_points(ax, rows: gpd.GeoDataFrame, color: str, marker: str, size: float, zorder: int, *, alpha: float = 0.96, edgecolor: str = "white") -> None:
-    if rows.empty:
-        return
-    rows.plot(ax=ax, color=color, marker=marker, markersize=size, alpha=alpha, edgecolor=edgecolor, linewidth=0.35, zorder=zorder)
-
-
-def _annotate_facilities(ax, facilities: gpd.GeoDataFrame) -> None:
-    offsets = {
-        "Marshfield Wastewater Treatment Plant": (12, 10, "left"),
-        "Fire Station #1": (-12, 12, "right"),
-        "Fire Station #2": (-12, -14, "right"),
-    }
-    for row in facilities.itertuples(index=False):
-        dx, dy, ha = offsets.get(row.facility_name, (8, 8, "left"))
-        ax.annotate(
-            row.facility_name,
-            xy=(row.geometry.x, row.geometry.y),
-            xytext=(dx, dy),
-            textcoords="offset points",
-            fontsize=7.2,
-            color="#4c1d95",
-            ha=ha,
-            va="center",
-            bbox={"boxstyle": "round,pad=0.15", "facecolor": "white", "edgecolor": "#ddd6fe", "alpha": 0.84},
-            arrowprops={"arrowstyle": "-", "color": "#7c3aed", "alpha": 0.50, "lw": 0.6, "shrinkA": 1, "shrinkB": 2},
-            zorder=14,
-        )
-
-
 def _overview_legend():
     return [
-        _patch_handle(facecolor="#9ca3af", edgecolor="#374151", alpha=0.35, label="Switch-bounded block (convex hull)"),
+        _patch_handle(facecolor="#9ca3af", edgecolor="#374151", alpha=0.35, label="Switch-bounded block"),
         _line_handle(color=sectionalizing_switch_color, lw=1.8, label="Sectionalizing switch (NC)"),
         _line_handle(color=tie_switch_color, lw=1.8, label="Tie switch (NO)"),
         _line_handle(color="#7c3aed", lw=1.0, ls=":", label="Facility-to-load-bus proxy"),
@@ -877,635 +411,231 @@ def _detail_legend():
     ]
 
 
-# Power extent and SFINCS domain exports
+def iter_buscoords(smart_ds_year_root):
+    for p in Path(smart_ds_year_root).rglob("Buscoords.dss"):
+        for line in p.read_text(errors="ignore").splitlines():
+            if line.strip() and not line.startswith(("!", "//")):
+                parts = line.split()
+                if len(parts) >= 3:
+                    yield float(parts[1]), float(parts[2])
 
-_ASSET_COORD_COLUMNS: tuple[tuple[str, str], ...] = (
-    ("lon", "lat"),
-    ("location_lon", "location_lat"),
-    ("from_lon", "from_lat"),
-    ("to_lon", "to_lat"),
-)
+
+def iter_asset_registry_points(asset_registry_dir):
+    for p in sorted(Path(asset_registry_dir).glob("*.csv")):
+        df = pd.read_csv(p)
+        for x, y in [("lon", "lat"), ("location_lon", "location_lat"), ("from_lon", "from_lat"), ("to_lon", "to_lat")]:
+            if x in df and y in df:
+                yield from df[[x, y]].dropna().astype(float).itertuples(index=False, name=None)
 
 
-def _write_feature_collection(output_path: Path, features: Iterable[dict]) -> Path:
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
-        json.dumps(
-            {
-                "type": "FeatureCollection",
-                "crs": {"type": "name", "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"}},
-                "features": list(features),
-            }
-        )
-        + "\n"
+def get_asset_points(registry_dir):
+    return list(iter_asset_registry_points(registry_dir))
+
+
+def concave_power_extent(points, *, alpha_ratio):
+    pts = list(points)
+    if not (0 < alpha_ratio <= 1):
+        raise ValueError(f"alpha_ratio must be in (0, 1]; got {alpha_ratio!r}")
+    if len(pts) < 3:
+        raise ValueError(f"need at least 3 points to form a hull; got {len(pts)}")
+    return MultiPoint(pts).convex_hull if alpha_ratio == 1.0 else gpd.GeoSeries([MultiPoint(pts)], crs=4326).concave_hull(ratio=alpha_ratio).iloc[0]
+
+
+def write_power_extent(pts, region_id, out_path, alpha=0.05, source="asset coordinates"):
+    hull = concave_power_extent(pts, alpha_ratio=alpha)
+    gdf = gpd.GeoDataFrame(
+        {"region_id": [region_id], "n_assets": [len(pts)], "alpha_ratio": [alpha], "source": [source]},
+        geometry=[hull],
+        crs=4326,
     )
-    return output_path
-
-
-def concave_power_extent(
-    points: Iterable[tuple[float, float]],
-    *,
-    alpha_ratio: float,
-) -> BaseGeometry:
-    """Return the concave hull (alpha shape) of ``points``.
-
-    Parameters
-    ----------
-    points : iterable of (lon, lat)
-    alpha_ratio : float in (0, 1]
-        Passed to ``shapely.concave_hull``. Smaller values produce a tighter
-        hull that follows clusters more closely; larger values approach the
-        convex hull. ``0.05–0.1`` is the working range for SMART-DS feeder
-        clusters per docs/issues/0030.
-    """
-    if not (0.0 < alpha_ratio <= 1.0):
-        raise ValueError(
-            f"alpha_ratio must be in (0, 1]; got {alpha_ratio!r}"
-        )
-
-    coords = list(points)
-    if len(coords) < 3:
-        raise ValueError(
-            f"need at least 3 points to form a hull; got {len(coords)}"
-        )
-
-    multipoint = MultiPoint(coords)
-    return shapely.concave_hull(multipoint, ratio=alpha_ratio)
-
-
-def iter_buscoords(smart_ds_year_root: Path) -> Iterator[tuple[float, float]]:
-    """Yield (lon, lat) from every ``Buscoords.dss`` under a SMART-DS year root.
-
-    Buscoords.dss is space-separated ``bus_name lon lat``. Lines starting
-    with ``!`` or ``//`` are OpenDSS comments; blank lines are ignored.
-    """
-    year_root = Path(smart_ds_year_root)
-    for path in year_root.rglob("Buscoords.dss"):
-        for line in path.read_text().splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith(("!", "//")):
-                continue
-            parts = stripped.split()
-            if len(parts) < 3:
-                continue
-            try:
-                yield float(parts[1]), float(parts[2])
-            except ValueError:
-                continue
-
-
-def write_smart_ds_power_extent(
-    *,
-    region_id: str,
-    smart_ds_year_root: Path,
-    output_path: Path,
-    alpha_ratio: float,
-) -> dict:
-    """Walk Buscoords under ``smart_ds_year_root`` and write a concave-hull
-    ``power_extent.geojson`` at ``output_path``. Returns a manifest dict
-    suitable for indexing and audit.
-    """
-    points = list(iter_buscoords(smart_ds_year_root))
-    if not points:
-        raise FileNotFoundError(
-            f"no Buscoords.dss rows found under {smart_ds_year_root}"
-        )
-
-    hull = concave_power_extent(points, alpha_ratio=alpha_ratio)
-    convex = MultiPoint(points).convex_hull
-
-    feature = {
-        "type": "Feature",
-        "geometry": mapping(hull),
-        "properties": {
-            "region_id": region_id,
-            "n_buses": len(points),
-            "alpha_ratio": alpha_ratio,
-            "source": "smart_ds Buscoords.dss (concave hull, per ADR-0024 amended)",
-        },
-    }
-    output_path = _write_feature_collection(output_path, [feature])
-
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    gdf.to_file(out_path, driver="GeoJSON")
     return {
         "region_id": region_id,
-        "n_buses": len(points),
-        "alpha_ratio": alpha_ratio,
-        "convex_hull_area": float(convex.area),
+        "n_assets": len(pts),
+        "n_buses": len(pts),
+        "alpha_ratio": alpha,
+        "convex_hull_area": float(MultiPoint(pts).convex_hull.area),
         "concave_hull_area": float(hull.area),
-        "output_path": str(output_path),
+        "output_path": str(out_path),
     }
 
 
-def iter_asset_registry_points(
-    asset_registry_dir: Path,
-) -> Iterator[tuple[float, float]]:
-    """Yield (lon, lat) from every CSV in a Marshfield asset registry.
-
-    Handles the four coord-column conventions used by the registry:
-    ``lon/lat`` (buses, loads, sources), ``location_lon/location_lat``
-    (transformers), and ``from_lon/from_lat`` + ``to_lon/to_lat`` (lines).
-    CSVs lacking any coord column (e.g. ``feeders.csv``) yield nothing.
-    """
-    asset_registry_dir = Path(asset_registry_dir)
-    for path in sorted(asset_registry_dir.glob("*.csv")):
-        with path.open(newline="", encoding="utf-8") as fh:
-            for row in csv.DictReader(fh):
-                for lon_key, lat_key in _ASSET_COORD_COLUMNS:
-                    lon = row.get(lon_key)
-                    lat = row.get(lat_key)
-                    if lon in (None, "") or lat in (None, ""):
-                        continue
-                    try:
-                        yield float(lon), float(lat)
-                    except ValueError:
-                        continue
-
-
-def write_marshfield_power_extent(
-    *,
-    asset_registry_dir: Path,
-    output_path: Path,
-    alpha_ratio: float,
-) -> dict:
-    """Walk the asset registry and write a concave-hull power_extent.geojson.
-
-    Returns a manifest dict for audit/indexing.
-    """
-    points = list(iter_asset_registry_points(asset_registry_dir))
+def write_smart_ds_power_extent(*, region_id, smart_ds_year_root, output_path, alpha_ratio):
+    points = list(iter_buscoords(smart_ds_year_root))
     if not points:
-        raise FileNotFoundError(
-            f"no asset coordinates found under {asset_registry_dir}"
-        )
+        raise FileNotFoundError(f"no Buscoords.dss rows found under {smart_ds_year_root}")
+    return write_power_extent(points, region_id, output_path, alpha_ratio, source="smart_ds Buscoords.dss")
 
-    hull = concave_power_extent(points, alpha_ratio=alpha_ratio)
-    convex = MultiPoint(points).convex_hull
 
-    feature = {
-        "type": "Feature",
-        "geometry": mapping(hull),
-        "properties": {
-            "region_id": "marshfield",
-            "n_assets": len(points),
-            "alpha_ratio": alpha_ratio,
-            "source": (
-                "marshfield asset_registry (concave hull, per ADR-0024 amended)"
-            ),
-        },
-    }
-    output_path = _write_feature_collection(output_path, [feature])
+def write_marshfield_power_extent(*, asset_registry_dir, output_path, alpha_ratio):
+    points = get_asset_points(asset_registry_dir)
+    if not points:
+        raise FileNotFoundError(f"no asset coordinates found under {asset_registry_dir}")
+    return write_power_extent(points, "marshfield", output_path, alpha_ratio, source="marshfield asset_registry")
 
+
+def _domain_record(domain_id, geom_utm, crs, n_assets):
+    geom = gpd.GeoSeries([geom_utm], crs=crs).to_crs(4326).iloc[0]
+    minx, miny, maxx, maxy = geom_utm.bounds
     return {
-        "region_id": "marshfield",
-        "n_assets": len(points),
-        "alpha_ratio": alpha_ratio,
-        "convex_hull_area": float(convex.area),
-        "concave_hull_area": float(hull.area),
-        "output_path": str(output_path),
+        "domain_id": domain_id,
+        "polygon": geom,
+        "n_assets_inside": int(n_assets),
+        "n_assets": int(n_assets),
+        "aabb_km_x": float((maxx - minx) / 1000),
+        "aabb_km_y": float((maxy - miny) / 1000),
     }
 
 
-@dataclass(frozen=True)
-class SfincsDomain:
-    domain_id: str
-    polygon: Polygon  # axis-aligned bounding box in EPSG:4326
-    n_assets_inside: int
-    aabb_km_x: float
-    aabb_km_y: float
-
-
-def _utm_epsg_for(lon: float, lat: float) -> str:
-    zone = int((lon + 180) // 6) + 1
-    return f"EPSG:{(32600 if lat >= 0 else 32700) + zone}"
-
-
-def _domain_from_projected_bounds(
-    *,
-    domain_id: str,
-    bounds: tuple[float, float, float, float],
-    to_geo,
-    n_assets_inside: int,
-    buffer_km: float,
-) -> SfincsDomain:
-    xmin, ymin, xmax, ymax = bounds
-    buf_m = buffer_km * 1000.0
-    bbox_geo = shapely_transform(to_geo, box(xmin - buf_m, ymin - buf_m, xmax + buf_m, ymax + buf_m))
-    return SfincsDomain(
-        domain_id=domain_id,
-        polygon=bbox_geo,
-        n_assets_inside=n_assets_inside,
-        aabb_km_x=(xmax - xmin + 2 * buf_m) / 1000.0,
-        aabb_km_y=(ymax - ymin + 2 * buf_m) / 1000.0,
-    )
-
-
-def _find_parent(parent: list[int], x: int) -> int:
-    while parent[x] != x:
-        parent[x] = parent[parent[x]]
-        x = parent[x]
-    return x
-
-
-def _domain_groups(parent: list[int]) -> list[list[int]]:
-    groups: dict[int, list[int]] = {}
-    for i in range(len(parent)):
-        groups.setdefault(_find_parent(parent, i), []).append(i)
-    return list(groups.values())
-
-
-def _merged_domain(member_doms: list[SfincsDomain], *, total_assets: int | None = None) -> SfincsDomain:
-    ids_sorted = sorted(d.domain_id for d in member_doms)
-    xmin = min(d.polygon.bounds[0] for d in member_doms)
-    ymin = min(d.polygon.bounds[1] for d in member_doms)
-    xmax = max(d.polygon.bounds[2] for d in member_doms)
-    ymax = max(d.polygon.bounds[3] for d in member_doms)
-    center_lat = (ymin + ymax) / 2
-    return SfincsDomain(
-        domain_id=f"{ids_sorted[0]} + {len(member_doms) - 1} more",
-        polygon=box(xmin, ymin, xmax, ymax),
-        n_assets_inside=sum(d.n_assets_inside for d in member_doms) if total_assets is None else total_assets,
-        aabb_km_x=(xmax - xmin) * 111.0 * math.cos(math.radians(center_lat)),
-        aabb_km_y=(ymax - ymin) * 111.0,
-    )
-
-
-def cluster_to_sfincs_domains(
-    points: Iterable[tuple[float, float]],
-    *,
-    region_id: str,
-    alpha_split: float = 0.02,
-    min_component_area_km2: float = 5.0,
-    aabb_buffer_km: float = 1.0,
-) -> list[SfincsDomain]:
-    """Cluster ``points`` and emit one AABB per cluster.
-
-    1. Compute a tighter concave hull at ``alpha_split``. The tighter alpha
-       lets disjoint clusters (Greensboro lobes, SFO Pacific-vs-Sacramento)
-       fall apart into MultiPolygon components.
-    2. Drop components below ``min_component_area_km2`` (small disconnected
-       feeders that do not warrant a dedicated SFINCS run).
-    3. For each surviving component compute the AABB in the local UTM CRS,
-       buffer by ``aabb_buffer_km``, project back to EPSG:4326.
-    """
+def _points_gdf(points):
     pts = list(points)
-    if len(pts) < 3:
-        raise ValueError(f"need at least 3 points to cluster; got {len(pts)}")
-
-    hull = concave_power_extent(pts, alpha_ratio=alpha_split)
-    components: list[Polygon]
-    if hull.geom_type == "MultiPolygon":
-        components = list(hull.geoms)
-    elif hull.geom_type == "Polygon":
-        components = [hull]
-    else:
-        raise TypeError(f"unexpected hull geometry {hull.geom_type}")
-
-    # Project to UTM for accurate area + AABB calculation.
-    centroid = MultiPoint(pts).centroid
-    utm = _utm_epsg_for(centroid.x, centroid.y)
-    to_utm = Transformer.from_crs("EPSG:4326", utm, always_xy=True).transform
-    to_geo = Transformer.from_crs(utm, "EPSG:4326", always_xy=True).transform
-
-    domains: list[SfincsDomain] = []
-    for idx, component in enumerate(sorted(components, key=lambda g: -g.area)):
-        comp_utm = shapely_transform(to_utm, component)
-        area_km2 = comp_utm.area / 1e6
-        if area_km2 < min_component_area_km2:
-            continue
-        n_inside = sum(
-            1 for lon, lat in pts if component.covers(shapely.geometry.Point(lon, lat))
-        )
-        domains.append(
-            _domain_from_projected_bounds(
-                domain_id=f"{region_id}:{idx}",
-                bounds=comp_utm.bounds,
-                to_geo=to_geo,
-                n_assets_inside=n_inside,
-                buffer_km=aabb_buffer_km,
-            )
-        )
-    return domains
+    if len(pts) < 1:
+        return gpd.GeoDataFrame(geometry=[], crs=4326)
+    return gpd.GeoDataFrame(geometry=gpd.points_from_xy(*zip(*pts)), crs=4326)
 
 
-def cluster_smart_ds_by_subregion(
-    smart_ds_year_root: Path,
-    *,
-    region_id: str,
-    min_n_buses: int = 1000,
-    aabb_buffer_km: float = 1.0,
-) -> list[SfincsDomain]:
-    """Group SMART-DS buses by **subregion folder** and emit one AABB per
-    subregion. This is the v0 clustering primitive — geometric auto-clustering
-    via alpha-shape fails because SMART-DS rural feeders provide continuous
-    connectivity between geographically distinct service areas.
-
-    Subregion folders (P1U, P2U, ..., urban-suburban, rural, industrial, ...)
-    are the committed structural grouping of the dataset and are stable across
-    revisions. Any spatial merging of overlapping subregion AABBs is the
-    caller's responsibility and lives in ``case.yaml``.
-    """
-    year_root = Path(smart_ds_year_root)
-    subregions = sorted(d.name for d in year_root.iterdir() if d.is_dir())
-    domains: list[SfincsDomain] = []
-    # Project everything in a single UTM zone keyed on the first non-empty
-    # subregion's centroid; consistent across all subregions in the region.
-    seed_pts = None
-    for sr in subregions:
-        pts = list(iter_buscoords(year_root / sr))
-        if pts:
-            seed_pts = pts
-            break
-    if seed_pts is None:
-        return domains
-    seed_centroid = MultiPoint(seed_pts).centroid
-    utm = _utm_epsg_for(seed_centroid.x, seed_centroid.y)
-    to_utm = Transformer.from_crs("EPSG:4326", utm, always_xy=True).transform
-    to_geo = Transformer.from_crs(utm, "EPSG:4326", always_xy=True).transform
-
-    for sr in subregions:
-        pts = list(iter_buscoords(year_root / sr))
-        if len(pts) < min_n_buses:
-            continue
-        xs_utm, ys_utm = zip(*(to_utm(lon, lat) for lon, lat in pts))
-        domains.append(
-            _domain_from_projected_bounds(
-                domain_id=f"{region_id}:{sr}",
-                bounds=(min(xs_utm), min(ys_utm), max(xs_utm), max(ys_utm)),
-                to_geo=to_geo,
-                n_assets_inside=len(pts),
-                buffer_km=aabb_buffer_km,
-            )
-        )
-    return domains
-
-
-def cluster_marshfield_by_feeder(
-    asset_registry_dir: Path,
-    *,
-    region_id: str = "marshfield",
-    min_n_assets: int = 100,
-    aabb_buffer_km: float = 1.0,
-) -> list[SfincsDomain]:
-    """Marshfield equivalent of subregion clustering: group asset-registry
-    rows by the ``feeder_id`` column and emit one AABB per feeder."""
-    asset_registry_dir = Path(asset_registry_dir)
-    by_feeder: dict[str, list[tuple[float, float]]] = {}
-    for path in sorted(asset_registry_dir.glob("*.csv")):
-        with path.open(newline="", encoding="utf-8") as fh:
-            for row in csv.DictReader(fh):
-                feeder_id = row.get("feeder_id")
-                if not feeder_id:
-                    continue
-                for lon_key, lat_key in _ASSET_COORD_COLUMNS:
-                    lon = row.get(lon_key)
-                    lat = row.get(lat_key)
-                    if lon in (None, "") or lat in (None, ""):
-                        continue
-                    try:
-                        by_feeder.setdefault(feeder_id, []).append((float(lon), float(lat)))
-                    except ValueError:
-                        continue
-    if not by_feeder:
-        return []
-    # Single UTM zone keyed on the first feeder's centroid.
-    seed_pts = next(iter(by_feeder.values()))
-    seed_centroid = MultiPoint(seed_pts).centroid
-    utm = _utm_epsg_for(seed_centroid.x, seed_centroid.y)
-    to_utm = Transformer.from_crs("EPSG:4326", utm, always_xy=True).transform
-    to_geo = Transformer.from_crs(utm, "EPSG:4326", always_xy=True).transform
-
-    domains: list[SfincsDomain] = []
-    for feeder_id, pts in sorted(by_feeder.items()):
-        if len(pts) < min_n_assets:
-            continue
-        xs_utm, ys_utm = zip(*(to_utm(lon, lat) for lon, lat in pts))
-        domains.append(
-            _domain_from_projected_bounds(
-                domain_id=f"{region_id}:{feeder_id}",
-                bounds=(min(xs_utm), min(ys_utm), max(xs_utm), max(ys_utm)),
-                to_geo=to_geo,
-                n_assets_inside=len(pts),
-                buffer_km=aabb_buffer_km,
-            )
-        )
-    return domains
-
-
-def merge_overlapping_aabbs(
-    domains: list[SfincsDomain],
-    *,
-    min_intersection_km2: float = 10.0,
-    max_anchor_aabb_km: float | None = 80.0,
-) -> list[SfincsDomain]:
-    """Union-find merge of overlapping AABBs.
-
-    Each connected component (transitively via pairwise polygon intersection)
-    collapses into one merged domain whose AABB is the union of its members'
-    AABBs in EPSG:4326. The merged ``domain_id`` is the lexicographically
-    smallest member id, suffixed with ``" + N more"`` when the component has
-    more than one member.
-
-    Pairwise intersection is filtered by ``min_intersection_km2`` to avoid
-    "kissing" merges caused by AABB buffer artifacts. The default 10 km²
-    cleanly separates Greensboro's `urban-suburban` ∩ `rural` (~0.4 km²
-    buffer-kiss) from `urban-suburban` ∩ `industrial` (~34 km² real overlap).
-
-    ``max_anchor_aabb_km`` (default 80 km) keeps geographically dispersed
-    AABBs from acting as merge bridges. SMART-DS rural subregions like SFO
-    `P1R` have 170×170 km AABBs that span the whole study area and contain
-    most urban subregions — without this guard they collapse the entire
-    region into a single domain. Set to ``None`` to disable the guard.
-    """
-    if not domains:
-        return []
-
-    n = len(domains)
-    parent = list(range(n))
-
-    def union(x: int, y: int) -> None:
-        rx, ry = _find_parent(parent, x), _find_parent(parent, y)
-        if rx != ry:
-            parent[rx] = ry
-
-    def _is_anchor_eligible(d: SfincsDomain) -> bool:
-        if max_anchor_aabb_km is None:
-            return True
-        return d.aabb_km_x <= max_anchor_aabb_km and d.aabb_km_y <= max_anchor_aabb_km
-
-    for i in range(n):
-        for j in range(i + 1, n):
-            if not (_is_anchor_eligible(domains[i]) and _is_anchor_eligible(domains[j])):
-                continue
-            if not domains[i].polygon.intersects(domains[j].polygon):
-                continue
-            inter = domains[i].polygon.intersection(domains[j].polygon)
-            # Convert deg² → km² using the joint centroid latitude.
-            centroid_lat = (
-                domains[i].polygon.centroid.y + domains[j].polygon.centroid.y
-            ) / 2
-            km2_per_deg2 = (111.0 ** 2) * math.cos(math.radians(centroid_lat))
-            if inter.area * km2_per_deg2 >= min_intersection_km2:
-                union(i, j)
-
-    merged: list[SfincsDomain] = []
-    for members in _domain_groups(parent):
-        member_doms = [domains[i] for i in members]
-        if len(member_doms) == 1:
-            merged.append(member_doms[0])
-            continue
-        merged.append(_merged_domain(member_doms))
-    # Stable order: by descending n_assets so the headline domain shows first.
-    merged.sort(key=lambda d: -d.n_assets_inside)
-    return merged
-
-
-def merge_by_centroid_proximity(
-    domains: list[SfincsDomain],
-    *,
-    eps_km: float = 20.0,
-    min_assets_per_cluster: int = 50_000,
-) -> list[SfincsDomain]:
-    """Cluster sub-domains by **centroid distance in UTM metres**, then union
-    each cluster's AABBs.
-
-    This is the v0 default for SFO and the recommended method whenever a
-    region has more than ~5 candidate subregions. It avoids the two failure
-    modes of AABB-intersection merging:
-
-    - Buffer-kiss false positives (Greensboro `rural` ↔ `urban-suburban`,
-      0.4 km² overlap that crossed the intersection threshold).
-    - Oversized-anchor false negatives (SFO `P1R` is 170×172 km and contained
-      most other subregions, bridging everything into one component).
-
-    ``eps_km`` is the maximum centroid-to-centroid distance for two
-    subregions to be in the same SFINCS sub-domain. 20 km is the default —
-    matches dense urban subregion spacing (SFO Bay), separates Greensboro's
-    24-km-apart lobes, and keeps Austin's urban core as one cluster.
-
-    ``min_assets_per_cluster`` drops orphan clusters below the threshold;
-    these are usually rural P*R subregions with sparse buses that do not
-    warrant a dedicated SFINCS run.
-    """
-    if not domains:
-        return []
-
-    # Anchor UTM zone on the region's geometric centroid for consistency.
-    region_cx = sum(d.polygon.centroid.x for d in domains) / len(domains)
-    region_cy = sum(d.polygon.centroid.y for d in domains) / len(domains)
-    utm = _utm_epsg_for(region_cx, region_cy)
-    to_utm = Transformer.from_crs("EPSG:4326", utm, always_xy=True).transform
-
-    utm_centroids = [
-        to_utm(d.polygon.centroid.x, d.polygon.centroid.y) for d in domains
-    ]
-    eps_m = eps_km * 1000.0
-
-    n = len(domains)
-    parent = list(range(n))
-
-    for i in range(n):
-        for j in range(i + 1, n):
-            dx = utm_centroids[i][0] - utm_centroids[j][0]
-            dy = utm_centroids[i][1] - utm_centroids[j][1]
-            if math.hypot(dx, dy) < eps_m:
-                pi, pj = _find_parent(parent, i), _find_parent(parent, j)
-                if pi != pj:
-                    parent[pi] = pj
-
-    merged: list[SfincsDomain] = []
-    for members in _domain_groups(parent):
-        member_doms = [domains[i] for i in members]
-        total_assets = sum(d.n_assets_inside for d in member_doms)
-        if total_assets < min_assets_per_cluster:
-            continue
-        if len(member_doms) == 1:
-            merged.append(member_doms[0])
-            continue
-        merged.append(_merged_domain(member_doms, total_assets=total_assets))
-    merged.sort(key=lambda d: -d.n_assets_inside)
-    return merged
-
-
-def cluster_buses_kmeans(
-    points: Iterable[tuple[float, float]],
-    *,
-    region_id: str,
-    k: int,
-    aabb_buffer_km: float = 1.0,
-    seed: int = 0,
-) -> list[SfincsDomain]:
-    """Bus-level k-means clustering — the v0 default for sub-domain derivation.
-
-    Cluster every asset coord (subsampled or full) directly into ``k`` spatial
-    groups using k-means in the region's UTM CRS, then compute one AABB per
-    cluster from **only that cluster's assets** (buffered by ``aabb_buffer_km``).
-
-    Each bus belongs to exactly one cluster and the cluster's AABB is tight to
-    its asset subset, so adjacent AABBs overlap only where edge-of-cluster buses
-    interleave at the boundary.
-
-    ``k`` is per-region and lives in ``case.yaml``. Recommended defaults
-    (matching the visual lobes in notebooks/regions/bbox.ipynb):
-
-    | region | k | reason |
-    |---|---|---|
-    | marshfield | 1 | single municipality |
-    | austin | 1 | one urban core, all subregions overlap centroids |
-    | greensboro | 2 | west lobe (urban+industrial) vs. east lobe (rural) |
-    | sfo | 4 | SF Bay, North Bay (Marin/Sonoma), East Bay/Sacramento, South Bay/Salinas |
-    """
-    pts = list(points)
-    if len(pts) < k:
-        raise ValueError(
-            f"k={k} requested but only {len(pts)} points provided"
-        )
+def cluster_buses_kmeans(points, *, region_id, k, aabb_buffer_km=1.0, seed=0):
+    gdf = _points_gdf(points)
     if k < 1:
         raise ValueError(f"k must be >= 1; got {k}")
-
-    centroid = (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
-    utm = _utm_epsg_for(*centroid)
-    to_utm = Transformer.from_crs("EPSG:4326", utm, always_xy=True).transform
-    to_geo = Transformer.from_crs(utm, "EPSG:4326", always_xy=True).transform
-
-    pts_utm = np.array([to_utm(lon, lat) for lon, lat in pts])
-    if k == 1:
-        labels = np.zeros(len(pts), dtype=int)
-    else:
-        _, labels = kmeans2(pts_utm, k, seed=seed, minit="++")
-
-    domains: list[SfincsDomain] = []
-    for cluster_idx in range(k):
-        mask = labels == cluster_idx
-        if not mask.any():
+    if len(gdf) < k:
+        raise ValueError(f"k={k} requested but only {len(gdf)} points provided")
+    utm = gdf.to_crs(gdf.estimate_utm_crs())
+    xy = np.column_stack((utm.geometry.x, utm.geometry.y))
+    labels = np.zeros(len(utm), dtype=int) if k == 1 else kmeans2(xy, k, seed=seed, minit="++")[1]
+    domains = []
+    for i in range(k):
+        cluster = utm[labels == i]
+        if cluster.empty:
             continue
-        cluster_utm = pts_utm[mask]
-        domains.append(
-            _domain_from_projected_bounds(
-                domain_id=f"{region_id}:k{cluster_idx}",
-                bounds=(
-                    float(cluster_utm[:, 0].min()),
-                    float(cluster_utm[:, 1].min()),
-                    float(cluster_utm[:, 0].max()),
-                    float(cluster_utm[:, 1].max()),
-                ),
-                to_geo=to_geo,
-                n_assets_inside=int(mask.sum()),
-                buffer_km=aabb_buffer_km,
-            )
-        )
-    domains.sort(key=lambda d: -d.n_assets_inside)
-    return domains
+        domains.append(_domain_record(f"{region_id}:k{i}", cluster.geometry.unary_union.envelope.buffer(aabb_buffer_km * 1000), utm.crs, len(cluster)))
+    return sorted(domains, key=lambda d: -d["n_assets_inside"])
 
 
-def write_sfincs_domains(
-    *,
-    region_id: str,
-    points: Iterable[tuple[float, float]],
-    output_path: Path,
-    alpha_split: float = 0.02,
-    min_component_area_km2: float = 5.0,
-    aabb_buffer_km: float = 1.0,
-) -> list[SfincsDomain]:
+def cluster_marshfield_by_feeder(asset_registry_dir, *, region_id="marshfield", min_n_assets=100, aabb_buffer_km=1.0):
+    frames = [pd.read_csv(f) for f in Path(asset_registry_dir).glob("*.csv")]
+    if not frames:
+        return []
+    df = pd.concat(frames, ignore_index=True)
+    df = df.dropna(subset=["feeder_id", "lon", "lat"])
+    if df.empty:
+        return []
+    gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.lon, df.lat), crs=4326).to_crs(gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df.lon, df.lat), crs=4326).estimate_utm_crs())
+    domains = []
+    for feeder, group in gdf.groupby("feeder_id"):
+        if len(group) >= min_n_assets:
+            domains.append(_domain_record(f"{region_id}:{feeder}", group.geometry.unary_union.envelope.buffer(aabb_buffer_km * 1000), gdf.crs, len(group)))
+    return sorted(domains, key=lambda d: -d["n_assets_inside"])
+
+
+def cluster_smart_ds_by_subregion(smart_ds_year_root, *, region_id, min_n_buses=1000, aabb_buffer_km=1.0):
+    domains = []
+    for subregion in sorted(p for p in Path(smart_ds_year_root).iterdir() if p.is_dir()):
+        pts = list(iter_buscoords(subregion))
+        if len(pts) < min_n_buses:
+            continue
+        gdf = _points_gdf(pts)
+        utm = gdf.to_crs(gdf.estimate_utm_crs())
+        domains.append(_domain_record(f"{region_id}:{subregion.name}", utm.geometry.unary_union.envelope.buffer(aabb_buffer_km * 1000), utm.crs, len(utm)))
+    return sorted(domains, key=lambda d: -d["n_assets_inside"])
+
+
+def cluster_to_sfincs_domains(points, *, region_id, alpha_split=0.02, min_component_area_km2=5.0, aabb_buffer_km=1.0):
+    gdf = _points_gdf(points)
+    if len(gdf) < 3:
+        raise ValueError(f"need at least 3 points to cluster; got {len(gdf)}")
+    hull = gpd.GeoSeries([MultiPoint(list(gdf.geometry))], crs=4326).concave_hull(ratio=alpha_split).iloc[0]
+    components = list(hull.geoms) if hull.geom_type == "MultiPolygon" else [hull]
+    domains = []
+    for i, component in enumerate(sorted(components, key=lambda g: -g.area)):
+        comp = gpd.GeoDataFrame(geometry=[component], crs=4326).to_crs(gdf.estimate_utm_crs())
+        if comp.area.iloc[0] / 1e6 < min_component_area_km2:
+            continue
+        points_inside = int(gdf.geometry.within(component).sum())
+        domains.append(_domain_record(f"{region_id}:{i}", comp.geometry.iloc[0].envelope.buffer(aabb_buffer_km * 1000), comp.crs, points_inside))
+    return sorted(domains, key=lambda d: -d["n_assets_inside"])
+
+
+def _domain_value(domain, key):
+    return domain[key] if isinstance(domain, dict) else getattr(domain, key)
+
+
+def _merge_domains(domains, domain_id=None, total_assets=None):
+    geom = unary_union([_domain_value(d, "polygon") for d in domains]).envelope
+    n_assets = sum(_domain_value(d, "n_assets_inside") for d in domains) if total_assets is None else total_assets
+    if domain_id is None:
+        ids = sorted(_domain_value(d, "domain_id") for d in domains)
+        domain_id = f"{ids[0]} + {len(ids) - 1} more" if len(ids) > 1 else ids[0]
+    center_lat = geom.centroid.y
+    minx, miny, maxx, maxy = geom.bounds
+    return {
+        "domain_id": domain_id,
+        "polygon": geom,
+        "n_assets_inside": int(n_assets),
+        "n_assets": int(n_assets),
+        "aabb_km_x": float((maxx - minx) * 111.0 * np.cos(np.radians(center_lat))),
+        "aabb_km_y": float((maxy - miny) * 111.0),
+    }
+
+
+def merge_overlapping_aabbs(domains, *, min_intersection_km2=10.0, max_anchor_aabb_km=80.0):
+    if not domains:
+        return []
+    remaining = list(domains)
+    merged = []
+    while remaining:
+        seed = remaining.pop(0)
+        group = [seed]
+        changed = True
+        while changed:
+            changed = False
+            keep = []
+            for candidate in remaining:
+                if max_anchor_aabb_km is not None and (
+                    _domain_value(candidate, "aabb_km_x") > max_anchor_aabb_km or _domain_value(candidate, "aabb_km_y") > max_anchor_aabb_km
+                ):
+                    keep.append(candidate)
+                    continue
+                if any(_domain_value(candidate, "polygon").intersection(_domain_value(d, "polygon")).area * 12321 >= min_intersection_km2 for d in group):
+                    group.append(candidate)
+                    changed = True
+                else:
+                    keep.append(candidate)
+            remaining = keep
+        merged.append(_merge_domains(group))
+    return sorted(merged, key=lambda d: -d["n_assets_inside"])
+
+
+def merge_by_centroid_proximity(domains, *, eps_km=20.0, min_assets_per_cluster=50_000):
+    if not domains:
+        return []
+    gdf = gpd.GeoDataFrame(domains, geometry=[d["polygon"] if isinstance(d, dict) else d.polygon for d in domains], crs=4326)
+    utm = gdf.to_crs(gdf.estimate_utm_crs())
+    xy = np.column_stack((utm.centroid.x, utm.centroid.y))
+    parent = np.arange(len(utm))
+
+    def root(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i in range(len(xy)):
+        for j in range(i + 1, len(xy)):
+            if np.linalg.norm(xy[i] - xy[j]) < eps_km * 1000:
+                parent[root(i)] = root(j)
+    out = []
+    for group_id in sorted(set(root(i) for i in range(len(parent)))):
+        members = [domains[i] for i in range(len(parent)) if root(i) == group_id]
+        total = sum(_domain_value(m, "n_assets_inside") for m in members)
+        if total >= min_assets_per_cluster:
+            out.append(_merge_domains(members, total_assets=total))
+    return sorted(out, key=lambda d: -d["n_assets_inside"])
+
+
+def write_sfincs_domains(*, region_id, points, output_path, alpha_split=0.02, min_component_area_km2=5.0, aabb_buffer_km=1.0):
     domains = cluster_to_sfincs_domains(
         points,
         region_id=region_id,
@@ -1513,24 +643,21 @@ def write_sfincs_domains(
         min_component_area_km2=min_component_area_km2,
         aabb_buffer_km=aabb_buffer_km,
     )
-    _write_feature_collection(
-        output_path,
+    gdf = gpd.GeoDataFrame(
         [
             {
-                "type": "Feature",
-                "geometry": mapping(d.polygon),
-                "properties": {
-                    "domain_id": d.domain_id,
-                    "n_assets_inside": d.n_assets_inside,
-                    "aabb_km_x": round(d.aabb_km_x, 1),
-                    "aabb_km_y": round(d.aabb_km_y, 1),
-                    "source": (
-                        f"cluster-derived AABB at alpha_split={alpha_split} "
-                        "per ADR-0037"
-                    ),
-                },
+                "domain_id": d["domain_id"],
+                "n_assets_inside": d["n_assets_inside"],
+                "aabb_km_x": round(d["aabb_km_x"], 1),
+                "aabb_km_y": round(d["aabb_km_y"], 1),
+                "source": f"cluster-derived AABB at alpha_split={alpha_split}",
+                "geometry": d["polygon"],
             }
             for d in domains
         ],
+        crs=4326,
     )
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    gdf.to_file(output_path, driver="GeoJSON")
     return domains

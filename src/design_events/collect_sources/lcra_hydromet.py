@@ -1,12 +1,11 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import geopandas as gpd
 import pandas as pd
 import requests
-
-from design_events.utils import write_source_artifact
 
 
 LCRA_HYDROMET_ROOT = "https://hydromet.lcra.org/"
@@ -14,6 +13,36 @@ LCRA_ALL_SITES_ENDPOINT = "api/GetDataForAllSites"
 DEFAULT_OUTPUT = "data/sources/lcra_hydromet/flow_sites.geojson"
 DEFAULT_CURRENT_OUTPUT = "data/sources/lcra_hydromet/flow_sites_current.csv"
 DEFAULT_REVIEWED_USGS_NETWORK = "data/sources/usgs_streamgages/streamgage_network.geojson"
+
+
+def _timestamp(value):
+    return None if value is None else pd.Timestamp(value).isoformat()
+
+
+def _relative_path(path, root):
+    path = Path(path)
+    root = Path(root)
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def write_source_artifact(paths, source, kind, start=None, end=None, artifacts=None, metadata=None, status="complete"):
+    manifest = {
+        "study_location": paths["location_name"],
+        "source": source,
+        "kind": kind,
+        "status": status,
+        "start": _timestamp(start),
+        "end": _timestamp(end),
+        "artifacts": {key: _relative_path(value, paths["repo_root"]) for key, value in (artifacts or {}).items()},
+        "metadata": metadata or {},
+    }
+    path = paths["source_artifacts_root"] / f"{source}_{kind}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return path
 
 
 def collect_lcra_hydromet(settings, skip_existing=False, smoke=False):

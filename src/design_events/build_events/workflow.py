@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from design_events.utils import build_paths
+from design_events.runtime import build_paths
 from study_location import define_location
 from wflow_runs.notebook import exists_table
 

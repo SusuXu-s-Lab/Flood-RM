@@ -1,16 +1,10 @@
-
-
 # OpenDSS and PowerModelsONM switch rendering
-
 """OpenDSS and PowerModelsONM export helpers for synthesized switches."""
 
 from __future__ import annotations
-
 import pandas as pd
 
-
 onm_settings_schema_version = "stage_b_onm_settings.v0.1"
-
 
 def render_switches_dss(controllable_switches: pd.DataFrame) -> str:
     """Render synthesized Controllable Switches as OpenDSS switch lines."""
@@ -268,18 +262,23 @@ Stabilization horizon used by the DER inventory and REopt resilience sizing.
 
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 
 import pandas as pd
 
-from power.artifacts import slug as _slug
 from power.resilience import build_archetype_load_profile
 
 
 default_fema_lifelines_horizon_hours = 72
 hours_per_year = 8760
+
+
+def _slug(value: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
+    return normalized or "unknown"
 
 
 @dataclass(frozen=True)

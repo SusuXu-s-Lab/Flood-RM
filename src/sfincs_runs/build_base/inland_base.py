@@ -13,9 +13,8 @@ from scipy import ndimage
 from shapely.geometry import GeometryCollection, LineString, MultiPoint, Point
 from shapely.ops import nearest_points, unary_union
 
-from generated_artifact import write_generated_yaml
 from sfincs_runs.hydrology import setup_hydromt_infiltration, validate_physics
-from wflow_runs.coupled_handoff import (
+from wflow_runs.handoff_locations import (
     LEGACY_BOUNDARY_HANDOFF_MODES,
     STREAM_BOUNDARY_HANDOFF_MODES,
     crossing_handoff_sources,
@@ -24,6 +23,10 @@ from wflow_runs.coupled_handoff import (
 )
 
 DEFAULT_OUTFLOW_ELEVATION_QUANTILE = 0.05
+_GENERATED_NOTICE = (
+    "# GENERATED FILE — do not edit. Overwritten when {source} runs.\n"
+    "# Source of truth is the location config and the code that produces this file.\n"
+)
 
 
 @dataclass(frozen=True)
@@ -340,7 +343,11 @@ def write_inland_sfincs_domain_set_manifest(plan, config, paths):
         "issues": list(plan.issues),
         "domains": domain_rows,
     }
-    write_generated_yaml(manifest, payload, source="the SFINCS domain-set build")
+    manifest.write_text(
+        _GENERATED_NOTICE.format(source="the SFINCS domain-set build")
+        + yaml.safe_dump(payload, sort_keys=False),
+        encoding="utf-8",
+    )
     return manifest
 
 

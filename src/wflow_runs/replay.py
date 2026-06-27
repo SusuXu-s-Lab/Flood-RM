@@ -44,13 +44,12 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from generated_artifact import write_generated_yaml
 from design_events.collect_sources.aorc_event_meteo import (
     aorc_wflow_temp_pet_variables,
     prepare_aorc_temp_pet_for_wflow,
 )
 from sfincs_runs.hydrology import find_aorc_event_window, prepare_aorc_precip_for_sfincs
-from wflow_runs.coupled_handoff import read_stream_boundary_handoff_location_artifacts
+from wflow_runs.handoff_locations import read_stream_boundary_handoff_location_artifacts
 from wflow_runs.build_plan import (
     repair_wflow_canopy_parameters,
     repair_wflow_gauge_map,
@@ -64,9 +63,19 @@ from wflow_runs.notebook import (
     resolve_location_path,
 )
 from wflow_runs.states import prepare_wflow_event_instate
-from wflow_runs.streamflow_realization import apply_same_frequency_amplification
+from wflow_runs.streamflow_realization import (
+    _finite_float,
+    _split_site_list,
+    _streamflow_members_path,
+    _streamflow_records_path,
+    apply_same_frequency_amplification,
+)
 
 CFS_TO_CMS = 0.028316846592
+_GENERATED_NOTICE = (
+    "# GENERATED FILE — do not edit. Overwritten when {source} runs.\n"
+    "# Source of truth is the location config and the code that produces this file.\n"
+)
 
 
 # ─── pure helpers (unit-tested) ───────────────────────────────────────────────
@@ -614,24 +623,6 @@ def _event_streamflow_series_cms(
     return out, provenance
 
 
-def _streamflow_records_path(config: dict, location_root: Path) -> Path:
-    streamflow_cfg = (((config.get("event_catalog", {}) or {}).get("driver_records", {}) or {}).get("streamflow", {}) or {})
-    for key in ("records", "records_file", "path"):
-        value = streamflow_cfg.get(key)
-        if value:
-            return resolve_location_path(location_root, value)
-    return resolve_location_path(location_root, "data/sources/usgs_streamgages/streamflow_records.csv")
-
-
-def _streamflow_members_path(config: dict, location_root: Path) -> Path:
-    streamflow_cfg = (((config.get("event_catalog", {}) or {}).get("driver_records", {}) or {}).get("streamflow", {}) or {})
-    for key in ("members", "members_file"):
-        value = streamflow_cfg.get(key)
-        if value:
-            return resolve_location_path(location_root, value)
-    return resolve_location_path(location_root, "data/sources/usgs_streamgages/streamflow_members.csv")
-
-
 def _streamflow_member_metadata(config: dict, location_root: Path, row: pd.Series) -> dict:
     member_id = str(_required_event_value(row, "streamflow_member_id"))
     site_no = str(row.get("streamflow_member_site_no") or member_id.split("_")[0])
@@ -660,12 +651,6 @@ def _streamflow_member_metadata(config: dict, location_root: Path, row: pd.Serie
     }
 
 
-def _split_site_list(value) -> list[str]:
-    if value is None or pd.isna(value):
-        return []
-    return [item.strip() for item in str(value).split(",") if item.strip()]
-
-
 def _streamflow_target_peak_cfs(row: pd.Series, member: dict) -> float:
     for key in ("streamflow", "target_peak_cfs"):
         value = _finite_float(row.get(key))
@@ -676,14 +661,6 @@ def _streamflow_target_peak_cfs(row: pd.Series, member: dict) -> float:
     if template_peak and template_peak > 0:
         return float(template_peak) * scale
     raise ValueError("event row has no usable streamflow design peak")
-
-
-def _finite_float(value) -> float | None:
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return None
-    return out if np.isfinite(out) else None
 
 
 def _discharge_handoff_source(config: dict) -> str:
@@ -1109,7 +1086,11 @@ def _write_per_event_update_config(update_cfg: Path, event_dir: Path, start: pd.
                 data["time.starttime"] = start.strftime("%Y-%m-%dT%H:%M:%S")
                 data["time.endtime"] = end.strftime("%Y-%m-%dT%H:%M:%S")
     out = event_dir / "_wflow_update_forcing.yml"
-    write_generated_yaml(out, workflow, source="the Wflow event replay step")
+    out.write_text(
+        _GENERATED_NOTICE.format(source="the Wflow event replay step")
+        + yaml.safe_dump(workflow, sort_keys=False),
+        encoding="utf-8",
+    )
     return out
 
 
