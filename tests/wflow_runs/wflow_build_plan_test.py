@@ -1403,21 +1403,27 @@ def test_build_meteo_writes_scaled_precip_and_neutral_pet(tmp_path):
         post_event_hours=1,
     )
 
-    precip = xr.open_dataset(report["precip_path"])
-    temp_pet = xr.open_dataset(report["temp_pet_path"])
     assert report["precip_written"] is True
     assert report["temp_pet_written"] is True
     assert report["rainfall_source_nc"] == str(source_nc)
-    assert float(precip["precip"].sel(time="2020-04-30T22:00:00").sum()) == 0.0
-    assert float(precip["precip"].sel(time="2020-04-30T23:00:00").sum()) == 6.0
-    assert float(precip["precip"].sel(time="2020-05-01T00:00:00").sum()) == 12.0
-    assert set(temp_pet.data_vars) == {"temp", "press_msl", "kin"}
-    assert float(temp_pet["kin"].max()) == 120.0
-    assert float(temp_pet["temp"].isel(time=0, y=0, x=0)) == pytest.approx(20.0)
-    assert float(temp_pet["press_msl"].isel(time=0, y=0, x=0)) == pytest.approx(1013.25)
+    with xr.open_dataset(report["precip_path"]) as precip, xr.open_dataset(report["temp_pet_path"]) as temp_pet:
+        assert float(precip["precip"].sel(time="2020-04-30T22:00:00").sum()) == 0.0
+        assert float(precip["precip"].sel(time="2020-04-30T23:00:00").sum()) == 6.0
+        assert float(precip["precip"].sel(time="2020-05-01T00:00:00").sum()) == 12.0
+        assert set(temp_pet.data_vars) == {"temp", "press_msl", "kin"}
+        assert float(temp_pet["kin"].max()) == 120.0
+        assert float(temp_pet["temp"].isel(time=0, y=0, x=0)) == pytest.approx(20.0)
+        assert float(temp_pet["press_msl"].isel(time=0, y=0, x=0)) == pytest.approx(1013.25)
     assert Path(report["temp_pet_provenance"]).exists()
 
-    second = build_meteo(config, location_root, "design_0001", catalog_path=catalog_path)
+    second = build_meteo(
+        config,
+        location_root,
+        "design_0001",
+        catalog_path=catalog_path,
+        pre_event_hours=2,
+        post_event_hours=1,
+    )
     assert second["precip_written"] is False
     assert second["temp_pet_written"] is False
 

@@ -13,38 +13,9 @@ from design_events.collect_sources.national_hydrography import (
     STREAM_GEO_FIGSHARE_ARTICLE_ID,
     fetch_nldi_comid,
 )
+from design_events.collect_sources.source_artifacts import write_source_artifact
 
 FIGSHARE_ARTICLE_API = "https://api.figshare.com/v2/articles/{article_id}"
-
-
-def _timestamp(value):
-    return None if value is None else pd.Timestamp(value).isoformat()
-
-
-def _relative_path(path, root):
-    path = Path(path)
-    root = Path(root)
-    try:
-        return path.resolve().relative_to(root.resolve()).as_posix()
-    except ValueError:
-        return path.as_posix()
-
-
-def write_source_artifact(paths, source, kind, start=None, end=None, artifacts=None, metadata=None, status="complete"):
-    manifest = {
-        "study_location": paths["location_name"],
-        "source": source,
-        "kind": kind,
-        "status": status,
-        "start": _timestamp(start),
-        "end": _timestamp(end),
-        "artifacts": {key: _relative_path(value, paths["repo_root"]) for key, value in (artifacts or {}).items()},
-        "metadata": metadata or {},
-    }
-    path = paths["source_artifacts_root"] / f"{source}_{kind}.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    return path
 
 
 def collect_stream_geo_nldi(settings, *, skip_existing=True, smoke=False):

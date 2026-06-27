@@ -5,6 +5,7 @@ build/
 dist/
 wheels/
 *.egg-info
+AGENTS.md
 .pytest_cache
 
 # environments
@@ -19,6 +20,8 @@ locations/*/data/smart_ds/
 # general folders
 code
 cluster
+tests
+docs
 
 # data
 artifacts/credentials/earthdatahub-api-key.txt

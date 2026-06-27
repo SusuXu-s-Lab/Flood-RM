@@ -827,42 +827,6 @@ def _nearest_grid_cell(ds: xr.Dataset, ydim: str, xdim: str, lat: float, lon: fl
     return y_index, x_index
 
 
-def _catalog_streamflow_row(row: pd.Series) -> dict:
-    missing = [
-        key
-        for key in ("streamflow_member_id", "streamflow_scale_factor")
-        if row.get(key) is None or pd.isna(row.get(key)) or str(row.get(key)).strip() == ""
-    ]
-    if missing:
-        return {
-            "check": "catalog_streamflow_member",
-            "status": "failed",
-            "message": "missing " + ", ".join(missing),
-        }
-    return {
-        "check": "catalog_streamflow_member",
-        "status": "passed",
-        "message": f"member={row.get('streamflow_member_id')}; scale={row.get('streamflow_scale_factor')}",
-    }
-
-
-def _streamflow_records_row(config: dict, location_root: Path) -> dict:
-    records_path = _streamflow_records_path(config, location_root)
-    if not records_path.exists():
-        return {"check": "streamflow_records", "status": "failed", "message": f"missing {records_path}"}
-    try:
-        sample = pd.read_csv(records_path, nrows=1)
-    except Exception as exc:
-        return {"check": "streamflow_records", "status": "failed", "message": f"unreadable {records_path}: {exc}"}
-    required = {"site_no", "time", "discharge_cfs"}
-    missing = sorted(required - set(sample.columns))
-    return {
-        "check": "streamflow_records",
-        "status": "passed" if not missing else "failed",
-        "message": f"path={records_path}" if not missing else f"missing columns {missing}",
-    }
-
-
 def _event_catalog_row(location_root: Path, event_id: str, catalog_path):
     catalog_path = (
         Path(catalog_path)
@@ -895,23 +859,6 @@ def _streamflow_members_path(config: dict, location_root: Path) -> Path:
         if value:
             return resolve_location_path(location_root, value)
     return resolve_location_path(location_root, "data/sources/usgs_streamgages/streamflow_members.csv")
-
-
-def _streamflow_members_row(config: dict, location_root: Path, row: pd.Series) -> dict:
-    members_path = _streamflow_members_path(config, location_root)
-    if not members_path.exists():
-        return {"check": "streamflow_members", "status": "failed", "message": f"missing {members_path}"}
-    try:
-        members = pd.read_csv(members_path, dtype={"site_no": str})
-    except Exception as exc:
-        return {"check": "streamflow_members", "status": "failed", "message": f"unreadable {members_path}: {exc}"}
-    member_id = str(row.get("streamflow_member_id"))
-    matched = "member_id" in members and bool((members["member_id"].astype(str) == member_id).any())
-    return {
-        "check": "streamflow_members",
-        "status": "passed" if matched else "failed",
-        "message": f"member={member_id}" if matched else f"member {member_id!r} not found in {members_path}",
-    }
 
 
 def _streamflow_member_metadata(config: dict, location_root: Path, row: pd.Series) -> dict:
@@ -965,45 +912,3 @@ def _finite_float(value) -> float | None:
         return None
     return out if np.isfinite(out) else None
 
-
-def _event_model_external_inflow_rows(event_model_root: Path) -> list[dict]:
-    toml_path = event_model_root / "wflow_sbm.toml"
-    forcing_path = event_model_root / "inmaps-event.nc"
-    rows = []
-    forcing_var = ""
-    if not toml_path.exists():
-        rows.append({"check": "wflow_external_inflow_config", "status": "failed", "message": f"missing {toml_path}"})
-    else:
-        with toml_path.open("rb") as src:
-            cfg = tomllib.load(src)
-        forcing_var = str(((cfg.get("input", {}) or {}).get("forcing", {}) or {}).get(WFLOW_EXTERNAL_RIVER_INFLOW, "")).strip()
-        status = "passed" if forcing_var else "failed"
-        rows.append(
-            {
-                "check": "wflow_external_inflow_config",
-                "status": status,
-                "message": (
-                    f"{WFLOW_EXTERNAL_RIVER_INFLOW}={forcing_var}"
-                    if forcing_var
-                    else f"[input.forcing].{WFLOW_EXTERNAL_RIVER_INFLOW} is not set"
-                ),
-            }
-        )
-    if not forcing_path.exists():
-        rows.append({"check": "wflow_external_inflow_forcing", "status": "failed", "message": f"missing {forcing_path}"})
-    else:
-        with xr.open_dataset(forcing_path) as ds:
-            variable = forcing_var or WFLOW_EXTERNAL_RIVER_INFLOW_VAR
-            present = variable in ds
-            dims = tuple(ds[variable].dims) if present else ()
-            has_time = present and "time" in dims
-            values = ds[variable].load() if present else None
-            positive = bool((values > 0).any()) if values is not None else False
-        status = "passed" if present and has_time and positive else "failed"
-        message = (
-            f"variable={variable}; dims={dims}; has_positive={positive}"
-            if present
-            else f"missing variable {variable!r}"
-        )
-        rows.append({"check": "wflow_external_inflow_forcing", "status": status, "message": message})
-    return rows

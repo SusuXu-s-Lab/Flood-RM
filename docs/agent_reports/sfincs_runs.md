@@ -1,5 +1,48 @@
 # SFINCS/SnapWave Task 4c Report
 
+## Follow-Up Reduction Candidate Log
+
+Scope update: the user allowed moderate-confidence plumbing reductions, while keeping
+SFINCS science, notebook APIs, file formats, forcing semantics, and handoff geometry
+guarded.
+
+Selected candidates before editing:
+
+- `src/sfincs_runs/build_base/geometry.py` functions
+  `inward_buffer`, `edge_strip`, `coast_strip`, `save_gdf`, `write_geom`, and
+  `write_line_buffer`.
+  - Classification: `REDUNDANT_OR_REPLACEABLE`, `STALE_OR_DANGEROUS`.
+  - Evidence: `rg -n "build_base\.geometry|from sfincs_runs\.build_base\.geometry|import .*geometry|write_geom|write_line_buffer|save_gdf|edge_strip|coast_strip|inward_buffer" src/sfincs_runs tests/sfincs_runs locations scripts docs -g '*.py' -g '*.ipynb' -g '*.md'` found only definitions in this file.
+  - Replacement: delete the unused helper module; current SFINCS code already uses direct
+    `geopandas`/`shapely` calls where geometry behavior is owned.
+  - Risk level: low. No package facade export, source caller, test caller, notebook
+    import, or script caller found.
+  - Validation: compileall and SFINCS tests after deletion.
+- `src/sfincs_runs/build_base/__init__.py` duplicate `__all__` entries for
+  `build_domains`, `create_handoffs`, `set_observations`, and `validate_physics`.
+  - Classification: `REDUNDANT_OR_REPLACEABLE`, `NOTEBOOK_API`.
+  - Evidence: direct inspection found duplicate names in `__all__`; imports themselves
+    remain single definitions.
+  - Replacement: remove duplicate names only.
+  - Risk level: low. Public names remain exported once.
+  - Validation: compileall and SFINCS tests.
+- `src/sfincs_runs/scenarios/scenario_stats.py` import-time runtime defaults
+  `paths`, `default_scenarios_root`, `default_storage_root`, `default_stats_root`, and
+  `default_design_outputs_root`.
+  - Classification: `PLUMBING_IO`, `REDUNDANT_OR_REPLACEABLE`, with
+    `Hydrodynamic Truth Set` reads guarded.
+  - Evidence: `rg` found these names only in `scenario_stats.py` and the previous SFINCS
+    report. Notebook and source callers use functions such as `event_stats_table`,
+    `load_scenario_build`, and `load_design_events`, not the globals.
+  - Replacement: resolve design-output fallback lazily inside
+    `load_scenario_build()`/`load_design_events()`, with an explicit fallback passed by
+    the CLI after `parse_args()` loads runtime paths.
+  - Risk level: medium-low. This changes import-time plumbing only; scenario summary
+    keys and output schemas remain unchanged. Add focused tests for no-location import
+    and fallback behavior.
+  - Validation: new `tests/sfincs_runs/scenario_stats_test.py`, compileall, SFINCS tests,
+    full pytest if feasible.
+
 ## Scope
 
 Owned files edited in this pass:

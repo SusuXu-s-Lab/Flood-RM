@@ -10,14 +10,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from sfincs_runs.config import build_paths, load_runtime, parse_sfincs_inp
-
-
-paths = build_paths()
-default_scenarios_root = paths["scenarios_root"]
-default_storage_root = paths["storage_root"]
-default_stats_root = paths["stats_root"]
-default_design_outputs_root = paths["design_outputs_root"]
+from sfincs_runs.config import load_runtime, parse_sfincs_inp
 m_to_ft = 3.280839895013123
 km2_to_acres = 247.10538146716534
 
@@ -100,6 +93,7 @@ def parse_args(argv=None):
     args.scenarios_dir = args.scenarios_dir or runtime_paths["scenarios_root"]
     args.storage_dir = args.storage_dir or runtime_paths["storage_root"]
     args.stats_dir = args.stats_dir or runtime_paths["stats_root"]
+    args.design_outputs_root = runtime_paths["design_outputs_root"]
     return args
 
 
@@ -118,19 +112,24 @@ def events_dir(root, scenario):
     return Path(root) / ("events" if scenario == "base" else f"events_{scenario}")
 
 
-def load_scenario_build(scenarios_dir):
+def _default_design_outputs_root(config_path=None):
+    return load_runtime(config_path)[1]["design_outputs_root"]
+
+
+def load_scenario_build(scenarios_dir, *, design_outputs_root=None):
     # Scenario build files are the bridge from SFINCS folders back to design_events.
     summary = read_json(Path(scenarios_dir) / "scenario_summary.json")
-    summary.setdefault("design_outputs_root", str(default_design_outputs_root))
+    if not summary.get("design_outputs_root"):
+        summary["design_outputs_root"] = str(design_outputs_root or _default_design_outputs_root())
     summary.setdefault("design_scenario", "base")
     report_path = Path(scenarios_dir) / "scenario_build_report.csv"
     report = pd.read_csv(report_path).set_index("event_id").to_dict("index") if report_path.exists() else {}
     return summary, report
 
 
-def load_design_events(summary):
+def load_design_events(summary, *, design_outputs_root=None):
     # Read design_events outputs directly so stats rows keep SLR/return-period context.
-    root = Path(summary.get("design_outputs_root") or default_design_outputs_root)
+    root = Path(summary.get("design_outputs_root") or design_outputs_root or _default_design_outputs_root())
     scenario = summary.get("design_scenario", "base")
     sampled = root / "catalog" / "sampled_peaks.csv"
     if not sampled.exists():
@@ -485,7 +484,10 @@ def main():
         print("No completed event directories matched.")
         return 1
 
-    scenario_summary, scenario_rows = load_scenario_build(args.scenarios_dir)
+    scenario_summary, scenario_rows = load_scenario_build(
+        args.scenarios_dir,
+        design_outputs_root=args.design_outputs_root,
+    )
     design_rows, design_attrs = load_design_events(scenario_summary)
 
     print(f"Processing {len(selected)} events with {args.workers} workers ...")

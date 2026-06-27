@@ -45,10 +45,8 @@ def dynamic_handoff_batch_worklist(
         limit=limit,
     )
     status = str(status).lower()
-    if status == "blocked":
-        out = readiness[readiness["status"].eq("blocked")].copy()
-    elif status == "accepted":
-        out = readiness[readiness["status"].eq("accepted")].copy()
+    if status in {"blocked", "accepted"}:
+        out = readiness[readiness["status"].eq(status)].copy()
     elif status == "all":
         out = readiness.copy()
     else:
@@ -90,7 +88,7 @@ def run_handoffs(
         t0 = time.time()
         if paths["acceptance"].exists() and not force:
             try:
-                accepted = require_handoff(config, location_root, event_id)
+                accepted = require_handoff(config, location_root, event_id, catalog_path=catalog_path)
                 rows.append(
                     {
                         "event_id": event_id,
@@ -125,7 +123,7 @@ def run_handoffs(
             )
             status_value = "accepted" if execute else "planned"
             if execute:
-                require_handoff(config, location_root, event_id)
+                require_handoff(config, location_root, event_id, catalog_path=catalog_path)
             rows.append(
                 {
                     "event_id": event_id,

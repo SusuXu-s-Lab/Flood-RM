@@ -593,6 +593,7 @@ from design_events.collect_sources import era5_waves as era5_waves_module
 from design_events.collect_sources import lcra_hydromet as lcra_hydromet_module
 from design_events.collect_sources import usgs_streamgages as usgs_streamgages_module
 from design_events.collect_sources.nwm import soil_moisture_csv_has_variables
+from design_events.collect_sources.source_artifacts import source_artifact_covers
 from design_events.collect_sources.usgs_streamgages import (
     active_streamgage_candidate_artifact_ready,
     build_reviewed_streamgage_decisions,
@@ -614,28 +615,11 @@ source_artifacts = {
 }
 
 
-def _source_artifact_path(paths, source, kind):
-    return paths["source_artifacts_root"] / f"{source}_{kind}.json"
-
-
 def _read_json(path):
     path = Path(path)
     if not path.exists():
         return None
     return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _source_artifact_covers(paths, source, kind, start, end):
-    manifest = _read_json(_source_artifact_path(paths, source, kind))
-    if manifest is None or manifest.get("status") != "complete":
-        return False
-    if manifest.get("metadata", {}).get("smoke") is True:
-        return False
-    artifact_start = manifest.get("start")
-    artifact_end = manifest.get("end")
-    if not artifact_start or not artifact_end:
-        return False
-    return pd.Timestamp(artifact_start) <= pd.Timestamp(start) and pd.Timestamp(artifact_end) >= pd.Timestamp(end)
 
 
 @dataclass(frozen=True)
@@ -2051,7 +2035,7 @@ def _will_reuse_source(step, paths: dict, *, rerun: bool) -> bool:
     if step.name not in source_artifacts:
         return False
     source, kind = source_artifacts[step.name]
-    manifest_covers = _source_artifact_covers(paths, source, kind, step.start, step.end)
+    manifest_covers = source_artifact_covers(paths, source, kind, step.start, step.end)
     if step.name == "era5_waves":
         output_path = era5_waves_module._wave_output_path(paths, step.spec)
         return bool(manifest_covers and era5_waves_module.wave_dataset_covers(output_path, step.start, step.end))

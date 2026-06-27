@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import xarray as xr
 
 from wflow_runs.dynamic_handoff_batch import dynamic_handoff_batch_worklist
 
@@ -12,9 +13,17 @@ def test_dynamic_handoff_batch_worklist_selects_blocked_events(tmp_path):
     catalog_path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(
         [
-            {"event_id": "accepted_evt"},
-            {"event_id": "blocked_evt", "streamflow_member_id": "02000000_20200101T000000"},
-            {"event_id": "incompatible_evt", "streamflow_member_id": "03000000_20200101T000000"},
+            {"event_id": "accepted_evt", "event_reference_time": "2020-01-01T00:00:00"},
+            {
+                "event_id": "blocked_evt",
+                "event_reference_time": "2020-01-01T00:00:00",
+                "streamflow_member_id": "02000000_20200101T000000",
+            },
+            {
+                "event_id": "incompatible_evt",
+                "event_reference_time": "2020-01-01T00:00:00",
+                "streamflow_member_id": "03000000_20200101T000000",
+            },
         ]
     ).to_csv(catalog_path, index=False)
     members_path = location_root / "data/sources/usgs_streamgages/streamflow_members.csv"
@@ -58,7 +67,7 @@ def test_dynamic_handoff_batch_worklist_selects_blocked_events(tmp_path):
     accepted_root = location_root / "data/wflow/events/accepted_evt"
     accepted_root.mkdir(parents=True, exist_ok=True)
     discharge = accepted_root / "sfincs_discharge.nc"
-    discharge.write_text("fixture\n", encoding="utf-8")
+    xr.Dataset(coords={"time": pd.date_range("2020-01-04T00:00:00", periods=1, freq="h")}).to_netcdf(discharge)
     (accepted_root / "sfincs_discharge.dynamic_handoff.json").write_text(
         json.dumps(
             {
