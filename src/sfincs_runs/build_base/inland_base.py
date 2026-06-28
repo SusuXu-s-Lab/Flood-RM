@@ -1672,12 +1672,19 @@ def _exposure_components(exposure: gpd.GeoDataFrame):
 def _exposure_component_records(exposure: gpd.GeoDataFrame):
     if "subregion_id" not in exposure.columns:
         return [{"geometry": geometry, "subregion_id": None} for geometry in _exposure_components(exposure)]
+    has_source_subregion = "source_subregion_id" in exposure.columns
     records = []
     for _, row in exposure.iterrows():
         geometry = row.geometry
         if geometry is None or geometry.is_empty:
             continue
-        subregion_id = row.get("subregion_id")
+        # The region-setup SFINCS coverage (bbox.geojson) carries the raw exposure name in
+        # source_subregion_id and the already-final domain id in subregion_id. Prefer the raw
+        # name so _auto_domain_id derives the same id whether the source is the raw study_area
+        # footprint or the generated coverage boxes (otherwise the id gets a double prefix).
+        subregion_id = row.get("source_subregion_id") if has_source_subregion else None
+        if subregion_id is None or pd.isna(subregion_id):
+            subregion_id = row.get("subregion_id")
         subregion_id = None if pd.isna(subregion_id) else str(subregion_id)
         polygons = list(geometry.geoms) if geometry.geom_type == "MultiPolygon" else [geometry]
         for polygon in polygons:

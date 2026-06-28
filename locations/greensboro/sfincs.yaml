@@ -43,6 +43,8 @@ sfincs:
 
 sfincs_domain_set:
   allow_multiple_domains: true
+  source: data/static/aoi/bbox.geojson
+  region_geometry: bbox
   include_domain_ids:
     - greensboro_rural
 
