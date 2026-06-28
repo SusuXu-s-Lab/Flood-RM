@@ -756,6 +756,8 @@ def plot_inland_sfincs_domain_set_basemaps(
                 handoff_locations=handoff_locations,
             )
         for variable in variables:
+            if variable in {"dep", "elevation"}:
+                _ensure_dep_nodata_for_native_plot(model)
             model.plot_basemap(
                 variable=variable,
                 plot_geoms=True,
@@ -1077,7 +1079,7 @@ def _ensure_dep_nodata_for_native_plot(model) -> None:
 
     dep = grid["dep"]
     mask = grid["mask"]
-    fill_value = dep.attrs.get("_FillValue")
+    fill_value = _finite_dep_fill_value(dep.attrs.get("_FillValue"))
     if fill_value is None:
         fill_value = _infer_dep_fill_value(dep, mask)
     if fill_value is None:
@@ -1102,6 +1104,18 @@ def _infer_dep_fill_value(dep, mask) -> float | None:
     fill_values, counts = np.unique(inactive_values, return_counts=True)
     fill_value = float(fill_values[int(np.argmax(counts))])
     if fill_value >= -100.0:
+        return None
+    return fill_value
+
+
+def _finite_dep_fill_value(value) -> float | None:
+    if value is None:
+        return None
+    try:
+        fill_value = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(fill_value):
         return None
     return fill_value
 
