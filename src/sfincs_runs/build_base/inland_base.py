@@ -986,6 +986,7 @@ def plot_sfincs_handoff_basemap(
             domain_region=domain_region,
         )
 
+    _ensure_dep_nodata_for_native_plot(model)
     fig, ax = model.plot_basemap(
         figsize=figsize,
         plot_bounds=True,
@@ -1066,6 +1067,51 @@ def plot_sfincs_handoff_basemap(
         "reviewed_usgs_gages_visible": int(0 if observations is None else len(observations)),
     }
     return fig, ax, qa
+
+
+def _ensure_dep_nodata_for_native_plot(model) -> None:
+    """Keep HydroMT-SFINCS native plotting on its mask_nodata path for dep."""
+    grid = getattr(getattr(model, "grid", None), "data", None)
+    if grid is None or "dep" not in grid or "mask" not in grid:
+        return
+
+    dep = grid["dep"]
+    mask = grid["mask"]
+    fill_value = dep.attrs.get("_FillValue")
+    if fill_value is None:
+        fill_value = _infer_dep_fill_value(dep, mask)
+    if fill_value is None:
+        return
+
+    # HydroMT-SFINCS derives dep color limits before applying mask > 0, so the
+    # inactive fill value must be registered with the raster accessor.
+    _set_dep_nodata(dep, float(fill_value))
+    elevation = getattr(getattr(model, "elevation", None), "data", None)
+    if elevation is not None and "dep" in elevation:
+        _set_dep_nodata(elevation["dep"], float(fill_value))
+
+
+def _infer_dep_fill_value(dep, mask) -> float | None:
+    dep_values = np.asarray(dep.values)
+    inactive = np.asarray(mask.values) == 0
+    if not inactive.any():
+        return None
+    inactive_values = dep_values[inactive & np.isfinite(dep_values)]
+    if inactive_values.size == 0:
+        return None
+    fill_values, counts = np.unique(inactive_values, return_counts=True)
+    fill_value = float(fill_values[int(np.argmax(counts))])
+    if fill_value >= -100.0:
+        return None
+    return fill_value
+
+
+def _set_dep_nodata(dep, fill_value: float) -> None:
+    raster = getattr(dep, "raster", None)
+    if raster is not None and hasattr(raster, "set_nodata"):
+        raster.set_nodata(fill_value)
+    else:
+        dep.attrs["_FillValue"] = fill_value
 
 
 def _visible_sfincs_rivers(model, rivers: gpd.GeoDataFrame | None) -> gpd.GeoDataFrame:

@@ -465,7 +465,7 @@ def _validate_input_gauges(location_root, wflow_base_root, submodel_id: str, sou
         preview = ", ".join(f"{gauge_id}={distance:.1f} m" for gauge_id, distance in sorted(stale.items())[:8])
         raise RuntimeError(
             f"{submodel_id} Wflow SFINCS gauge input coordinates are stale relative to current SFINCS handoff sources "
-            f"({preview}). Set rerun=True, rerun Step 14, then rerun Steps 15-16."
+            f"({preview}). Set rerun=True, rerun Step 11, then rerun Steps 12-13."
         )
     return distances
 
@@ -479,7 +479,7 @@ def _require_matching_ids(submodel_id: str, sources, gauges, label: str, target:
         raise RuntimeError(
             f"{submodel_id} {label} is stale relative to current SFINCS handoff sources. "
             f"Missing in {target}: {missing or 'none'}; stale in {target}: {stale or 'none'}. "
-            "Set rerun=True, rerun Step 14, then rerun Steps 15-16."
+            "Set rerun=True, rerun Step 11, then rerun Steps 12-13."
         )
 
 
