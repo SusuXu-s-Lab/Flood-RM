@@ -81,8 +81,38 @@ def build_paths(config=None):
         "design_outputs_root": design_outputs_root,
     }
 
+def _apply_inland_runtime_defaults(config):
+    """Backfill optional config keys that inland notebooks read by bracket-subscript.
+
+    These mirror the ``.get(..., default)`` defaults already used throughout
+    ``wflow_runs``/``sfincs_runs`` so a location that doesn't spell out every optional key
+    in YAML (greensboro, austin) still resolves in a notebook cell instead of raising
+    ``KeyError``. Only keys *inside* sections the location already declares are filled — the
+    top-level ``wflow``/``sfincs_domain_set`` sections are never created, so a coastal
+    config stays coastal.
+    """
+    # static_sources: same defaults the region-setup/collect-sources runtimes apply.
+    from sfincs_runs.build_base.static_intake import static_sources_with_defaults
+
+    config["static_sources"] = static_sources_with_defaults(config)
+
+    sfincs_domain_set = config.get("sfincs_domain_set")
+    if isinstance(sfincs_domain_set, dict):
+        sfincs_domain_set.setdefault("domain_manifest", "data/sfincs/domains/domain_set.yaml")
+        sfincs_domain_set.setdefault("event_catalog_scope", "shared_across_domain_set")
+        sfincs_domain_set.setdefault("evaluation_merge", "max_depth_per_asset_with_source_domain")
+
+    wflow = config.get("wflow")
+    if isinstance(wflow, dict):
+        wflow.setdefault("domain_set_manifest", "data/wflow/domain_set.yaml")
+        domain_set = wflow.get("domain_set")
+        if isinstance(domain_set, dict):
+            domain_set.setdefault("event_catalog_scope", "shared_across_domain_set")
+    return config
+
+
 def load_runtime(path=None):
-    config = load_config(path)
+    config = _apply_inland_runtime_defaults(load_config(path))
     return config, build_paths(config)
 
 @dataclass(frozen=True)

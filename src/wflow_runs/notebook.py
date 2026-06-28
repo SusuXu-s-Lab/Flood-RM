@@ -230,19 +230,23 @@ def exists_table(location_root: Path, named_paths: dict) -> pd.DataFrame:
 def domain_summary(config: dict, location_root: Path) -> tuple:
     build_plan = build_wflow_build_plan(config, {"location_root": location_root})
     domain_plan = plan_wflow_domain_set(config, {"location_root": location_root})
-    domain_set = config["wflow"]["domain_set"]
+    wflow_cfg = config.get("wflow", {}) or {}
+    domain_set = wflow_cfg.get("domain_set", {}) or {}
+    # Use the same defaults the rest of wflow_runs applies via .get(), so locations that
+    # don't spell out every optional domain_set key in YAML (greensboro, austin) summarize
+    # instead of KeyError'ing. Defaults mirror write_wflow_domain_set_manifest (build_plan).
     summary = pd.Series(
         {
-            "allow_multiple_submodels": domain_set["allow_multiple_submodels"],
+            "allow_multiple_submodels": domain_set.get("allow_multiple_submodels", False),
             "review_required": build_plan.review_required,
             "domain_status": build_plan.domain_status,
             "reviewed_subbasin_plan_status": domain_plan.status,
             "hydromt_region_kind": build_plan.region_kind,
-            "event_catalog_scope": domain_set["event_catalog_scope"],
-            "configured_submodel_count": len(domain_set["submodels"]),
+            "event_catalog_scope": domain_set.get("event_catalog_scope", "shared_across_domain_set"),
+            "configured_submodel_count": len(domain_set.get("submodels", []) or []),
             "reviewed_submodel_count": domain_plan.submodel_count,
             "reviewed_handoff_count": domain_plan.handoff_count,
-            "domain_set_manifest": config["wflow"]["domain_set_manifest"],
+            "domain_set_manifest": wflow_cfg.get("domain_set_manifest", "data/wflow/domain_set.yaml"),
         }
     )
     return build_plan, domain_plan, summary
