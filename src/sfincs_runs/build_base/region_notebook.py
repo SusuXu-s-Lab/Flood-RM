@@ -642,9 +642,21 @@ def _plot_coastal_static(
 
 def build_smart_ds_evaluation_footprint(runtime: RegionSetupNotebookRuntime) -> EvaluationFootprint:
     """Build the study AOI and copy it to the configured evaluation footprint."""
-    aoi_result = _build_aoi(runtime.runtime_config, runtime.repo_root)
-    study_area_wgs = gpd.read_file(aoi_result.output_path).to_crs("EPSG:4326")
     aoi_config = runtime.runtime_config.get("aoi", {})
+    aoi_output_path = runtime.resolve_location_path(
+        aoi_config.get("output", "data/static/aoi/study_area.geojson")
+    )
+    if aoi_output_path.exists():
+        study_area_wgs = gpd.read_file(aoi_output_path).to_crs("EPSG:4326")
+        aoi_result = AoiBuildResult(
+            output_path=aoi_output_path,
+            source_format=str(aoi_config.get("source_format", "asset_registry")),
+            n_points=0,
+            bounds=tuple(float(value) for value in study_area_wgs.total_bounds),
+        )
+    else:
+        aoi_result = _build_aoi(runtime.runtime_config, runtime.repo_root)
+        study_area_wgs = gpd.read_file(aoi_result.output_path).to_crs("EPSG:4326")
 
     if aoi_config.get("preserve_disconnected_subregions") and "subregion_id" not in study_area_wgs:
         study_area_wgs = _split_disconnected_study_area(study_area_wgs, aoi_config)

@@ -4,12 +4,13 @@
 
 Flood-RM supports:
 
-### 1. Synthetic Distribution Network (A) Download or (B) Generation
+### 1. Synthetic Distribution Feeder
 
 **Option A: SMART-DS feeder**: Start from an existing synthetic SMART-DS regional dataset 
 
 Supported regions include Austin, Greensboro, and San Francisco.
 
+**example**
 ```bash
 uv run python scripts/get_smartds.py sfo --execute
 ```
@@ -30,7 +31,7 @@ see `config.yaml` for an example of the structure.
 
 `01_grid/03_audit_network/` validates the synthetic-grid artifacts based on SMART-DS evaluation guidelines
 
-### 2. Stochastic Design Events Boundary Condition Generation
+### 2. Design-Event Boundary Conditions
 
 The flood workflow builds staged stochastic scenario ensembles for coastal and inland locations:
 
@@ -38,16 +39,18 @@ Hydrodynamic models:
 - **Inland coupled**: HydroMT-Wflow routes upstream rainfall-runoff to SFINCS discharge handoff points while SFINCS receives local direct rainfall 
 - **Coastal, Wave-enabled**: quadtree SFINCS with SnapWave and infragravity-wave coupling 
 
-Data Sources: 
+**Primary Data Sources:** 
 - coastal total water levels from CORA or NOAA CO-OPS sources
 - wave data from ERA5
 - rainfall from AORC stochastic storm transposition (SST)
 - routed streamflow from USGS
 - antecedent soil moisture from NWM retrospective products
 
-Current design-event defaults are:
+**Current design-event defaults are:**
 - 100,000 candidate driver combinations before tail filtering
 - 500 tail-sampled design drivers in the stress/training catalogue with user defined importance sampling distribution
+
+### 3. Handoff for Hydrodynamic Solver and Post-Run Evaluation
 
 ## Local Credentials
 Suggested local paths: 
