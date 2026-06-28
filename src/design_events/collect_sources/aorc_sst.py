@@ -585,6 +585,16 @@ def _event_window_subset(year_datasets, opener, spec, bbox_wgs84, start, end):
     return xr.concat(subsets, dim="time")
 
 
+def _selected_event_meteo_variables(ds: xr.Dataset, spec: dict) -> list[str]:
+    variables = []
+    for candidates in aorc_wflow_temp_pet_variables({"collection": {"aorc_sst": spec}}).values():
+        for candidate in candidates:
+            if candidate in ds:
+                variables.append(candidate)
+                break
+    return variables
+
+
 def _trim_year_dataset_cache(year_datasets, max_open_year_datasets: int) -> None:
     while len(year_datasets) > max_open_year_datasets:
         _, ds = year_datasets.popitem(last=False)
@@ -1319,6 +1329,96 @@ def collect_aorc_sst_event_windows(settings, skip_existing=True, opener=None):
         "ranked_storms_csv": ranked_csv,
         "event_windows_dir": event_window_dir,
         "source_artifact_json": artifact_json,
+    }
+
+
+def repair_aorc_sst_event_window_meteo(settings, skip_existing=True, opener=None):
+    """Add missing Wflow meteo variables to existing AORC event-window NetCDFs.
+
+    This repair path is intentionally narrower than ``collect_aorc_sst_event_windows``:
+    it reads the existing ranked storm catalog, leaves existing rainfall fields in place,
+    and fetches only the AORC variables required by HydroMT-Wflow temp/PET forcing for
+    event-window files that already exist but are missing meteo variables.
+    """
+    paths = settings["paths"]
+    spec = {**settings.get("aorc_sst", {}), "write_event_windows": True}
+    spec["event_meteo"] = {**(spec.get("event_meteo") or {}), "enabled": True}
+    opener = opener or _open_aorc_year
+    duration_hours = int(spec.get("storm_duration_hours", spec.get("storms", {}).get("storm_duration_hours", 72)))
+    bbox_wgs84 = _bbox_from_spec(paths, spec)
+    collection_dir = _collection_dir(paths, duration_hours)
+    event_window_dir = collection_dir / "event_windows"
+    ranked_csv = collection_dir / "ranked-storms.csv"
+    if not ranked_csv.exists():
+        raise FileNotFoundError(f"AORC SST ranked storm catalog is missing: {ranked_csv}")
+
+    ranked = pd.read_csv(ranked_csv, parse_dates=["storm_date"])
+    year_datasets = OrderedDict()
+    repaired = []
+    current = []
+    missing = []
+    incomplete = []
+    try:
+        for _, row in iter_progress(
+            list(ranked.iterrows()),
+            total=len(ranked),
+            desc="AORC event meteo repair",
+            unit="storm",
+            dynamic_ncols=True,
+        ):
+            start = pd.Timestamp(row["storm_date"])
+            end = start + pd.to_timedelta(duration_hours - 1, unit="h")
+            event_id = _event_id(paths["location_name"], duration_hours, row)
+            path = event_window_dir / f"{event_id}_{start:%Y%m%dT%H}.nc"
+            requires_transposition = _row_requires_field_transposition(row)
+            if skip_existing and _event_window_file_has_required_variables(
+                path,
+                spec,
+                require_transposition=requires_transposition,
+            ):
+                current.append(path)
+                continue
+            if not path.exists():
+                missing.append(path)
+                continue
+
+            with xr.open_dataset(path) as existing_ds:
+                if spec.get("variable", "APCP_surface") not in existing_ds:
+                    incomplete.append(path)
+                    continue
+                existing = existing_ds.load()
+
+            subset = _event_window_subset(year_datasets, opener, spec, bbox_wgs84, start, end)
+            subset = _apply_field_transposition(subset, row)
+            missing_meteo = [
+                name
+                for name in _selected_event_meteo_variables(subset, spec)
+                if name not in existing
+            ]
+            if not missing_meteo:
+                current.append(path)
+                continue
+            merged = existing.copy()
+            for name in missing_meteo:
+                merged[name] = subset[name]
+            merged.attrs.update(subset.attrs)
+            _write_event_window_netcdf(merged, path)
+            repaired.append(path)
+            _trim_year_dataset_cache(year_datasets, max(1, int(spec.get("max_open_year_datasets", 4))))
+    finally:
+        for ds in year_datasets.values():
+            ds.close()
+
+    return {
+        "ranked_rows": int(len(ranked)),
+        "event_windows_dir": event_window_dir,
+        "current_count": len(current),
+        "repaired_count": len(repaired),
+        "missing_count": len(missing),
+        "incomplete_count": len(incomplete),
+        "repaired_windows": repaired,
+        "missing_windows": missing,
+        "incomplete_windows": incomplete,
     }
 
 

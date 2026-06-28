@@ -178,6 +178,8 @@ def build_meteo(
 
     rainfall_source_nc = _event_rainfall_source_nc(config, location_root, row)
     scale_factor = _positive_float(row.get("rainfall_scale_factor"), default=1.0)
+    if write_temp_pet:
+        _require_event_meteo_variables(config, rainfall_source_nc, event_id=event_id)
     if write_precip:
         precip_cfg = (wflow.get("event_forcing", {}) or {}).get("precipitation", {}) or {}
         aorc_cfg = (config.get("collection", {}) or {}).get("aorc_sst", {}) or {}
@@ -229,6 +231,33 @@ def build_meteo(
         "precip_written": bool(write_precip),
         "temp_pet_written": bool(write_temp_pet),
     }
+
+
+def _require_event_meteo_variables(config: dict, source_nc: Path, *, event_id: str) -> None:
+    import xarray as xr
+
+    candidates_by_target = aorc_wflow_temp_pet_variables(config)
+    missing: dict[str, list[str]] = {}
+    with xr.open_dataset(source_nc) as ds:
+        available = set(ds.data_vars)
+        for target, candidates in candidates_by_target.items():
+            if not any(candidate in available for candidate in candidates):
+                missing[target] = list(candidates)
+    if not missing:
+        return
+
+    meteo_cfg = ((config.get("collection", {}) or {}).get("aorc_sst", {}) or {}).get("event_meteo", {}) or {}
+    config_hint = ""
+    if not bool(meteo_cfg.get("enabled", False)):
+        config_hint = " Set collection.aorc_sst.event_meteo.enabled: true in the location Wflow config."
+    missing_text = "; ".join(f"{target}: tried {candidates}" for target, candidates in missing.items())
+    raise RuntimeError(
+        f"Wflow event meteo forcing for {event_id} cannot be built because the selected AORC "
+        f"event-window file is rainfall-only or stale: {source_nc}. Missing variables: {missing_text}."
+        f"{config_hint} Rerun 02_flood/02_collect_sources.ipynb from the AORC SST Event Windows "
+        "cell so event windows are regenerated with AORC event_meteo variables, then rerun the "
+        "dynamic handoff notebook."
+    )
 
 
 def build_discharge_geodataset(

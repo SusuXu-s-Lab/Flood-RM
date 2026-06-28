@@ -20,6 +20,8 @@ collection:
     check_every_n_hours: 6
     min_precip_threshold: 50.0
     defer_event_windows: true
+    event_meteo:
+      enabled: true
 
 # Wflow domain selection.
 wflow:

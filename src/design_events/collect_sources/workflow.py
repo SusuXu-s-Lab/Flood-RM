@@ -1596,6 +1596,7 @@ def aorc_sst_params(
             "check_every_n_hours": aorc_sst.get("check_every_n_hours"),
             "top_n_events_safety_cap": aorc_sst.get("top_n_events"),
             "defer_event_windows": bool(aorc_sst.get("defer_event_windows", False)),
+            "event_meteo_enabled": bool((aorc_sst.get("event_meteo") or {}).get("enabled", False)),
             "rainfall_members": str(paths["aorc_sst_rainfall_members_csv"]),
             "rainfall_members_exists": paths["aorc_sst_rainfall_members_csv"].exists(),
         },
@@ -1630,6 +1631,36 @@ def collect_aorc_sst_event_windows(
             "source_artifact_json": str(result["source_artifact_json"]),
         },
         name="aorc_sst_event_windows",
+    )
+
+
+def repair_aorc_sst_event_window_meteo(
+    config: dict,
+    paths: dict,
+    collection_plan,
+    *,
+    skip_existing=True,
+) -> pd.Series:
+    from design_events.collect_sources.aorc_sst import repair_aorc_sst_event_window_meteo as _repair_event_meteo
+
+    if not collection_plan.has("aorc_sst"):
+        raise KeyError("aorc_sst is not configured in the source collection plan")
+    result = _repair_event_meteo(
+        collection_plan.settings_for("aorc_sst"),
+        skip_existing=skip_existing,
+    )
+    return pd.Series(
+        {
+            "source": "aorc_sst_event_window_meteo_repair",
+            "status": "repaired" if result["repaired_count"] else "current",
+            "ranked_rows": result["ranked_rows"],
+            "current_count": result["current_count"],
+            "repaired_count": result["repaired_count"],
+            "missing_count": result["missing_count"],
+            "incomplete_count": result["incomplete_count"],
+            "event_windows_dir": str(result["event_windows_dir"]),
+        },
+        name="aorc_sst_event_window_meteo_repair",
     )
 
 

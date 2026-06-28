@@ -617,6 +617,16 @@ def plan_example(
     scenarios_root = _location_path(location_root, config.get("paths", {}).get("scenarios_root", "data/sfincs/scenarios"))
     sfincs_domains = _sfincs_domain_models(config, location_root)
 
+    selected = None
+    selected_event_id = None
+    if catalog_path.exists():
+        catalog = pd.read_csv(catalog_path)
+        if "event_id" not in catalog:
+            raise ValueError(f"Event Catalog is missing event_id: {catalog_path}")
+        catalog["event_id"] = catalog["event_id"].astype(str)
+        selected = _select_rows(catalog, event_ids=[event_id] if event_id else None, limit=1).iloc[0].to_dict()
+        selected_event_id = str(selected["event_id"])
+
     missing = [
         f"{label}: {path}"
         for label, path in {
@@ -638,17 +648,12 @@ def plan_example(
         return _example_plan(
             location_name=location_name,
             status="missing_inputs",
+            event_id=selected_event_id,
+            event_reference_time=_clean_string(selected.get("event_reference_time")) if selected is not None else None,
             catalog_path=catalog_path,
             handoff_path=handoff_path,
             issues=missing,
         )
-
-    catalog = pd.read_csv(catalog_path)
-    if "event_id" not in catalog:
-        raise ValueError(f"Event Catalog is missing event_id: {catalog_path}")
-    catalog["event_id"] = catalog["event_id"].astype(str)
-    selected = _select_rows(catalog, event_ids=[event_id] if event_id else None, limit=1).iloc[0].to_dict()
-    selected_event_id = str(selected["event_id"])
 
     handoff = yaml.safe_load(handoff_path.read_text(encoding="utf-8")) or {}
     handoff_by_event = {str(row["event_id"]): row for row in handoff.get("events", [])}
@@ -773,7 +778,8 @@ def _sfincs_domain_models(config: dict, location_root: Path) -> list[dict]:
     domain_set = config.get("sfincs_domain_set", {})
     manifest_value = domain_set.get("domain_manifest")
     manifest_path = _location_path(location_root, manifest_value) if manifest_value else None
-    if bool(domain_set.get("enabled", False)) and manifest_path is not None and manifest_path.exists():
+    use_domain_manifest = bool(domain_set.get("enabled", False) or domain_set.get("allow_multiple_domains", False))
+    if use_domain_manifest and manifest_path is not None and manifest_path.exists():
         manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
         domains = []
         for row in manifest.get("domains", []):
