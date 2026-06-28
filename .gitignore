@@ -41,3 +41,6 @@ runs/*
 locations/*/02_flood/07*
 locations/*/02_flood/08*
 src/fiat_runs
+AGENTS.md
+docs/
+tests/
