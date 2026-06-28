@@ -13,6 +13,7 @@ import yaml
 
 from design_events.collect_sources.usgs_streamgages import fetch_nwis_discharge_records
 from wflow_runs.notebook import resolve_location_path
+from wflow_runs.usgs import usgs_instantaneous_streamflow_spec
 
 
 WFLOW_EXTERNAL_RIVER_INFLOW = "river_water__external_inflow_volume_flow_rate"
@@ -695,11 +696,7 @@ def _fetch_event_instantaneous_records(
     if not site_nos:
         return pd.DataFrame(columns=["site_no", "time", "discharge_cfs", "source"])
     window_start, window_end = _analog_window(row, member, start=start, end=end)
-    spec = dict(((config.get("collection", {}) or {}).get("usgs_streamgages", {}) or {}))
-    records_cfg = dict(spec.get("streamflow_records", {}) or {})
-    records_cfg["service"] = "iv"
-    records_cfg.pop("stat_cd", None)
-    spec["streamflow_records"] = records_cfg
+    spec = usgs_instantaneous_streamflow_spec(config)
     records = []
     for site_no in site_nos:
         records.extend(fetch_nwis_discharge_records(spec, site_no, window_start, window_end))
@@ -911,4 +908,3 @@ def _finite_float(value) -> float | None:
     except (TypeError, ValueError):
         return None
     return out if np.isfinite(out) else None
-

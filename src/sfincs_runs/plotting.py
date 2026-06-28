@@ -604,6 +604,67 @@ def _plot_discharge_snapshot(ax, snapshot, *, variable: str) -> None:
     _plot_missing_panel(ax, "Forcing manifest summary", "Discharge forcing has no x/y coordinates")
 
 
+def _precip_variable_name(ds: xr.Dataset) -> str:
+    for name in ("precip", "Precipitation", "precipitation"):
+        if name in ds.data_vars:
+            return name
+    return next(iter(ds.data_vars))
+
+
+def _load_inland_rainfall_hyetograph(run_root: Path, manifest: dict) -> tuple[pd.DataFrame | None, str]:
+    candidates = []
+    for key, label in (
+        ("prepared_precip", "SFINCS prepared precipitation"),
+        ("direct_rainfall_source", "Wflow event precipitation"),
+    ):
+        path = _resolve_manifest_path(run_root, manifest.get(key))
+        if path is not None:
+            candidates.append((path, label))
+
+    provenance_path = _resolve_manifest_path(run_root, manifest.get("wflow_precip_provenance"))
+    if provenance_path is not None and provenance_path.exists():
+        try:
+            provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+            output_nc = provenance.get("output_nc")
+        except Exception:
+            output_nc = None
+        path = Path(str(output_nc)) if output_nc else None
+        if path is not None:
+            candidates.append((path, "Wflow event precipitation"))
+
+    netampr = _resolve_manifest_path(run_root, manifest.get("netamprfile"))
+    if netampr is not None:
+        candidates.append((netampr, "SFINCS netampr precipitation"))
+
+    for path, label in candidates:
+        if not path.exists():
+            continue
+        try:
+            with xr.open_dataset(path) as ds:
+                variable = _precip_variable_name(ds)
+                return _spatial_time_stats(ds[variable].load()), label
+        except Exception:
+            continue
+    return None, ""
+
+
+def _plot_rainfall_hyetograph(ax, rainfall: pd.DataFrame | None, *, label: str) -> None:
+    title = "Rainfall hyetograph"
+    if rainfall is None or rainfall.empty:
+        _plot_missing_panel(ax, title, "No precipitation forcing staged")
+        return
+    times = pd.DatetimeIndex(pd.to_datetime(rainfall.index))
+    if "max" in rainfall:
+        ax.bar(times, rainfall["max"].to_numpy(dtype=float), width=0.03, color="#9ecae1", alpha=0.45, label="max")
+    if "mean" in rainfall:
+        ax.plot(times, rainfall["mean"].to_numpy(dtype=float), color="#08519c", linewidth=1.8, label="mean")
+    _format_datetime_axis(ax, times)
+    ax.set_ylabel("precipitation [mm/hr]")
+    ax.set_title(title if not label else f"{title} ({label})")
+    ax.grid(True, alpha=0.25)
+    ax.legend(fontsize=8)
+
+
 def _plot_discharge_timeseries(ax, data, *, variable: str) -> None:
     """Plot native SFINCS source hydrographs when available, else summary stats."""
     if "time" not in data.dims:
@@ -694,29 +755,8 @@ def plot_forcing(
             "No sfincs_discharge.nc yet\nrun Wflow replay first",
         )
 
-    if discharge_path is not None and discharge_path.exists():
-        with xr.open_dataset(discharge_path) as ds:
-            variable = "discharge" if "discharge" in ds else next(iter(ds.data_vars))
-            data = ds[variable]
-            snapshot = data.max("time", skipna=True) if "time" in data.dims else data
-            if {"x", "y"} & set(snapshot.coords):
-                _plot_discharge_snapshot(axes[1], snapshot, variable=variable)
-            else:
-                axes[1].axis("off")
-                axes[1].table(
-                    cellText=[[name, str(value)] for name, value in summary.items()],
-                    colLabels=["field", "value"],
-                    loc="center",
-                )
-                axes[1].set_title("Forcing manifest summary")
-    else:
-        axes[1].axis("off")
-        axes[1].table(
-            cellText=[[name, "" if value is None else str(value)] for name, value in summary.items()],
-            colLabels=["field", "value"],
-            loc="center",
-        )
-        axes[1].set_title("Forcing manifest summary")
+    rainfall, rainfall_label = _load_inland_rainfall_hyetograph(run_root, manifest)
+    _plot_rainfall_hyetograph(axes[1], rainfall, label=rainfall_label)
 
     smax = np.fromfile(run_root / "sfincs.smax", dtype="<f4") if (run_root / "sfincs.smax").exists() else np.array([])
     seff = np.fromfile(run_root / "sfincs.seff", dtype="<f4") if (run_root / "sfincs.seff").exists() else np.array([])

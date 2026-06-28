@@ -50,6 +50,11 @@ sfincs_domain_set:
 
 # Wflow-coupled SFINCS forcing and parameters.
 inland_coupling:
+  direct_rainfall:
+    enabled: true
+    cumulative_input: true
+    time_label: right
+    buffer_m: 30000.0
   discharge_forcing:
     source: wflow_dynamic
     handoff_location: sfincs_native_river_inflow

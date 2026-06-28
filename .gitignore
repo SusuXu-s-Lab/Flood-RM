@@ -19,9 +19,9 @@ locations/*/data/smart_ds/
 
 # general folders
 code
-cluster
-tests
+cluster/
 docs
+tests
 
 # data
 artifacts/credentials/earthdatahub-api-key.txt
@@ -43,6 +43,5 @@ locations/*/02_flood/08*
 src/fiat_runs
 AGENTS.md
 docs/
-tests/
-
+src/design_events_v2
 src/fiat_runs/

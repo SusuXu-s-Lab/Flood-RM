@@ -233,6 +233,13 @@ def build_meteo(
     }
 
 
+def resolve_event_rainfall_source_nc(config: dict, location_root, event_id: str, *, catalog_path=None) -> Path:
+    """Resolve the catalog-selected AORC event-window file used by Wflow replay."""
+    location_root = Path(location_root).resolve()
+    row = _event_catalog_row(location_root, event_id, catalog_path)
+    return _event_rainfall_source_nc(config, location_root, row)
+
+
 def _require_event_meteo_variables(config: dict, source_nc: Path, *, event_id: str) -> None:
     import xarray as xr
 
@@ -241,7 +248,7 @@ def _require_event_meteo_variables(config: dict, source_nc: Path, *, event_id: s
     with xr.open_dataset(source_nc) as ds:
         available = set(ds.data_vars)
         for target, candidates in candidates_by_target.items():
-            if not any(candidate in available for candidate in candidates):
+            if not any(candidate in available and _data_array_has_finite(ds[candidate]) for candidate in candidates):
                 missing[target] = list(candidates)
     if not missing:
         return
@@ -258,6 +265,10 @@ def _require_event_meteo_variables(config: dict, source_nc: Path, *, event_id: s
         "cell so event windows are regenerated with AORC event_meteo variables, then rerun the "
         "dynamic handoff notebook."
     )
+
+
+def _data_array_has_finite(da) -> bool:
+    return bool(np.isfinite(da).any().compute().item())
 
 
 def build_discharge_geodataset(

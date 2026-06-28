@@ -11,18 +11,7 @@ AND labeling/selection stage (``exceedance``). It:
    catalogs, carrying ``sampling_weight`` and ``probability_weight`` that reconstruct
    the true joint mass, and
 4. gates the catalog against the stress-set severity budget so a thin joint tail
-   fails loudly rather than silently starving the 500-event stress set.
-
-When ``target_band_fractions`` is omitted, the returned catalog is an iid-style draw
-from the fitted joint density: unweighted row counts are expected to reproduce the
-historical/fitted severity distribution. When ``target_band_fractions`` is provided,
-a large proportional pool is resampled by severity band. Drawing ``n_b`` catalog
-events for band ``b`` (target fraction ``f_b``) from its ``m_b`` pool members gives
-every event in the band the same between-band importance weight ``w_b = p_b / f_b``
-where ``p_b = m_b / M`` is the band's true probability. Normalised,
-``probability_weight`` reconstructs the true distribution even when the catalog is
-tail-enriched by count.
-"""
+   fails loudly rather than silently starving the 500-event stress set."""
 
 from __future__ import annotations
 
@@ -42,13 +31,13 @@ from design_events.build_events.probability.exceedance import (
 
 clip_eps = 1e-12
 
+# Parsimonious families for small storm-type populations (e.g. the handful of TC events):
+# multi-parameter families (BB1/BB7/Tawn/Student) overfit a few points, so restrict to
+# independence plus one-parameter copulas when a population is below the confidence threshold.
 default_family_set = [
     pv.indep, pv.gaussian, pv.student, pv.clayton, pv.gumbel, pv.joe, pv.bb1, pv.bb7, pv.tawn,
 ]
 
-# Parsimonious families for small storm-type populations (e.g. the handful of TC events):
-# multi-parameter families (BB1/BB7/Tawn/Student) overfit a few points, so restrict to
-# independence plus one-parameter copulas when a population is below the confidence threshold.
 low_sample_family_set = [pv.indep, pv.gaussian, pv.clayton, pv.gumbel, pv.frank, pv.joe]
 
 tail_enriched_catalog_band_fractions = {

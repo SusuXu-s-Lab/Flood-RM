@@ -1664,6 +1664,30 @@ def repair_aorc_sst_event_window_meteo(
     )
 
 
+def aorc_sst_event_window_readiness(
+    config: dict,
+    paths: dict,
+    collection_plan,
+) -> pd.Series:
+    from design_events.collect_sources.aorc_sst import event_window_variable_readiness
+
+    if not collection_plan.has("aorc_sst"):
+        raise KeyError("aorc_sst is not configured in the source collection plan")
+    result = event_window_variable_readiness(collection_plan.settings_for("aorc_sst"))
+    return pd.Series(
+        {
+            "source": "aorc_sst_event_window_readiness",
+            "status": "ready" if result["ready_count"] == result["ranked_rows"] else "incomplete",
+            "ranked_rows": result["ranked_rows"],
+            "ready_count": result["ready_count"],
+            "missing_count": result["missing_count"],
+            "incomplete_count": result["incomplete_count"],
+            "event_windows_dir": str(result["event_windows_dir"]),
+        },
+        name="aorc_sst_event_window_readiness",
+    )
+
+
 def stream_sources(config: dict, paths: dict) -> pd.Series:
     collection = config["collection"]
     stream_geo_nldi = collection.get("stream_geo_nldi", {})

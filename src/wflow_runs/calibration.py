@@ -13,6 +13,7 @@ from wflow_runs.coupling_qa import validate_baseflow_against_observed
 from wflow_runs.dynamic_handoff import dynamic_handoff_paths, plan_handoff
 from wflow_runs.dynamic_handoff_batch import run_handoffs
 from wflow_runs.replay import _event_reference_time, resolve_event_window
+from wflow_runs.usgs import usgs_instantaneous_streamflow_spec
 
 
 cfs_to_cms = 0.028316846592
@@ -222,8 +223,7 @@ def cache_validation_event_iv_records(
     if not site_nos:
         return {**common, "status": "no_validation_gauge_sites", "record_count": 0, "site_count": 0}
 
-    spec = dict(config.get("collection", {}).get("usgs_streamgages", {}))
-    spec["streamflow_records"] = dict(spec.get("streamflow_records", {}), service="iv")
+    spec = usgs_instantaneous_streamflow_spec(config)
     records = []
     for site_no in site_nos:
         records.extend(fetch_nwis_discharge_records(spec, site_no, start, end))

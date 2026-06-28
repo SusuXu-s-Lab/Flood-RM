@@ -39,6 +39,109 @@ class InlandDesignCatalogResult:
     budget_report: pd.DataFrame
 
 
+def build_inland_historical_tail_catalog(
+    config,
+    paths,
+    *,
+    rainfall_members,
+    rainfall_marginal,
+    soil_moisture_members=None,
+    id_prefix: str = "historical",
+):
+    """Build observed rainfall-tail reference events for inland Wflow/SFINCS runs.
+
+    These rows are validation/reference events outside the stochastic design budget.
+    They preserve the observed AORC SST rainfall window with scale factor 1.0, then
+    reuse the same antecedent-soil and rainfall-peak timing contracts as the inland
+    design catalog so downstream Wflow meteo staging and SFINCS packaging see the
+    same columns for design and historical rows.
+    """
+    dependence = (config.get("event_catalog", {}) or {}).get("dependence", {}) or {}
+    records_cfg = ((dependence.get("driver_records", {}) or {}).get("rainfall", {}) or {})
+    members = rainfall_members.reset_index(drop=True).copy()
+    value_column = _first_present(
+        members, [records_cfg.get("value_column"), "mean_precip_mm", "mean", "precip_mm", "value"]
+    )
+    time_column = _first_present(
+        members, [records_cfg.get("time_column"), "storm_start", "storm_date", "time"]
+    )
+    member_id_column = "member_id" if "member_id" in members else members.columns[0]
+    if value_column is None:
+        raise ValueError("rainfall_members has no recognizable rainfall value column")
+    if time_column is None:
+        raise ValueError("rainfall_members has no recognizable rainfall time column")
+    if "member_file" not in members:
+        raise ValueError("rainfall_members must include member_file for historical-tail handoff")
+
+    rainfall = pd.to_numeric(members[value_column], errors="coerce")
+    sample_rp = rainfall_marginal.return_period(rainfall.to_numpy(dtype=float))
+    tail_return_period = float(dependence.get("historical_tail_min_return_period_years", 10.0))
+    severity_bands = config.get("sampling", {}).get("severity_bands") or default_severity_bands()
+
+    frame = members.copy()
+    frame["rainfall_mm"] = rainfall
+    frame["sample_rp_years"] = sample_rp
+    frame = frame[np.isfinite(frame["sample_rp_years"]) & (frame["sample_rp_years"] >= tail_return_period)].copy()
+    if frame.empty:
+        return pd.DataFrame(columns=_inland_historical_tail_columns())
+
+    frame["severity_band"] = assign_severity_bands(frame["sample_rp_years"], severity_bands)
+    frame = frame.sort_values(["sample_rp_years", time_column], ascending=[False, True]).reset_index(drop=True)
+    event_times = pd.to_datetime(
+        frame["rainfall_peak_time"] if "rainfall_peak_time" in frame else frame[time_column],
+        errors="coerce",
+    ).fillna(pd.to_datetime(frame[time_column], errors="coerce"))
+
+    catalog = pd.DataFrame(
+        {
+            "event_id": [
+                f"{id_prefix}_{i + 1:04d}_{pd.Timestamp(t).strftime('%Y%m%dT%H%M%S')}"
+                for i, t in enumerate(event_times)
+            ],
+            "rainfall_mm": frame["rainfall_mm"].to_numpy(dtype=float),
+            "sample_rp_years": frame["sample_rp_years"].to_numpy(dtype=float),
+            "severity_band": frame["severity_band"].to_numpy(dtype=object),
+            "sampling_weight": pd.NA,
+            "probability_weight": pd.NA,
+            "event_origin": "historical_tail",
+            "catalog_role": "historical_reference",
+            "sampling_scheme": "observed_historical_tail",
+            "event_set": "historical_tail_reference",
+            "selection_role": "historical_tail_reference",
+            "selection_reason": "observed_rainfall_tail",
+            "scenario_name": "base",
+            "rainfall_template_member_id": frame[member_id_column].astype(str).to_numpy(),
+            "rainfall_template_value": frame["rainfall_mm"].to_numpy(dtype=float),
+            "rainfall_scale_factor": 1.0,
+            "rainfall_design_method": "historical_observed_rainfall",
+            "rainfall_member_id": frame[member_id_column].astype(str).to_numpy(),
+            "rainfall_member_file": frame["member_file"].astype(str).to_numpy(),
+            "rainfall_member_time": pd.to_datetime(frame[time_column], errors="coerce").dt.strftime("%Y-%m-%dT%H:%M:%S"),
+            "rainfall_realization_lag_hours": 0.0,
+            "rainfall_source": "aorc_sst",
+            "forcing_pairing_policy": "historical_observed_rainfall",
+            "event_drivers": "rainfall",
+            "streamflow_design_role": "wflow_response",
+            "study_location": str(paths.get("location_name") or config.get("project", {}).get("name") or ""),
+        }
+    )
+    if soil_moisture_members is not None:
+        catalog = attach_antecedent_soil_moisture(catalog, soil_moisture_members, config=config)
+    catalog = attach_inland_rainfall_timing(
+        catalog,
+        members,
+        member_id_column=member_id_column,
+        start_time_column=time_column,
+    )
+    events_root = config.get("wflow", {}).get("events_root", "data/wflow/events")
+    catalog["wflow_event_dir"] = catalog["event_id"].map(lambda e: f"{str(events_root).rstrip('/')}/{e}")
+    catalog["infiltration_treatment"] = (
+        config.get("inland_coupling", {}).get("infiltration", {}).get("method")
+        or config.get("infiltration", {}).get("treatment", "none")
+    )
+    return catalog.reset_index(drop=True)
+
+
 def fit_reference_streamflow_pot(
     streamflow_records,
     *,
@@ -254,3 +357,24 @@ def _band_budget_report(catalog, band_fractions):
         got = int(counts.get(band, 0))
         rows.append({"severity_band": band, "target": target, "selected": got, "met": got >= target})
     return pd.DataFrame(rows)
+
+
+def _inland_historical_tail_columns():
+    return [
+        "event_id",
+        "rainfall_mm",
+        "sample_rp_years",
+        "severity_band",
+        "sampling_weight",
+        "probability_weight",
+        "event_origin",
+        "catalog_role",
+        "sampling_scheme",
+        "event_set",
+        "selection_role",
+        "selection_reason",
+        "rainfall_member_id",
+        "rainfall_member_file",
+        "rainfall_member_time",
+        "event_reference_time",
+    ]

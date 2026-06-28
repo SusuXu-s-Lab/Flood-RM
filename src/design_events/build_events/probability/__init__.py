@@ -17,6 +17,7 @@ from design_events.build_events.probability.design_catalog import (
 from design_events.build_events.probability.inland_dependence import (
     InlandDesignCatalogResult,
     build_inland_catalog,
+    build_inland_historical_tail_catalog,
     fit_reference_streamflow_pot,
 )
 from design_events.build_events.probability.exceedance import (
@@ -44,6 +45,7 @@ __all__ = [
     "and_return_period",
     "attach_field_preserving_realization",
     "build_inland_catalog",
+    "build_inland_historical_tail_catalog",
     "build_joint_catalog",
     "build_tail",
     "check_stress_budget",

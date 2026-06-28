@@ -39,11 +39,16 @@ def _repo_path(paths, value):
 
 
 def _open_aorc_year(year, spec):
+    url = spec.get("zarr_year_pattern", DEFAULT_AORC_ZARR_YEAR_PATTERN).format(year=int(year))
+    kwargs = {}
+    if str(url).startswith("s3://"):
+        kwargs["storage_options"] = {"anon": True}
     return xr.open_dataset(
-        spec.get("zarr_year_pattern", DEFAULT_AORC_ZARR_YEAR_PATTERN).format(year=int(year)),
+        url,
         engine="zarr",
         chunks=spec.get("chunks", {}),
         consolidated=spec.get("consolidated", True),
+        **kwargs,
     )
 
 
@@ -285,42 +290,49 @@ def _spatial_stats(
         times = pd.to_datetime(rolled["time"].values)
         rows = moving_plan["rows"]
         cols = moving_plan["cols"]
-        # Compute the moving-footprint mean depths for every window in one batched
-        # FFT convolution instead of a per-window ndimage.correlate. For a full AORC
-        # year (~1.4k windows) this is the difference between minutes and seconds.
-        means_stack = _moving_footprint_mean_depths_stack(rolled_values, moving_plan)
-        for time_index, storm_end in enumerate(times):
-            field = rolled_values[time_index]
-            means = means_stack[time_index]
-            if np.isnan(means).all():
-                continue
-            best = int(np.nanargmax(means))
-            best_values = field[rows[best], cols[best]]
-            storm_start = pd.Timestamp(storm_end) - pd.to_timedelta(duration_hours - 1, unit="h")
-            peak_time, peak_value = _rainfall_window_peak_time(
-                precip,
-                storm_start,
-                pd.Timestamp(storm_end),
-                rows=rows[best],
-                cols=cols[best],
+        fft_batch_windows = max(1, int((spec or {}).get("fft_batch_windows", 64)))
+        # Keep the FFT speedup, but bound peak memory by processing time windows in
+        # chunks. Convolution is only over spatial axes, so time batching is
+        # numerically equivalent to one full-year stack.
+        for batch_start in range(0, len(times), fft_batch_windows):
+            batch_end = min(batch_start + fft_batch_windows, len(times))
+            means_stack = _moving_footprint_mean_depths_stack(
+                rolled_values[batch_start:batch_end],
+                moving_plan,
             )
-            records.append(
-                {
-                    "storm_end": pd.Timestamp(storm_end),
-                    "mean": float(means[best]),
-                    "max": float(np.nanmax(best_values)),
-                    "min": float(np.nanmin(best_values)),
-                    "rainfall_peak_time": peak_time,
-                    "rainfall_peak_mm_per_hour": peak_value,
-                    "x": float(moving_plan["target_lons"][best]),
-                    "y": float(moving_plan["target_lats"][best]),
-                    "historical_footprint_center_lon": float(moving_plan["target_lons"][best]),
-                    "historical_footprint_center_lat": float(moving_plan["target_lats"][best]),
-                    "target_footprint_center_lon": float(moving_plan["target_footprint_center_lon"]),
-                    "target_footprint_center_lat": float(moving_plan["target_footprint_center_lat"]),
-                    "potential_method": "moving_footprint_max_mean",
-                }
-            )
+            for local_index, storm_end in enumerate(times[batch_start:batch_end]):
+                time_index = batch_start + local_index
+                field = rolled_values[time_index]
+                means = means_stack[local_index]
+                if np.isnan(means).all():
+                    continue
+                best = int(np.nanargmax(means))
+                best_values = field[rows[best], cols[best]]
+                storm_start = pd.Timestamp(storm_end) - pd.to_timedelta(duration_hours - 1, unit="h")
+                peak_time, peak_value = _rainfall_window_peak_time(
+                    precip,
+                    storm_start,
+                    pd.Timestamp(storm_end),
+                    rows=rows[best],
+                    cols=cols[best],
+                )
+                records.append(
+                    {
+                        "storm_end": pd.Timestamp(storm_end),
+                        "mean": float(means[best]),
+                        "max": float(np.nanmax(best_values)),
+                        "min": float(np.nanmin(best_values)),
+                        "rainfall_peak_time": peak_time,
+                        "rainfall_peak_mm_per_hour": peak_value,
+                        "x": float(moving_plan["target_lons"][best]),
+                        "y": float(moving_plan["target_lats"][best]),
+                        "historical_footprint_center_lon": float(moving_plan["target_lons"][best]),
+                        "historical_footprint_center_lat": float(moving_plan["target_lats"][best]),
+                        "target_footprint_center_lon": float(moving_plan["target_footprint_center_lon"]),
+                        "target_footprint_center_lat": float(moving_plan["target_footprint_center_lat"]),
+                        "potential_method": "moving_footprint_max_mean",
+                    }
+                )
         frame = pd.DataFrame(records).dropna()
         if frame.empty:
             return pd.DataFrame(
@@ -843,7 +855,8 @@ def _compute_selected_event_windows(
                     )
                     written.append(path)
                     continue
-            subset = _event_window_subset(year_datasets, opener, spec, bbox_wgs84, start, end)
+            source_bbox = _source_bbox_for_transposed_event(bbox_wgs84, row)
+            subset = _event_window_subset(year_datasets, opener, spec, source_bbox, start, end)
             centroid_lon, centroid_lat = _centroid_from_precip_window(subset[variable])
             centroid_lons.append(centroid_lon)
             centroid_lats.append(centroid_lat)
@@ -939,7 +952,7 @@ def _event_window_file_has_required_variables(
             if not bool(meteo_cfg.get("enabled", False)):
                 return True
             for candidates in required_targets.values():
-                if not any(candidate in ds for candidate in candidates):
+                if not any(candidate in ds and _data_array_has_finite(ds[candidate]) for candidate in candidates):
                     return False
     except Exception:
         return False
@@ -974,18 +987,7 @@ def _numeric_row_value(row, column, default=np.nan):
 
 
 def _apply_field_transposition(ds: xr.Dataset, row, *, historical_centroid=None) -> xr.Dataset:
-    offset_lon = _numeric_row_value(row, "transposition_offset_lon")
-    offset_lat = _numeric_row_value(row, "transposition_offset_lat")
-    if not np.isfinite(offset_lon):
-        historical_lon = _numeric_row_value(row, "historical_footprint_center_lon")
-        target_lon = _numeric_row_value(row, "target_footprint_center_lon")
-        offset_lon = target_lon - historical_lon if np.isfinite(historical_lon) and np.isfinite(target_lon) else 0.0
-    if not np.isfinite(offset_lat):
-        historical_lat = _numeric_row_value(row, "historical_footprint_center_lat")
-        target_lat = _numeric_row_value(row, "target_footprint_center_lat")
-        offset_lat = target_lat - historical_lat if np.isfinite(historical_lat) and np.isfinite(target_lat) else 0.0
-    if not (np.isfinite(offset_lon) and np.isfinite(offset_lat)):
-        offset_lon, offset_lat = 0.0, 0.0
+    offset_lon, offset_lat = _row_transposition_offsets(row)
 
     out = ds.copy()
     lat_name = _coord_name(out, ["latitude", "lat", "y"])
@@ -1024,6 +1026,29 @@ def _apply_field_transposition(ds: xr.Dataset, row, *, historical_centroid=None)
             attrs[column] = str(value) if column == "potential_method" else float(value)
     out.attrs.update(attrs)
     return out
+
+
+def _source_bbox_for_transposed_event(bbox_wgs84, row) -> tuple[float, float, float, float]:
+    """Return the source AORC bbox that covers ``bbox_wgs84`` after transposition."""
+    west, south, east, north = (float(value) for value in bbox_wgs84)
+    offset_lon, offset_lat = _row_transposition_offsets(row)
+    return west - offset_lon, south - offset_lat, east - offset_lon, north - offset_lat
+
+
+def _row_transposition_offsets(row) -> tuple[float, float]:
+    offset_lon = _numeric_row_value(row, "transposition_offset_lon")
+    offset_lat = _numeric_row_value(row, "transposition_offset_lat")
+    if not np.isfinite(offset_lon):
+        historical_lon = _numeric_row_value(row, "historical_footprint_center_lon")
+        target_lon = _numeric_row_value(row, "target_footprint_center_lon")
+        offset_lon = target_lon - historical_lon if np.isfinite(historical_lon) and np.isfinite(target_lon) else 0.0
+    if not np.isfinite(offset_lat):
+        historical_lat = _numeric_row_value(row, "historical_footprint_center_lat")
+        target_lat = _numeric_row_value(row, "target_footprint_center_lat")
+        offset_lat = target_lat - historical_lat if np.isfinite(historical_lat) and np.isfinite(target_lat) else 0.0
+    if not (np.isfinite(offset_lon) and np.isfinite(offset_lat)):
+        return 0.0, 0.0
+    return float(offset_lon), float(offset_lat)
 
 
 def _ensure_transposition_targets(paths, spec, ranked):
@@ -1388,23 +1413,29 @@ def repair_aorc_sst_event_window_meteo(settings, skip_existing=True, opener=None
                     continue
                 existing = existing_ds.load()
 
-            subset = _event_window_subset(year_datasets, opener, spec, bbox_wgs84, start, end)
+            source_bbox = _source_bbox_for_transposed_event(bbox_wgs84, row)
+            subset = _event_window_subset(year_datasets, opener, spec, source_bbox, start, end)
             subset = _apply_field_transposition(subset, row)
             missing_meteo = [
                 name
                 for name in _selected_event_meteo_variables(subset, spec)
-                if name not in existing
+                if name not in existing or not _data_array_has_finite(existing[name])
             ]
             if not missing_meteo:
                 current.append(path)
                 continue
             merged = existing.copy()
             for name in missing_meteo:
-                merged[name] = subset[name]
-            merged.attrs.update(subset.attrs)
-            _write_event_window_netcdf(merged, path)
-            repaired.append(path)
-            _trim_year_dataset_cache(year_datasets, max(1, int(spec.get("max_open_year_datasets", 4))))
+                replacement = _align_repaired_meteo_to_existing_grid(subset[name], existing)
+                if not _data_array_has_finite(replacement):
+                    incomplete.append(path)
+                    break
+                merged[name] = replacement
+            else:
+                merged.attrs.update(subset.attrs)
+                _write_event_window_netcdf(merged, path)
+                repaired.append(path)
+                _trim_year_dataset_cache(year_datasets, max(1, int(spec.get("max_open_year_datasets", 4))))
     finally:
         for ds in year_datasets.values():
             ds.close()
@@ -1417,6 +1448,46 @@ def repair_aorc_sst_event_window_meteo(settings, skip_existing=True, opener=None
         "missing_count": len(missing),
         "incomplete_count": len(incomplete),
         "repaired_windows": repaired,
+        "missing_windows": missing,
+        "incomplete_windows": incomplete,
+    }
+
+
+def event_window_variable_readiness(settings) -> dict:
+    """Summarize whether AORC event windows contain finite precip and Wflow meteo."""
+    paths = settings["paths"]
+    spec = {**settings.get("aorc_sst", {}), "write_event_windows": True}
+    spec["event_meteo"] = {**(spec.get("event_meteo") or {}), "enabled": True}
+    duration_hours = int(spec.get("storm_duration_hours", spec.get("storms", {}).get("storm_duration_hours", 72)))
+    collection_dir = _collection_dir(paths, duration_hours)
+    event_window_dir = collection_dir / "event_windows"
+    ranked_csv = collection_dir / "ranked-storms.csv"
+    if not ranked_csv.exists():
+        raise FileNotFoundError(f"AORC SST ranked storm catalog is missing: {ranked_csv}")
+
+    ranked = pd.read_csv(ranked_csv, parse_dates=["storm_date"])
+    ready = []
+    missing = []
+    incomplete = []
+    for _, row in ranked.iterrows():
+        start = pd.Timestamp(row["storm_date"])
+        event_id = _event_id(paths["location_name"], duration_hours, row)
+        path = event_window_dir / f"{event_id}_{start:%Y%m%dT%H}.nc"
+        requires_transposition = _row_requires_field_transposition(row)
+        if not path.exists():
+            missing.append(path)
+        elif _event_window_file_has_required_variables(path, spec, require_transposition=requires_transposition):
+            ready.append(path)
+        else:
+            incomplete.append(path)
+
+    return {
+        "ranked_rows": int(len(ranked)),
+        "event_windows_dir": event_window_dir,
+        "ready_count": len(ready),
+        "missing_count": len(missing),
+        "incomplete_count": len(incomplete),
+        "ready_windows": ready,
         "missing_windows": missing,
         "incomplete_windows": incomplete,
     }
@@ -1442,6 +1513,34 @@ def _event_windows_include_required_meteo(
         ):
             return False
     return True
+
+
+def _data_array_has_finite(da: xr.DataArray) -> bool:
+    return bool(np.isfinite(da).any().compute().item())
+
+
+def _align_repaired_meteo_to_existing_grid(da: xr.DataArray, existing: xr.Dataset) -> xr.DataArray:
+    """Place repaired meteo values on the existing event-window grid by position.
+
+    Event-window repair preserves already-reviewed rainfall fields. For transposed
+    storms, assigning a freshly fetched DataArray directly can trigger xarray
+    coordinate alignment against slightly different shifted coordinates and produce
+    all-NaN meteo. The source subset and existing event window are produced from the
+    same storm window and bbox, so position is the stable contract here.
+    """
+    coords = {}
+    for dim in da.dims:
+        if dim in existing.coords and existing.sizes.get(dim) == da.sizes.get(dim):
+            coords[dim] = existing[dim]
+        elif dim in da.coords:
+            coords[dim] = da[dim]
+    return xr.DataArray(
+        da.data,
+        dims=da.dims,
+        coords=coords,
+        attrs=dict(da.attrs),
+        name=da.name,
+    )
 
 
 # ── Transposition-domain homogeneity diagnostic ───────────────────────────────
