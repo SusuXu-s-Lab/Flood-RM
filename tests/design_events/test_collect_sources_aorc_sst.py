@@ -8,11 +8,14 @@ from shapely.geometry import box
 
 from design_events.collect_sources.aorc_sst import (
     DEFAULT_AORC_ZARR_YEAR_PATTERN,
+    collect_aorc_sst,
     collect_aorc_sst_event_windows,
     _aorc_sst_artifact_covers_settings,
     _compute_selected_event_windows,
     _ensure_transposition_targets,
     _event_window_file_has_required_variables,
+    _moving_footprint_mean_depths,
+    _moving_footprint_mean_depths_stack,
     _open_aorc_year,
     _study_footprint,
     _strip_netcdf_endian_encoding,
@@ -69,6 +72,51 @@ def test_study_footprint_uses_smart_ds_evaluation_footprint(tmp_path):
 
     assert footprint is not None
     assert len(footprint) == 1
+
+
+def test_moving_footprint_mean_depths_matches_explicit_offsets():
+    field = np.arange(30, dtype=float).reshape(5, 6)
+    field[2, 3] = np.nan
+    rows = np.array([[1, 2, 2], [3, 4, 4]])
+    cols = np.array([[1, 1, 2], [3, 3, 4]])
+    moving_plan = {
+        "rows": rows,
+        "cols": cols,
+        "offsets": np.array([[-1, -1], [0, -1], [0, 0]]),
+        "center_rows": np.array([2, 4]),
+        "center_cols": np.array([2, 4]),
+    }
+
+    values = field[rows, cols]
+    finite = np.isfinite(values)
+    expected = np.full(len(values), np.nan, dtype=float)
+    valid = finite.sum(axis=1) > 0
+    expected[valid] = np.nansum(values[valid], axis=1) / finite.sum(axis=1)[valid]
+
+    np.testing.assert_allclose(
+        _moving_footprint_mean_depths(field, moving_plan),
+        expected,
+    )
+
+
+def test_moving_footprint_mean_depths_stack_matches_per_window():
+    rng = np.random.default_rng(0)
+    fields = rng.random((7, 5, 6))
+    fields[3, 2, 3] = np.nan
+    moving_plan = {
+        "rows": np.array([[1, 2, 2], [3, 4, 4]]),
+        "cols": np.array([[1, 1, 2], [3, 3, 4]]),
+        "offsets": np.array([[-1, -1], [0, -1], [0, 0]]),
+        "center_rows": np.array([2, 4]),
+        "center_cols": np.array([2, 4]),
+    }
+
+    batched = _moving_footprint_mean_depths_stack(fields, moving_plan)
+    per_window = np.stack(
+        [_moving_footprint_mean_depths(field, moving_plan) for field in fields]
+    )
+
+    np.testing.assert_allclose(batched, per_window, equal_nan=True, atol=1e-9)
 
 
 def test_selected_event_window_realizes_sst_field_transposition(tmp_path):
@@ -370,3 +418,80 @@ def test_aorc_sst_reuse_gate_rejects_stale_selection_parameters(tmp_path):
         decluster_hours=72,
         top_n=None,
     )
+
+
+def test_collect_aorc_sst_reuses_deferred_catalog_without_event_windows(tmp_path):
+    paths = {
+        "repo_root": tmp_path,
+        "location_name": "test",
+        "location_root": tmp_path,
+        "aorc_sst_root": tmp_path / "data/sources/aorc_sst",
+        "aorc_sst_rainfall_members_csv": tmp_path / "data/sources/aorc_sst/rainfall_members.csv",
+        "source_artifacts_root": tmp_path / "data/sources/source_artifacts",
+    }
+    collection_dir = paths["aorc_sst_root"] / "test/72hr-events"
+    collection_dir.mkdir(parents=True)
+    stats = pd.DataFrame(
+        {
+            "storm_date": [pd.Timestamp("2020-01-01")],
+            "mean": [100.0],
+            "max": [110.0],
+            "min": [90.0],
+            "rainfall_peak_time": [pd.Timestamp("2020-01-02")],
+            "rainfall_peak_mm_per_hour": [12.0],
+            "x": [12.0],
+            "y": [2.0],
+            "historical_footprint_center_lon": [12.0],
+            "historical_footprint_center_lat": [2.0],
+            "target_footprint_center_lon": [11.0],
+            "target_footprint_center_lat": [1.0],
+            "potential_method": ["moving_footprint_max_mean"],
+        }
+    )
+    ranked = stats.copy()
+    ranked["por_rank"] = [1]
+    ranked["annual_rank"] = [1]
+    ranked["transposition_offset_lon"] = [-1.0]
+    ranked["transposition_offset_lat"] = [-1.0]
+    stats.to_csv(collection_dir / "storm-stats.csv", index=False)
+    ranked.to_csv(collection_dir / "ranked-storms.csv", index=False)
+    write_source_artifact(
+        paths,
+        source="aorc_sst",
+        kind="rainfall_catalog",
+        start=pd.Timestamp("2020-01-01"),
+        end=pd.Timestamp("2020-01-31 23:00:00"),
+        metadata={
+            "duration_hours": 72,
+            "check_every_n_hours": 6,
+            "min_precip_threshold": 50.0,
+            "decluster_hours": 72,
+            "top_n_events_safety_cap": None,
+        },
+        status="pending_event_windows",
+    )
+
+    def fail_if_reopened(year, spec):
+        raise AssertionError("deferred table catalog should be reused")
+
+    result = collect_aorc_sst(
+        {
+            "paths": paths,
+            "start": pd.Timestamp("2020-01-01"),
+            "end": pd.Timestamp("2020-01-31"),
+            "aorc_sst": {
+                "bbox_wgs84": [10.0, 0.0, 12.0, 2.0],
+                "storm_duration_hours": 72,
+                "check_every_n_hours": 6,
+                "min_precip_threshold": 50.0,
+                "decluster_hours": 72,
+                "defer_event_windows": True,
+            },
+        },
+        skip_existing=True,
+        opener=fail_if_reopened,
+    )
+
+    assert result["ranked_rows"] == 1
+    assert result["rainfall_member_rows"] == 1
+    assert paths["aorc_sst_rainfall_members_csv"].exists()
