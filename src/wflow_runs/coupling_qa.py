@@ -57,7 +57,7 @@ def coupled_domain_review(
     wflow_domain_plan,
     figsize=(9, 7),
 ) -> CoupledDomainReview:
-    """Plot and summarize the hydrologic watershed feeding selected SFINCS coverage."""
+    """Plot and summarize the pre-build candidate watershed feeding SFINCS coverage."""
     import geopandas as gpd
     import matplotlib.pyplot as plt
 
@@ -85,16 +85,16 @@ def coupled_domain_review(
             marker="D",
             color="crimson",
             markersize=35,
-            label="planned/pre-snap SFINCS/Wflow boundary handoff",
+            label="candidate handoff point (pre-build)",
         )
 
     wflow_watershed = wflow_watershed_gdf.geometry.union_all()
     max_handoff_distance = _max_boundary_distance(handoff_plan_gdf, sfincs_domain_gdf, model_crs)
     summary_items = {
         "wflow_watershed_features": int(len(wflow_watershed_gdf)),
-        "planned_boundary_handoff_count": int(len(handoff_plan_gdf)),
-        "max_planned_handoff_distance_from_sfincs_boundary_m": (
-            round(max_handoff_distance, 3) if max_handoff_distance is not None else "no planned handoffs"
+        "candidate_boundary_handoff_count": int(len(handoff_plan_gdf)),
+        "max_candidate_handoff_distance_from_sfincs_boundary_m": (
+            round(max_handoff_distance, 3) if max_handoff_distance is not None else "no candidate handoffs"
         ),
     }
     if selected_ids:
@@ -105,12 +105,12 @@ def coupled_domain_review(
         summary_items["selected_smart_ds_subregions"] = "spatial_intersection_fallback"
     summary_items["wflow_watershed_covers_sfincs_coverage"] = _covers(wflow_watershed, sfincs_coverage, model_crs)
 
-    ax.set_title(f"Coupled domain plan: Wflow watershed feeding selected {sfincs_label.lower()}")
+    ax.set_title(f"Candidate Wflow watershed feeding selected {sfincs_label.lower()}")
     ax.set_xlabel("longitude")
     ax.set_ylabel("latitude")
     ax.legend(loc="best")
     return CoupledDomainReview(
-        summary=pd.Series(summary_items, name="domain_plan_hydrologic_boundary_check"),
+        summary=pd.Series(summary_items, name="candidate_domain_hydrologic_boundary_check"),
         fig=fig,
         ax=ax,
         sfincs_domain_gdf=sfincs_domain_gdf,

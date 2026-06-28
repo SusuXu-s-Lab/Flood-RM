@@ -2,7 +2,7 @@
 
 ![Flood-RM](artifacts/FLOOD-RM_README_img.png)
 
-Flood-RM supports:
+Flood-RM prepares the following data pipeline:
 
 ### 1. Synthetic Distribution Feeder
 
@@ -15,7 +15,7 @@ Supported regions include Austin, Greensboro, and San Francisco.
 uv run python scripts/get_smartds.py sfo --execute
 ```
 
-**Option B: New synthetic feeder**: Model a new location from geographic and building data.  Builds a radial distribution feeder using SHIFT/GDM/DiTTo, then augments it for microgrid operations. 
+**Option B: New synthetic feeder**: Model a new location from geographic and building data.  Builds a radial distribution feeder using SHIFT/GDM/DiTTo, then augments it with additional data for microgrid operations. 
 
 To create a feeder for a new location, copy/paste the Marshfield location as a new location, rename, and edit the main configuration file:
 

@@ -1749,6 +1749,13 @@ def _sfincs_boundary_handoff_locations(
         if locations is not None and "wflow_submodel_id" in locations:
             locations = locations[locations["wflow_submodel_id"].astype(str) == str(submodel_id)].copy()
             if not locations.empty:
+                locations = locations[locations["sfincs_handoff_id"].astype(str).isin(handoff_ids)].copy()
+                missing = sorted(handoff_ids - set(locations["sfincs_handoff_id"].astype(str)))
+                if missing:
+                    raise ValueError(
+                        "SFINCS boundary handoff source artifacts are missing IDs needed by Wflow: "
+                        + ", ".join(missing)
+                    )
                 return locations
 
     locations = read_stream_boundary_handoff_locations(

@@ -197,15 +197,30 @@ def plan_inland_sfincs_domain_set(config, paths):
         issues.append(f"missing exposure footprint: {exposure_path}")
         return InlandSfincsDomainSetPlan("missing_inputs", manifest, (), 0, 0, tuple(issues))
 
-    exposure = gpd.read_file(exposure_path).to_crs(model_crs)
+    exposure_source = gpd.read_file(exposure_path)
+    if exposure_source.crs is None:
+        exposure_source = exposure_source.set_crs("EPSG:4326")
+    exposure = exposure_source.to_crs(model_crs)
     component_records = _exposure_component_records(exposure)
+    source_component_records = _exposure_component_records(exposure_source)
+    if len(source_component_records) == len(component_records):
+        for record, source_record in zip(component_records, source_component_records):
+            record["source_geometry"] = source_record["geometry"]
+            record["source_crs"] = exposure_source.crs
     if not component_records:
         issues.append(f"exposure footprint has no polygon components: {exposure_path}")
         return InlandSfincsDomainSetPlan("missing_inputs", manifest, (), 0, 0, tuple(issues))
     if domain_set.get("allow_multiple_domains") is False:
+        source_geometries = [
+            record.get("source_geometry")
+            for record in component_records
+            if record.get("source_geometry") is not None
+        ]
         component_records = [
             {
                 "geometry": unary_union([record["geometry"] for record in component_records]),
+                "source_geometry": unary_union(source_geometries) if source_geometries else None,
+                "source_crs": exposure_source.crs,
                 "subregion_id": None,
                 "component_index": 0,
             }
@@ -276,7 +291,12 @@ def plan_inland_sfincs_domain_set(config, paths):
             else _domain_geometry_with_handoffs(component, assigned, corridor_buffer_m)
         )
         if region_geometry in {"bbox", "bounding_box", "envelope"}:
-            geometry = geometry.envelope
+            source_geometry = record.get("source_geometry")
+            source_crs = record.get("source_crs")
+            if source_geometry is not None and source_crs is not None:
+                geometry = gpd.GeoSeries([source_geometry.envelope], crs=source_crs).to_crs(model_crs).iloc[0]
+            else:
+                geometry = geometry.envelope
         domain_root = domains_root / domain_id
         handoff_source_ids = sorted(assigned["sfincs_handoff_id"].astype(str).tolist()) if not assigned.empty else []
         wflow_submodel_ids = _sfincs_domain_wflow_submodel_ids(config, location_root, assigned)
@@ -486,6 +506,7 @@ def create_handoffs(
     river_upa = float(river_upa if river_upa is not None else forcing.get("river_upa_km2", crossings.get("min_uparea_km2", 5.0)))
     river_len = float(river_len if river_len is not None else forcing.get("river_len_m", 500.0))
     buffer = float(buffer if buffer is not None else forcing.get("river_inflow_buffer_m", 200.0))
+    max_source_points = forcing.get("max_source_points")
     out_path = _location_path(location_root, output or "data/sfincs/base/gis/wflow_handoff_sources.geojson")
 
     if not hasattr(model, "rivers"):
@@ -519,6 +540,18 @@ def create_handoffs(
     else:
         src = src.to_crs(model_crs)
     src = src.reset_index(drop=True)
+    if max_source_points is not None:
+        max_source_points = int(max_source_points)
+        if max_source_points < 1:
+            raise ValueError("inland_coupling.discharge_forcing.max_source_points must be positive when set")
+        if len(src) > max_source_points:
+            sort_columns = ["uparea"] if "uparea" in src.columns else []
+            src = (
+                src.sort_values(sort_columns, ascending=False)
+                if sort_columns
+                else src
+            )
+            src = src.head(max_source_points).reset_index(drop=True)
     if "index" in src.columns:
         src = src.drop(columns=["index"])
     src.insert(0, "index", range(int(first_index), int(first_index) + len(src)))
@@ -531,7 +564,7 @@ def create_handoffs(
     src["name"] = ids
     src["site_no"] = ids
     src["sfincs_handoff_id"] = ids
-    if handoff_source_ids is not None:
+    if handoff_source_ids is not None and handoff_location_mode(config) != "sfincs_native_river_inflow":
         wanted = {str(value) for value in handoff_source_ids}
         src = src[src["sfincs_handoff_id"].astype(str).isin(wanted)].copy()
         missing = sorted(wanted - set(src["sfincs_handoff_id"].astype(str)))

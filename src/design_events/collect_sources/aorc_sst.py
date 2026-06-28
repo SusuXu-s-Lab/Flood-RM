@@ -427,15 +427,6 @@ def _moving_footprint_kernel(moving_plan):
 
 
 def _moving_footprint_mean_depths_stack(fields, moving_plan):
-    """Vectorized :func:`_moving_footprint_mean_depths` over a ``(time, lat, lon)`` stack.
-
-    One batched FFT convolution replaces a per-time-window ``ndimage.correlate``;
-    for a full AORC year (~1.4k checked windows) this collapses the moving-footprint
-    search from minutes to seconds (~14x) while staying numerically identical to the
-    per-window path. ``correlate`` equals convolution with a flipped kernel, and
-    ``fftconvolve(..., mode="same")`` zero-pads the boundary exactly like
-    ``ndimage.correlate(..., mode="constant", cval=0.0)``.
-    """
     kernel = _moving_footprint_kernel(moving_plan)
     flipped = kernel[::-1, ::-1][np.newaxis, :, :]
     fields = np.asarray(fields, dtype=float)

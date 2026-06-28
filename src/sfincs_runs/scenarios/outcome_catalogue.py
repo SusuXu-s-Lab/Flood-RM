@@ -329,7 +329,9 @@ def _join_catalogue(
     outcome_cols = [
         "event_id", "map_path", "design_scenario", "design_slr_offset_m",
         "expected_bzs_peak_max_m", "bzs_peak_max_m",
-        "peak_incremental_land_depth_m", "peak_incremental_flooded_area_km2",
+        "peak_incremental_land_depth_m", "peak_total_land_depth_m",
+        "mean_total_land_depth_m", "flood_volume_m3",
+        "peak_incremental_flooded_area_km2",
         "anytime_incremental_flooded_area_km2", "peak_newly_flooded_area_km2",
         "anytime_newly_flooded_area_km2", "longest_incremental_flood_duration_h",
         "mean_incremental_flood_duration_h", "area_incremental_flooded_ge_24h_km2",

@@ -73,7 +73,7 @@ wflow:
     baseline_root: data/wflow/warmup/baseline_90d
     warmup_days: 90
   domain_set:
-    outlet_source: encompassing_huc
+    outlet_source: boundary_handoff_watershed
     allow_multiple_submodels: true
     review_required: true
     huc:

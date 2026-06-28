@@ -56,6 +56,7 @@ inland_coupling:
     river_upa_km2: 10.0
     river_len_m: 500.0
     river_inflow_buffer_m: 200.0
+    max_source_points: 3
   amplification:
     enabled: true
     primary_reference_gage: "02094500"
