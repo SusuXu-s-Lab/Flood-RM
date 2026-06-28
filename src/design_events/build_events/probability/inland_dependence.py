@@ -23,10 +23,10 @@ from design_events.build_events.inland_timing import attach_inland_rainfall_timi
 from design_events.build_events.probability.design_catalog import fit_index_marginal
 from design_events.build_events.probability.realization import attach_field_preserving_realization
 from design_events.build_events.selection import (
+    assign_severity_bands,
     attach_antecedent_soil_moisture,
     default_severity_bands,
 )
-from design_events.build_events.workflow import assign_severity_bands
 
 
 @dataclass

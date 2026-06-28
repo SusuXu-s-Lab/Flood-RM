@@ -74,7 +74,7 @@ class WflowCalibrationNotebookRuntime(WflowCoupledNotebookRuntime):
     audit_plots_dir: Path
 
 
-def load_coupled_runtime(
+def _load_wflow_sfincs_runtime(
     location_root,
     *,
     wflow_domain_review_required: bool | None = None,
@@ -133,7 +133,7 @@ def load_calibration_runtime(
     When ``create_audit_dirs`` is true, the helper creates the calibration plot
     output directory used by the notebook.
     """
-    base = load_coupled_runtime(location_root, wflow_domain_review_required=False)
+    base = _load_wflow_sfincs_runtime(location_root, wflow_domain_review_required=False)
     streamflow_records_path = base.location_root / "data/sources/usgs_streamgages/streamflow_records.csv"
     event_streamflow_iv_root = base.location_root / "data/sources/usgs_streamgages/event_streamflow_iv"
     audit_plots_dir = base.location_root / "data/wflow/audit/plots"
@@ -150,7 +150,7 @@ def load_calibration_runtime(
 def load_runtime(location_root, *, workflow: str = "coupled", **kwargs):
     """Load the Wflow notebook runtime for a named workflow."""
     if workflow == "coupled":
-        return load_coupled_runtime(location_root, **kwargs)
+        return _load_wflow_sfincs_runtime(location_root, **kwargs)
     if workflow == "calibration":
         return load_calibration_runtime(location_root, **kwargs)
     raise ValueError("workflow must be 'coupled' or 'calibration'")

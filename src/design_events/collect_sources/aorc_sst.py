@@ -19,6 +19,9 @@ from design_events.collect_sources.source_artifacts import (
 from tqdm.auto import tqdm as iter_progress
 
 
+DEFAULT_AORC_ZARR_YEAR_PATTERN = "s3://noaa-nws-aorc-v1-1-1km/{year}.zarr"
+
+
 def _repo_path(paths, value):
     if value is None:
         return None
@@ -32,7 +35,7 @@ def _repo_path(paths, value):
 
 def _open_aorc_year(year, spec):
     return xr.open_dataset(
-        spec["zarr_year_pattern"].format(year=int(year)),
+        spec.get("zarr_year_pattern", DEFAULT_AORC_ZARR_YEAR_PATTERN).format(year=int(year)),
         engine="zarr",
         chunks=spec.get("chunks", {}),
         consolidated=spec.get("consolidated", True),
@@ -98,13 +101,21 @@ def _transposition_region(paths, spec):
 
 
 def _study_footprint(paths, config, spec):
-    geometry_file = (
-        spec.get("watershed_geometry_file")
-        or spec.get("study_area_geometry_file")
-        or spec.get("grid_footprint")
-        or config.get("grid_footprint", {}).get("source")
-    )
-    if not geometry_file:
+    geometry_files = [
+        spec.get("watershed_geometry_file"),
+        spec.get("study_area_geometry_file"),
+        spec.get("grid_footprint"),
+        config.get("smart_ds_evaluation_footprint", {}).get("output"),
+        config.get("grid_footprint", {}).get("source"),
+        "data/static/aoi/evaluation_footprint.geojson",
+        "data/static/aoi/study_area.geojson",
+    ]
+    geometry_file = None
+    for candidate in geometry_files:
+        if candidate and _repo_path(paths, candidate).exists():
+            geometry_file = candidate
+            break
+    if geometry_file is None:
         return None
     import geopandas as gpd
 

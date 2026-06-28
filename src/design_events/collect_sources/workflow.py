@@ -555,6 +555,22 @@ def _source_geometry_path(config, paths):
     raise FileNotFoundError("could not find a source geometry for the AORC SST transposition region")
 
 
+def _study_footprint_path(config, paths):
+    candidates = [
+        config.get("smart_ds_evaluation_footprint", {}).get("output"),
+        config.get("grid_footprint", {}).get("source"),
+        "data/static/aoi/evaluation_footprint.geojson",
+        "data/static/aoi/study_area.geojson",
+    ]
+    for value in candidates:
+        if not value:
+            continue
+        path = _source_location_path(paths, value)
+        if path.exists():
+            return path
+    raise FileNotFoundError("could not find a study footprint for AORC SST plotting")
+
+
 def _transposition_buffer_km(config, region):
     if region.get("buffer_km") is not None:
         return float(region["buffer_km"])
@@ -602,7 +618,6 @@ from design_events.collect_sources.usgs_streamgages import (
 )
 from design_events.runtime import build_paths
 from study_location import define_location
-from wflow_runs.notebook import exists_table
 
 
 source_artifacts = {
@@ -682,10 +697,39 @@ def load_runtime(
         runtime_config["wflow"]["domain_set"]["review_required"] = bool(wflow_domain_review_required)
     runtime_paths = build_paths(runtime_config)
 
-    usgs_streamgages = collection["usgs_streamgages"]
+    event_catalog = runtime_config.setdefault("event_catalog", {})
+    event_catalog.setdefault("forcing_members", {})
+    event_catalog["forcing_members"].setdefault("rainfall", runtime_paths["aorc_sst_rainfall_members_csv"])
+    event_catalog["forcing_members"].setdefault("soil_moisture", runtime_paths["nwm_soil_moisture_csv"])
+    if runtime_config.get("flood_setting") == "inland":
+        event_catalog["forcing_members"].setdefault(
+            "streamflow",
+            location_root / "data/sources/usgs_streamgages/streamflow_members.csv",
+        )
+
+    if "national_hydrography" in collection:
+        national_hydrography = collection["national_hydrography"]
+        national_hydrography.setdefault("hydromt_basemap", "data/wflow/hydrography/us_hydrography_basemap.nc")
+        national_hydrography.setdefault("river_geometry", "data/sources/national_hydrography/nhdplus_hr_river_geometry.gpkg")
+        national_hydrography.setdefault("catchments", "data/sources/national_hydrography/nhdplus_hr_catchments.gpkg")
+        national_hydrography.setdefault("wflow_soil_parameters", "data/wflow/static/ssurgo_wflow_soil_parameters.nc")
+
+    collection.setdefault("nwm", {}).setdefault("soil_moisture", {}).setdefault("variables", [])
+
+    usgs_streamgages = collection.get("usgs_streamgages", {})
+    streamflow_records = usgs_streamgages.get("streamflow_records", {})
+    if not isinstance(streamflow_records, dict):
+        streamflow_records = {"output": streamflow_records}
+    usgs_streamgages["streamflow_records"] = streamflow_records
+    usgs_streamgages.setdefault("reviewed_network", runtime_paths["usgs_streamgage_network_geojson"])
+    usgs_streamgages.setdefault("candidate_output", runtime_paths["usgs_streamgage_candidates_geojson"])
+    usgs_streamgages.setdefault("accept_unreviewed_streamgage_network", False)
+    streamflow_records.setdefault("output", "data/sources/usgs_streamgages/streamflow_records.csv")
+    streamflow_records.setdefault("service", usgs_streamgages_module._streamflow_service(usgs_streamgages))
+
     candidate_path = _ensure_location_parent(location_root, usgs_streamgages["candidate_output"])
     reviewed_network_path = _ensure_location_parent(location_root, usgs_streamgages["reviewed_network"])
-    streamflow_records_cfg = usgs_streamgages["streamflow_records"]
+    streamflow_records_cfg = streamflow_records
     streamflow_records_path = _ensure_location_parent(location_root, streamflow_records_cfg["output"])
 
     return CollectSourcesNotebookRuntime(
@@ -697,7 +741,7 @@ def load_runtime(
         grid_config=runtime_config,
         data_sources=runtime_config,
         sfincs_config=runtime_config,
-        wflow_config={"wflow": runtime_config["wflow"]},
+        wflow_config={"wflow": runtime_config.get("wflow", {})},
         runtime_paths=runtime_paths,
         collection=collection,
         usgs_streamgages=usgs_streamgages,
@@ -963,7 +1007,13 @@ def readiness(runtime: CollectSourcesNotebookRuntime) -> pd.DataFrame:
             "output",
             lcra_hydromet_module.DEFAULT_OUTPUT,
         )
-    readiness = exists_table(runtime.location_root, outputs)
+    readiness = pd.DataFrame(
+        [
+            {"artifact": name, "path": str(path), "exists": path.exists()}
+            for name, value in outputs.items()
+            for path in [_location_path({"location_root": runtime.location_root}, value)]
+        ]
+    )
     readiness["ready"] = readiness["exists"]
     readiness.loc[readiness["artifact"].eq("streamgage candidates"), "ready"] = (
         active_streamgage_candidate_artifact_ready(runtime.runtime_config, runtime.runtime_paths)
@@ -1162,7 +1212,13 @@ def collection_readiness_table(runtime: CollectSourcesNotebookRuntime) -> pd.Dat
         "reviewed discharge records": runtime.usgs_streamgages["streamflow_records"]["output"],
         "soil moisture": runtime.data_sources["event_catalog"]["forcing_members"]["soil_moisture"],
     }
-    readiness = exists_table(runtime.location_root, outputs)
+    readiness = pd.DataFrame(
+        [
+            {"artifact": name, "path": str(path), "exists": path.exists()}
+            for name, value in outputs.items()
+            for path in [_location_path({"location_root": runtime.location_root}, value)]
+        ]
+    )
     readiness["ready_for_catalog"] = readiness["exists"]
     mask = readiness["artifact"].eq("reviewed streamgage network")
     readiness.loc[mask, "ready_for_catalog"] = readiness.loc[mask, "exists"] | bool(
@@ -1746,9 +1802,8 @@ def plot_sst_region(config: dict, paths: dict, *, zoom: int = 9, basemap: bool =
         ctx = None
 
     region_file = config["collection"]["aorc_sst"]["transposition_region"]["geometry_file"]
-    footprint_file = config["grid_footprint"]["source"]
     region_path = _source_location_path(paths, region_file)
-    footprint_path = _source_location_path(paths, footprint_file)
+    footprint_path = _study_footprint_path(config, paths)
 
     region = gpd.read_file(region_path).to_crs("EPSG:4326")
     footprint = gpd.read_file(footprint_path).to_crs("EPSG:4326")
@@ -1789,7 +1844,7 @@ def plot_collected_sst_geography(config: dict, paths: dict):
     from matplotlib.lines import Line2D
     from matplotlib.patches import Patch
 
-    study_area = gpd.read_file(_source_location_path(paths, config["grid_footprint"]["source"])).to_crs("EPSG:4326")
+    study_area = gpd.read_file(_study_footprint_path(config, paths)).to_crs("EPSG:4326")
     sst_region = gpd.read_file(
         _source_location_path(paths, config["collection"]["aorc_sst"]["transposition_region"]["geometry_file"])
     ).to_crs("EPSG:4326")

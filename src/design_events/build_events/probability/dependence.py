@@ -1,7 +1,7 @@
 """Vine-copula dependence fitting and joint catalog sampling.
 
 This is the fitting + joint-sampling stage that sits between the marginals and the
-AND labeling/selection stage (``joint_exceedance``). It:
+AND labeling/selection stage (``exceedance``). It:
 
 1. fits a vine copula over the Driver Probability Indices (semiparametric: the
    copula is fit on rank-based pseudo-observations, the marginals stay parametric),

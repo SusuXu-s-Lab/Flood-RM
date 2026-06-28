@@ -35,6 +35,7 @@ from sfincs_runs.build_base.static_intake import (
     download_file,
     fetch_usgs_3dep_dem,
     fetch_worldcover_landcover,
+    static_sources_with_defaults,
     worldcover_tile_urls,
 )
 from sfincs_runs.config import build_paths as build_sfincs_paths
@@ -250,6 +251,8 @@ def _load_inland_runtime(
     location_root = Path(location_root).resolve()
     repo_root = location_root.parents[1]
     runtime_config = define_location(location_root / "config.yaml").config
+    runtime_config["static_sources"] = static_sources_with_defaults(runtime_config)
+    runtime_config.setdefault("paths", {}).setdefault("data_catalog", "data/static/data_catalogue.yaml")
 
     if wflow_domain_review_required is not None and runtime_config.get("wflow"):
         runtime_config["wflow"]["domain_set"]["review_required"] = bool(wflow_domain_review_required)
@@ -333,6 +336,8 @@ def _load_coastal_runtime(
     location_root = Path(location_root).resolve()
     repo_root = location_root.parents[1]
     config = define_location(location_root / "config.yaml").config
+    config["static_sources"] = static_sources_with_defaults(config)
+    config.setdefault("paths", {}).setdefault("data_catalog", "data/static/data_catalogue.yaml")
     paths = build_sfincs_paths(config)
     settings = static_input_settings_from_env() | (static_input_settings or {})
     region_setup = build_region_setup(

@@ -7,7 +7,6 @@ import pandas as pd
 
 from design_events.runtime import build_paths
 from study_location import define_location
-from wflow_runs.notebook import exists_table
 
 
 @dataclass(frozen=True)
@@ -398,6 +397,18 @@ def load_runtime(location_root) -> EventCatalogNotebookRuntime:
     definition = define_location(location_root / "config.yaml")
     runtime_config = definition.config
     runtime_paths = build_paths(runtime_config)
+    event_catalog = runtime_config.setdefault("event_catalog", {})
+    event_catalog.setdefault("forcing_members", {})
+    event_catalog["forcing_members"].setdefault("rainfall", runtime_paths["aorc_sst_rainfall_members_csv"])
+    event_catalog["forcing_members"].setdefault("soil_moisture", runtime_paths["nwm_soil_moisture_csv"])
+    if runtime_config.get("flood_setting") == "inland":
+        event_catalog["forcing_members"].setdefault(
+            "streamflow",
+            location_root / "data/sources/usgs_streamgages/streamflow_members.csv",
+        )
+    usgs = runtime_config.get("collection", {}).get("usgs_streamgages")
+    if usgs is not None and not isinstance(usgs.get("streamflow_records", {}), dict):
+        usgs["streamflow_records"] = {"output": usgs["streamflow_records"]}
     return EventCatalogNotebookRuntime(
         location_root=location_root,
         location_name=location_root.name,
@@ -414,15 +425,22 @@ def load_runtime(location_root) -> EventCatalogNotebookRuntime:
 
 def event_catalog_source_inventory(runtime: EventCatalogNotebookRuntime) -> pd.DataFrame:
     forcing_members = runtime.data_sources["event_catalog"]["forcing_members"]
-    return exists_table(
-        runtime.location_root,
-        {
-            "reviewed streamgage network": runtime.data_sources["collection"]["usgs_streamgages"]["reviewed_network"],
-            "reviewed discharge records": runtime.data_sources["collection"]["usgs_streamgages"]["streamflow_records"]["output"],
-            "streamflow members": forcing_members["streamflow"],
-            "rainfall members": forcing_members["rainfall"],
-            "soil moisture": forcing_members["soil_moisture"],
-        },
+    paths = {"rainfall members": forcing_members["rainfall"], "soil moisture": forcing_members["soil_moisture"]}
+    usgs = runtime.data_sources.get("collection", {}).get("usgs_streamgages")
+    if usgs is not None:
+        paths.update(
+            {
+                "reviewed streamgage network": usgs["reviewed_network"],
+                "reviewed discharge records": usgs["streamflow_records"]["output"],
+                "streamflow members": forcing_members["streamflow"],
+            }
+        )
+    return pd.DataFrame(
+        [
+            {"artifact": name, "path": str(path), "exists": path.exists()}
+            for name, value in paths.items()
+            for path in [runtime.resolve_location_path(value)]
+        ]
     )
 
 

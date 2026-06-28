@@ -41,17 +41,48 @@ class RegionSetup:
     ssurgo_ksat_output: Path
 
 
+DEFAULT_STATIC_SOURCES = {
+    "bbox": {"output": "data/static/aoi/bbox.geojson"},
+    "terrain": {
+        "raw": "data/static/raw/topo/dem.tif",
+        "output": "data/static/processed/dem_region_setup.tif",
+    },
+    "landcover": {
+        "raw": "data/static/raw/landcover/landcover.tif",
+        "output": "data/static/processed/landcover_region_setup.tif",
+    },
+    "ssurgo": {
+        "output": "data/static/soils/ssurgo_mapunitpoly.gpkg",
+        "attributes_output": "data/static/soils/ssurgo_mapunit_attributes.csv",
+        "hsg_output": "data/static/soils/hsg.tif",
+        "ksat_output": "data/static/soils/ksat_mmhr.tif",
+    },
+    "wflow_collection_extent": {
+        "watersheds": "data/static/aoi/wflow_nhdplus_watersheds.geojson",
+        "boundary": "data/static/aoi/wflow_collection_region.geojson",
+        "terrain_raw": "data/wflow/static/raw/topo/dem_wflow.tif",
+        "terrain_output": "data/wflow/static/processed/dem_wflow_coarse.tif",
+        "landcover_raw": "data/wflow/static/raw/landcover/landcover_wflow.tif",
+        "landcover_output": "data/wflow/static/processed/landcover_wflow_coarse.tif",
+        "ssurgo_output": "data/wflow/static/soils/ssurgo_mapunitpoly_wflow.gpkg",
+        "ssurgo_attributes_output": "data/wflow/static/soils/ssurgo_mapunit_attributes_wflow.csv",
+        "hsg_output": "data/wflow/static/soils/hsg_wflow.tif",
+        "ksat_output": "data/wflow/static/soils/ksat_mmhr_wflow.tif",
+    },
+}
+
+
 def build_region_setup(config, paths, *, buffer_degrees=0.01) -> RegionSetup:
     location_name = str(paths.get("location_name") or config.get("project", {}).get("name", "")).strip()
     if not location_name:
         raise ValueError("project.name is required before building region setup")
 
     repo_root = _repo_root(paths)
-    sources = config.get("static_sources", {})
+    sources = static_sources_with_defaults(config)
     return RegionSetup(
         study_location=location_name,
         bbox_wgs84=study_area_bbox(config, repo_root, buffer_degrees=buffer_degrees),
-        study_area_path=_runtime_path(paths, config.get("grid_footprint", {}).get("source")),
+        study_area_path=_study_area_path(config, paths),
         dem_raw=_static_path(paths, sources, "terrain", "raw"),
         landcover_raw=_static_path(paths, sources, "landcover", "raw"),
         dem_output=_static_path(paths, sources, "terrain", "output"),
@@ -69,6 +100,36 @@ def build_region_setup(config, paths, *, buffer_degrees=0.01) -> RegionSetup:
         ssurgo_hsg_output=_static_path(paths, sources, "ssurgo", "hsg_output"),
         ssurgo_ksat_output=_static_path(paths, sources, "ssurgo", "ksat_output"),
     )
+
+
+def static_sources_with_defaults(config) -> dict:
+    configured = config.get("static_sources", {})
+    sources = {
+        name: {**defaults, **configured.get(name, {})}
+        for name, defaults in DEFAULT_STATIC_SOURCES.items()
+    }
+    sources.update({name: values for name, values in configured.items() if name not in DEFAULT_STATIC_SOURCES})
+    return sources
+
+
+def _study_area_path(config, paths) -> Path:
+    candidates = [
+        config.get("grid_footprint", {}).get("source"),
+        config.get("aoi", {}).get("output", "data/static/aoi/study_area.geojson"),
+        config.get("smart_ds_evaluation_footprint", {}).get("output"),
+        "data/static/aoi/study_area.geojson",
+        "data/static/aoi/evaluation_footprint.geojson",
+    ]
+    for value in candidates:
+        if not value:
+            continue
+        path = _runtime_path(paths, value)
+        if path.exists():
+            return path
+    for value in candidates:
+        if value:
+            return _runtime_path(paths, value)
+    raise ValueError("study-area path value is required")
 
 
 def worldcover_tile_urls(bbox_wgs84, *, year=2021, version="v200"):

@@ -36,16 +36,6 @@ from wflow_runs.visualize import (
     plot_wflow_event_handoff,
     plot_wflow_ldd_components,
 )
-from wflow_runs.replay import (
-    build_meteo,
-    build_discharge_geodataset,
-    merge_submodel_discharge,
-    read_submodel_gauge_discharge,
-    replay_inland_domain_set,
-    resolve_event_window,
-    run_zero_rain_control,
-    write_event_streamflow_handoff_discharge,
-)
 from wflow_runs.river_geometry import validate_geometry
 from wflow_runs.coupling_qa import (
     CoupledDomainReview,
@@ -69,20 +59,36 @@ from wflow_runs.states import (
     warmup_window,
     write_cold_state_workflow,
 )
-from wflow_runs.dynamic_handoff import (
-    DynamicHandoffRun,
-    dynamic_handoff_paths,
-    ensure_dynamic_handoff,
-    plan_streamflow,
-    plan_handoff,
-    prepare_handoff,
-    require_handoff,
-)
-from wflow_runs.streamflow_realization import (
-    prepare_wflow_streamflow_realization_for_event_model,
-    validate_wflow_streamflow_realization,
-    wflow_streamflow_gage_overlap,
-)
+_LAZY_EXPORTS = {
+    "build_meteo": "wflow_runs.replay",
+    "build_discharge_geodataset": "wflow_runs.replay",
+    "merge_submodel_discharge": "wflow_runs.replay",
+    "read_submodel_gauge_discharge": "wflow_runs.replay",
+    "replay_inland_domain_set": "wflow_runs.replay",
+    "resolve_event_window": "wflow_runs.replay",
+    "run_zero_rain_control": "wflow_runs.replay",
+    "write_event_streamflow_handoff_discharge": "wflow_runs.replay",
+    "DynamicHandoffRun": "wflow_runs.dynamic_handoff",
+    "dynamic_handoff_paths": "wflow_runs.dynamic_handoff",
+    "ensure_dynamic_handoff": "wflow_runs.dynamic_handoff",
+    "plan_streamflow": "wflow_runs.dynamic_handoff",
+    "plan_handoff": "wflow_runs.dynamic_handoff",
+    "prepare_handoff": "wflow_runs.dynamic_handoff",
+    "require_handoff": "wflow_runs.dynamic_handoff",
+    "prepare_wflow_streamflow_realization_for_event_model": "wflow_runs.streamflow_realization",
+    "validate_wflow_streamflow_realization": "wflow_runs.streamflow_realization",
+    "wflow_streamflow_gage_overlap": "wflow_runs.streamflow_realization",
+}
+
+
+def __getattr__(name):
+    if name not in _LAZY_EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from importlib import import_module
+
+    value = getattr(import_module(_LAZY_EXPORTS[name]), name)
+    globals()[name] = value
+    return value
 
 
 __all__ = [

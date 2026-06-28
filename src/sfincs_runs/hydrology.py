@@ -49,19 +49,22 @@ def write_ssurgo_infiltration_rasters(
     all_touched=False,
 ):
     """Rasterize SSURGO-derived HSG and Ksat onto a template grid."""
-    from functools import partial
-    import rioxarray  # noqa: F401  # activates .rio accessor
-    import rioxarray as rxr
-    from geocube.api.core import make_geocube
-    from geocube.rasterize import rasterize_image
+    import rasterio
+    from rasterio.features import rasterize
 
-    template = rxr.open_rasterio(template_raster, masked=True).squeeze(drop=True)
-    if template.rio.crs is None:
+    with rasterio.open(template_raster) as template:
+        if template.crs is None:
+            raise ValueError(f"template_raster has no CRS: {template_raster}")
+        out_shape = (template.height, template.width)
+        transform = template.transform
+        crs = template.crs
+        base_profile = template.profile.copy()
+    if crs is None:
         raise ValueError(f"template_raster has no CRS: {template_raster}")
     soils = _read_geodataframe(soil_polygons)
     if "mukey" not in soils.columns:
         raise ValueError("soil_polygons must contain a 'mukey' column")
-    soils = _match_crs(soils, template.rio.crs)
+    soils = _match_crs(soils, crs)
     fields = ssurgo_infiltration_fields(
         attributes, top_depth_cm=top_depth_cm, drainage_condition=drainage_condition, ksat_units=ksat_units
     )
@@ -71,27 +74,56 @@ def write_ssurgo_infiltration_rasters(
         .dropna(subset=["hsg_code", "ksat_mmhr"])
     )
     if land_domain is not None:
-        land = _match_crs(_read_geodataframe(land_domain), template.rio.crs)
+        land = _match_crs(_read_geodataframe(land_domain), crs)
         gdf = gdf.clip(land)
 
-    rasterize = partial(rasterize_image, all_touched=all_touched)
-    cube = make_geocube(vector_data=gdf, measurements=["hsg_code", "ksat_mmhr"], like=template, fill=np.nan, rasterize_function=rasterize)
-    hsg = cube["hsg_code"].fillna(0).round().astype("uint8").rio.write_nodata(0)
-    ksat = cube["ksat_mmhr"].astype("float32").rio.write_nodata(np.nan)
+    hsg_shapes = ((geom, int(value)) for geom, value in zip(gdf.geometry, gdf["hsg_code"]) if geom is not None)
+    ksat_shapes = ((geom, float(value)) for geom, value in zip(gdf.geometry, gdf["ksat_mmhr"]) if geom is not None)
+    hsg = rasterize(
+        hsg_shapes,
+        out_shape=out_shape,
+        transform=transform,
+        fill=0,
+        dtype="uint8",
+        all_touched=all_touched,
+    )
+    ksat = rasterize(
+        ksat_shapes,
+        out_shape=out_shape,
+        transform=transform,
+        fill=np.nan,
+        dtype="float32",
+        all_touched=all_touched,
+    )
 
     hsg_out, ksat_out = Path(hsg_out), Path(ksat_out)
     hsg_out.parent.mkdir(parents=True, exist_ok=True)
     ksat_out.parent.mkdir(parents=True, exist_ok=True)
-    hsg.rio.to_raster(hsg_out, compress="deflate")
-    ksat.rio.to_raster(ksat_out, compress="deflate")
+    _write_single_band_raster(hsg_out, hsg, base_profile, dtype="uint8", nodata=0)
+    _write_single_band_raster(ksat_out, ksat, base_profile, dtype="float32", nodata=np.nan)
     return {
         "hsg": str(hsg_out),
         "ksat": str(ksat_out),
         "mapunits": int(len(fields)),
         "rasterized_polygons": int(len(gdf)),
         "hsg_pixels": int((hsg != 0).sum().item()),
-        "ksat_pixels": int(ksat.notnull().sum().item()),
+        "ksat_pixels": int(np.isfinite(ksat).sum().item()),
     }
+
+def _write_single_band_raster(path, values, template_profile, *, dtype, nodata):
+    import rasterio
+
+    profile = {
+        **template_profile,
+        "driver": "GTiff",
+        "count": 1,
+        "dtype": dtype,
+        "nodata": nodata,
+        "compress": "deflate",
+    }
+    with rasterio.open(path, "w", **profile) as dst:
+        dst.write(values.astype(dtype), 1)
+
 
 def condition_ksat_raster(source, output, *, scale_factor=1.0, max_mmhr=None):
     """Scale and optionally cap a Ksat raster while preserving georeferencing."""

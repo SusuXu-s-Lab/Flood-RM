@@ -13,7 +13,6 @@ from .fit_history.extreme_value import (
 )
 from .build_events.selection import assign_severity_bands
 
-
 def _finish(fig):
     fig.tight_layout()
     return fig
