@@ -44,3 +44,5 @@ src/fiat_runs
 AGENTS.md
 docs/
 tests/
+
+src/fiat_runs/
