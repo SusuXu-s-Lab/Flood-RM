@@ -475,11 +475,14 @@ def materialize_inland_catalog_outputs(
         "wflow_scenario_replay_set_csv": catalog_root / "wflow_scenario_replay_set.csv",
     }
     if historical_tail_catalog is None:
-        historical_tail_catalog = (
-            pd.read_csv(paths["historical_tail_catalog_csv"], dtype={"event_id": str})
-            if paths["historical_tail_catalog_csv"].exists()
-            else pd.DataFrame()
-        )
+        try:
+            historical_tail_catalog = pd.read_csv(
+                paths["historical_tail_catalog_csv"], dtype={"event_id": str}
+            )
+        except (FileNotFoundError, pd.errors.EmptyDataError):
+            # A missing or empty (header-less) tail catalog just means no historical-tail
+            # rows were written yet; treat it as empty rather than failing the handoff.
+            historical_tail_catalog = pd.DataFrame()
 
     event_catalog = _location_relative_member_files(event_catalog, runtime.location_root)
     stress_training_catalog = _location_relative_member_files(stress_training_catalog, runtime.location_root)

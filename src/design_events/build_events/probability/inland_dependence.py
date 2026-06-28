@@ -119,6 +119,11 @@ def build_inland_catalog(
         or dependence.get("catalog_band_fractions")
     )
     severity_bands = config.get("sampling", {}).get("severity_bands") or default_severity_bands()
+    # Persist the resolved bands back onto config so downstream notebook plots and
+    # readiness tables read the exact bands this catalog was stratified on, instead of
+    # KeyError'ing when no sampling block was authored in YAML. The coastal path does the
+    # equivalent in configure_coastal_design_event_policy.
+    config.setdefault("sampling", {})["severity_bands"] = severity_bands
 
     marginal = fit_index_marginal(rain_values, event_rate=event_rate, kind="pot")
 
