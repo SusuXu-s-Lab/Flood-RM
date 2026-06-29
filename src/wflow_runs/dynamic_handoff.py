@@ -10,6 +10,7 @@ from wflow_runs.handoff_locations import read_stream_boundary_handoff_location_a
 from wflow_runs.coupling_qa import (
     read_dynamic_handoff_acceptance,
     validate_dynamic_handoff,
+    validate_handoff_gauge_locations,
     write_dynamic_handoff_acceptance,
 )
 from wflow_runs.replay import (
@@ -223,8 +224,15 @@ def prepare_handoff(
         expected_source_ids=expected,
         max_zero_peak_fraction=max_zero,
         max_source_shape_correlation=max_shape_corr,
-        raise_on_error=True,
+        raise_on_error=False,
     )
+    gauge_qa = _dynamic_handoff_gauge_location_qa(config, location_root, event_id, expected)
+    if not gauge_qa.empty:
+        qa = pd.concat([qa, gauge_qa], ignore_index=True)
+    failed = qa[qa["status"].isin(["failed", "review_required"])]
+    if not failed.empty:
+        details = "; ".join(f"{row.check}: {row.message}" for row in failed.itertuples())
+        raise RuntimeError(f"Dynamic Wflow handoff QA failed: {details}")
     paths["qa_csv"].parent.mkdir(parents=True, exist_ok=True)
     qa.to_csv(paths["qa_csv"], index=False)
     write_dynamic_handoff_acceptance(
@@ -318,8 +326,7 @@ def _configured_discharge_source(config: dict) -> str:
 def _resolve_catalog_path(location_root: Path, catalog_path) -> Path | None:
     if catalog_path is None:
         return None
-    path = Path(catalog_path)
-    return path if path.is_absolute() else location_root / path
+    return resolve_location_path(location_root, catalog_path)
 
 
 def _instate_paths(config: dict, location_root: Path) -> list[Path]:
@@ -338,6 +345,100 @@ def _expected_handoff_ids(config: dict, location_root: Path) -> set[str]:
     if locations is None or locations.empty:
         return set()
     return set(locations["sfincs_handoff_id"].astype(str))
+
+
+def _dynamic_handoff_gauge_location_qa(
+    config: dict,
+    location_root: Path,
+    event_id: str,
+    expected_source_ids: set[str],
+) -> pd.DataFrame:
+    try:
+        sources = read_stream_boundary_handoff_location_artifacts(
+            config,
+            location_root,
+            location_path=resolve_location_path,
+        )
+    except FileNotFoundError:
+        return pd.DataFrame(
+            [
+                {
+                    "check": "wflow_gauge_source_distance",
+                    "status": "skipped",
+                    "message": "no stream-boundary handoff source artifacts",
+                }
+            ]
+        )
+    if sources is None or sources.empty:
+        return pd.DataFrame(
+            [
+                {
+                    "check": "wflow_gauge_source_distance",
+                    "status": "skipped",
+                    "message": "no stream-boundary handoff source artifacts",
+                }
+            ]
+        )
+    if expected_source_ids:
+        sources = sources[sources["sfincs_handoff_id"].astype(str).isin(expected_source_ids)].copy()
+    model_crs = config.get("sfincs", {}).get(
+        "model_crs",
+        config.get("project", {}).get("model_crs", "EPSG:32617"),
+    )
+    thresholds = ((config.get("wflow", {}) or {}).get("dynamic_handoff", {}) or {}).get("qa", {}) or {}
+    max_distance = float(
+        thresholds.get(
+            "max_wflow_gauge_source_distance_m",
+            config.get("sfincs", {}).get("grid_resolution_m", 100),
+        )
+    )
+    forcing = ((config.get("inland_coupling", {}) or {}).get("discharge_forcing", {}) or {})
+    reservoir_handoffs = forcing.get("reservoir_boundary_handoffs", {}) or {}
+    reservoir_max_distance = float(
+        thresholds.get(
+            "max_reservoir_wflow_gauge_source_distance_m",
+            reservoir_handoffs.get("max_wflow_gauge_source_distance_m", 2500.0),
+        )
+    )
+    events_root = resolve_location_path(
+        location_root,
+        config.get("wflow", {}).get("events_root", "data/wflow/events"),
+    )
+    rows = []
+    for submodel in _domain_set_submodels(config, location_root):
+        submodel_id = str(submodel["wflow_submodel_id"])
+        submodel_sources = sources
+        if "wflow_submodel_id" in submodel_sources:
+            submodel_sources = submodel_sources[submodel_sources["wflow_submodel_id"].astype(str).eq(submodel_id)].copy()
+        if submodel_sources.empty:
+            continue
+        gauges_path = events_root / str(event_id) / submodel_id / "staticgeoms" / "gauges_sfincs.geojson"
+        if not gauges_path.exists():
+            rows.append(
+                pd.DataFrame(
+                    [
+                        {
+                            "check": "wflow_gauge_source_distance",
+                            "submodel_id": submodel_id,
+                            "status": "failed",
+                            "message": f"missing {gauges_path}",
+                        }
+                    ]
+                )
+            )
+            continue
+        rows.append(
+            validate_handoff_gauge_locations(
+                submodel_sources,
+                gauges_path,
+                model_crs=model_crs,
+                max_distance_m=max_distance,
+                reservoir_boundary_max_distance_m=reservoir_max_distance,
+                submodel_id=submodel_id,
+                raise_on_error=False,
+            )
+        )
+    return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
 
 
 def _validate_dynamic_wflow_base_staticmaps(config: dict, location_root: Path) -> None:

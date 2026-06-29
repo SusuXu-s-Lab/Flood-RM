@@ -1,66 +1,18 @@
+"""Fitted marginal curves (peak height <-> return period) and their on-disk schema.
+
+The marginal classes are the single source of truth in ``design_events_v2.records``
+(ADR-0021): this module re-exports them so production keeps one implementation while
+``design_events_v2`` stays standalone. The EVA-dataset adapter and the params/RP CSV
+schema (consumed by ``fit_history.peaks`` and ``build_events.coastal``) stay here.
+"""
+
 from __future__ import annotations
-from functools import cached_property
 import numpy as np
 import pandas as pd
 
-from .extreme_value import get_frozen_dist
+from design_events_v2.records import EmpiricalMarginal, HistoricalPeakMarginal
+
 clip_eps = 1e-9
-
-class HistoricalPeakMarginal:
-    """Fitted curve that converts peak height <-> return period."""
-    def __init__(self, dist_name, params, extremes_rate, method, threshold_quantile, peak_count):
-        self.dist_name = str(dist_name)
-        self.params = tuple(float(p) for p in params)
-        self.extremes_rate = float(extremes_rate)
-        self.method = str(method)
-        self.threshold_quantile = float(threshold_quantile)
-        self.peak_count = int(peak_count)
-        if not (np.isfinite(self.extremes_rate) and self.extremes_rate > 0):
-            raise ValueError(f"extremes_rate must be finite and > 0, got {self.extremes_rate!r}")
-        if not all(np.isfinite(p) for p in self.params):
-            raise ValueError(f"params must all be finite, got {self.params!r}")
-        get_frozen_dist(self.params, self.dist_name)
-
-    @cached_property
-    def _frozen_dist(self):
-        return get_frozen_dist(self.params, self.dist_name)
-
-    def magnitude(self, return_period):
-        # Return period -> annual exceedance probability -> peak height.
-        arr = np.asarray(return_period, dtype=float)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            q = np.where(arr > 0, 1.0 / arr / self.extremes_rate, np.nan)
-        q = np.clip(q, clip_eps, 1 - clip_eps)
-        out = np.asarray(self._frozen_dist.isf(q), dtype=float)
-        out = np.where(np.isnan(arr) | (arr <= 0), np.nan, out)
-        return out.item() if np.ndim(return_period) == 0 else out
-
-    def return_period(self, magnitude):
-        # Peak height -> annual exceedance probability -> return period.
-        arr = np.asarray(magnitude, dtype=float)
-        p = np.asarray(self._frozen_dist.cdf(arr), dtype=float)
-        q = np.clip(1.0 - p, clip_eps, 1.0)
-        out = 1.0 / (q * self.extremes_rate)
-        out = np.where(np.isnan(arr), np.nan, out)
-        return out.item() if np.ndim(magnitude) == 0 else out
-
-    def cdf(self, magnitude):
-        # Marginal CDF F(x); the uniform Driver Probability Index used by the copula stage.
-        arr = np.asarray(magnitude, dtype=float)
-        out = np.asarray(self._frozen_dist.cdf(arr), dtype=float)
-        return out.item() if np.ndim(magnitude) == 0 else out
-
-    def ppf(self, u):
-        # Marginal quantile F^-1(u); maps a copula uniform back to a physical magnitude.
-        arr = np.clip(np.asarray(u, dtype=float), clip_eps, 1.0 - clip_eps)
-        out = np.asarray(self._frozen_dist.ppf(arr), dtype=float)
-        return out.item() if np.ndim(u) == 0 else out
-
-    def pdf(self, magnitude):
-        # Marginal density f(x).
-        arr = np.asarray(magnitude, dtype=float)
-        out = np.asarray(self._frozen_dist.pdf(arr), dtype=float)
-        return out.item() if np.ndim(magnitude) == 0 else out
 
 def _scalar_coord(da, name, default):
     # Xarray stores fitted metadata as coordinates; unwrap one scalar value.
@@ -132,39 +84,12 @@ def load_historical_peak_marginal(path):
     )
 
 
-class EmpiricalMarginal:
-    """Bounded empirical-CDF marginal for state/antecedent drivers (e.g. soil moisture).
-
-    Unlike a POT exp/GPD tail, this does not extrapolate beyond the observed sample: the
-    quantile function saturates at the observed [min, max]. Appropriate for a bounded
-    conditioning/antecedent variable such as soil saturation fraction, where an unbounded
-    extreme-value tail produces unphysical values (>1 saturation).
-    """
-
-    dist_name = "empirical"
-
-    def __init__(self, values):
-        v = np.asarray(values, dtype=float)
-        v = np.sort(v[np.isfinite(v)])
-        if v.size < 2:
-            raise ValueError("EmpiricalMarginal needs at least 2 finite values")
-        self.values = v
-        self.peak_count = int(v.size)
-        # Weibull plotting positions: strictly interior so cdf/ppf invert cleanly.
-        self._p = np.arange(1, v.size + 1) / (v.size + 1.0)
-
-    def cdf(self, x):
-        arr = np.asarray(x, dtype=float)
-        out = np.interp(arr, self.values, self._p, left=0.0, right=1.0)
-        return out.item() if np.ndim(x) == 0 else out
-
-    def ppf(self, q):
-        arr = np.clip(np.asarray(q, dtype=float), 0.0, 1.0)
-        out = np.interp(arr, self._p, self.values, left=self.values[0], right=self.values[-1])
-        return out.item() if np.ndim(q) == 0 else out
-
-    def pdf(self, x):
-        arr = np.asarray(x, dtype=float)
-        density = np.gradient(self._p, self.values)
-        out = np.interp(arr, self.values, density, left=0.0, right=0.0)
-        return out.item() if np.ndim(x) == 0 else out
+__all__ = [
+    "EmpiricalMarginal",
+    "HistoricalPeakMarginal",
+    "from_eva_dataset",
+    "marginal_params_frame",
+    "marginal_rps_frame",
+    "write_historical_peak_marginal",
+    "load_historical_peak_marginal",
+]

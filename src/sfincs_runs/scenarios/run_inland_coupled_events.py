@@ -18,6 +18,7 @@ from sfincs_runs.scenarios.inland_coupled import (
     stage_scenarios,
 )
 from wflow_runs.dynamic_handoff_batch import run_handoffs
+from wflow_runs.notebook import resolve_location_path
 
 
 def run_inland_coupled_event(
@@ -218,10 +219,7 @@ def main(argv=None) -> int:
 
 
 def _location_path(location_root: Path, value) -> Path:
-    path = Path(value)
-    if path.is_absolute():
-        return path
-    return location_root / path
+    return resolve_location_path(location_root, value)
 
 
 if __name__ == "__main__":

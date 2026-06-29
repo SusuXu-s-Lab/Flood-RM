@@ -87,14 +87,40 @@ def _apply_inland_runtime_defaults(config):
     These mirror the ``.get(..., default)`` defaults already used throughout
     ``wflow_runs``/``sfincs_runs`` so a location that doesn't spell out every optional key
     in YAML (greensboro, austin) still resolves in a notebook cell instead of raising
-    ``KeyError``. Only keys *inside* sections the location already declares are filled — the
-    top-level ``wflow``/``sfincs_domain_set`` sections are never created, so a coastal
-    config stays coastal.
+    ``KeyError``. Notebook-readable path and evaluation sections may be created in the
+    runtime copy; location YAML is not mutated. The top-level ``wflow``/``sfincs_domain_set``
+    sections are never created, so a coastal config stays coastal.
     """
     # static_sources: same defaults the region-setup/collect-sources runtimes apply.
     from sfincs_runs.build_base.static_intake import static_sources_with_defaults
 
     config["static_sources"] = static_sources_with_defaults(config)
+
+    path_defaults = {
+        "sfincs_outputs_root": "data/sfincs",
+        "static_inputs_root": "data/static",
+        "data_catalog": "data/static/data_catalogue.yaml",
+        "static_root": "data/static/processed",
+        "raw_root": "data/static/raw",
+        "observations_root": "data/sources",
+        "scenarios_root": "data/sfincs/scenarios",
+        "storage_root": "data/sfincs/run_outputs",
+        "run_root": "data/sfincs/run_stage",
+        "stats_root": "data/sfincs/stats",
+        "base_model_root": "data/sfincs/base",
+        "design_outputs_root": "data/event_catalog",
+    }
+    path_config = config.setdefault("paths", {})
+    for name, default in path_defaults.items():
+        path_config.setdefault(name, default)
+
+    evaluation = config.setdefault("evaluation", {})
+    evaluation.setdefault("asset_source", "data/static/power_grid/smart_ds_compat/assets.parquet")
+    evaluation.setdefault("output_root", "data/sfincs/evaluation")
+    merge = evaluation.setdefault("multi_domain_merge", {})
+    merge.setdefault("method", "max_depth_per_asset")
+    merge.setdefault("retain_source_domain_id", True)
+    merge.setdefault("write_overlap_diagnostics", True)
 
     sfincs_domain_set = config.get("sfincs_domain_set")
     if isinstance(sfincs_domain_set, dict):

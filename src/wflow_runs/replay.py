@@ -55,6 +55,7 @@ from wflow_runs.build_plan import (
     repair_wflow_gauge_map,
     repair_wflow_river_width,
     repair_wflow_staticmaps_nodata,
+    validate_staticmaps,
 )
 from wflow_runs.notebook import (
     _describe_hydromt_command,
@@ -811,6 +812,7 @@ def replay_inland_domain_set(
             if apply_repairs:
                 repair_wflow_river_width(event_dir / step.submodel_id)
                 repair_wflow_gauge_map(event_dir / step.submodel_id)
+            validate_staticmaps(event_dir / step.submodel_id)
             _prepare_wflow_run_output_dir(event_dir / step.submodel_id / "wflow_sbm.toml")
             _run(shlex.split(step.run_command), cwd=location_root)
             status = "completed"

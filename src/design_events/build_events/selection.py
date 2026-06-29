@@ -13,36 +13,13 @@ from design_events.build_events.compound_timing import (
 )
 
 
-def default_severity_bands():
-    return [
-        {"severity_band": "mild", "rp_min_years": 0.0, "rp_max_years": 2.0},
-        {"severity_band": "common", "rp_min_years": 2.0, "rp_max_years": 10.0},
-        {"severity_band": "significant", "rp_min_years": 10.0, "rp_max_years": 50.0},
-        {"severity_band": "rare", "rp_min_years": 50.0, "rp_max_years": 100.0},
-        {"severity_band": "extreme", "rp_min_years": 100.0, "rp_max_years": 500.0},
-        {"severity_band": "beyond_design", "rp_min_years": 500.0, "rp_max_years": None},
-    ]
+# Severity bands (dict config schema + assignment) are the single source of truth in v2 (ADR-0021).
+from design_events_v2.probability import assign_severity_bands, default_severity_bands
 
 
 def _configured_bands(config):
     bands = config.get("sampling", {}).get("severity_bands")
     return bands or default_severity_bands()
-
-
-def assign_severity_bands(return_periods, bands=None):
-    bands = bands or default_severity_bands()
-    rp = pd.to_numeric(pd.Series(return_periods), errors="coerce")
-    out = pd.Series(["unclassified"] * len(rp), index=rp.index, dtype="object")
-    for band in bands:
-        name = str(band["severity_band"])
-        lower = float(band.get("rp_min_years", 0.0))
-        upper = band.get("rp_max_years")
-        mask = rp >= lower
-        if upper is not None:
-            mask &= rp < float(upper)
-        out.loc[mask] = name
-    out.loc[rp.isna() | (rp < 0)] = "unclassified"
-    return out
 
 
 def _peak_column(df):

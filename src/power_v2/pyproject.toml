@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nlr-distribution-case"
+version = "0.1.0"
+description = "Artifact-first SHIFT to SMART-DS-like distribution grid workflow"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{name = "NLR Distribution Suite research workflow"}]
+dependencies = [
+  "pandas>=2.0",
+  "PyYAML>=6",
+]
+
+[project.optional-dependencies]
+parquet = ["pyarrow>=14"]
+suite = ["grid-data-models>=2.3.5", "NREL-ditto", "nrel-shift", "NREL-erad", "gdmloader"]
+geo = ["geopandas>=0.14", "shapely>=2", "osmnx>=1.9", "pyproj>=3", "xarray>=2024", "scipy>=1.11"]
+plot = ["matplotlib>=3.8", "contextily>=1.5"]
+solvers = ["opendssdirect.py>=0.9"]
+dev = ["pytest>=8", "pyarrow>=14"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["nlr_distribution_case*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,19 @@
+[project]
+name = "design-events-source-reorg"
+version = "0.1.0"
+description = "Minimal auditable source acquisition and stochastic boundary-condition science layer"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy",
+  "scipy",
+  "pandas",
+  "xarray",
+  "geopandas",
+  "requests",
+  "pyproj",
+]
+
+[project.optional-dependencies]
+era5-cds = ["cdsapi"]
+netcdf = ["netCDF4", "h5netcdf"]
+parquet = ["pyarrow"]

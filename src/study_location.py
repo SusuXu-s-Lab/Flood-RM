@@ -21,6 +21,51 @@ def load_location_config(path=None, repo_root=None) -> dict:
     return config
 
 @dataclass(frozen=True)
+class NotebookSession:
+    """The active Location Workspace for a notebook or script.
+
+    Returned by ``bootstrap()``. ``repo_root`` and ``location_root`` are resolved
+    depth-independently from the working directory, so a notebook at any nesting
+    under ``locations/<name>/`` resolves the same workspace without per-notebook
+    ``sys.path`` edits or ``parents[n]`` arithmetic.
+    """
+
+    repo_root: Path
+    location_root: Path
+    definition: LocationDefinition
+
+    @property
+    def name(self):
+        return self.definition.name
+
+    @property
+    def config(self):
+        return self.definition.config
+
+    @property
+    def paths(self):
+        return self.definition.config.get("paths", {})
+
+def bootstrap(location=None, *, repo_root=None):
+    """Resolve the active Location Workspace — the single front-door notebooks call first.
+
+    The package is importable through its editable install, so no ``sys.path`` edit
+    is needed. This walks the working directory up to the enclosing
+    ``locations/<name>/config.yaml`` (or honors ``FLOOD_RM_LOCATION`` /
+    ``FLOOD_RM_LOCATION_CONFIG``, or an explicit ``location`` name/path), then
+    returns the merged Location Definition and its workspace roots.
+    """
+    root = Path(repo_root) if repo_root is not None else find_repo_root()
+    if location is None:
+        config_path = default_location_config_path(root)
+    elif Path(location).suffix in {".yaml", ".yml"} or Path(location).exists():
+        config_path = _resolve_location_config_path(location)
+    else:
+        config_path = root / "locations" / str(location) / "config.yaml"
+    definition = define_location(config_path)
+    return NotebookSession(repo_root=root, location_root=definition.root, definition=definition)
+
+@dataclass(frozen=True)
 class StudyLocation:
     name: str
     root: Path

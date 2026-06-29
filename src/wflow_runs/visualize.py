@@ -20,6 +20,7 @@ def plot_wflow_basemap(
     model,
     *,
     gages=None,
+    handoff_sources=None,
     sfincs_domains=None,
     background_elevation=None,
     ax=None,
@@ -47,6 +48,10 @@ def plot_wflow_basemap(
     gages : geopandas.GeoDataFrame, optional
         Reviewed USGS/observation gages to overlay as open circles. This is
         useful when the model geoms only expose the SFINCS handoff gauges.
+    handoff_sources : geopandas.GeoDataFrame or path, optional
+        Persisted SFINCS handoff source points to overlay as the intended
+        Wflow-to-SFINCS source locations. When supplied, the model's
+        ``gauges_sfincs`` layer is labelled as post-snap Wflow gauges.
     sfincs_domains : geopandas.GeoDataFrame, optional
         SFINCS domain polygons to overlay as dashed red boundaries.
     background_elevation : xarray.DataArray or iterable of DataArray, optional
@@ -190,12 +195,21 @@ def plot_wflow_basemap(
     # Distinct styling per gauge layer so the coupled SFINCS-source gauges and the reviewed
     # USGS gages are visually separable. Styles mirror the SFINCS basemap (crimson diamonds
     # for Wflow->SFINCS sources, open black circles for reviewed USGS gages).
+    source_layer = _handoff_source_layer(handoff_sources, map_crs)
     gauge_styles = {
-        "gauges_sfincs": dict(marker="D", markersize=45, facecolor="crimson", edgecolor="black", linewidth=0.6),
+        "gauges_sfincs": (
+            dict(marker="X", markersize=45, facecolor="darkorange", edgecolor="black", linewidth=0.6)
+            if source_layer is not None and not source_layer.empty
+            else dict(marker="D", markersize=45, facecolor="crimson", edgecolor="black", linewidth=0.6)
+        ),
         "gauges_usgs": dict(marker="o", markersize=35, facecolor="none", edgecolor="black", linewidth=1.0),
     }
     gauge_labels = {
-        "gauges_sfincs": "gauges_sfincs",
+        "gauges_sfincs": (
+            "Wflow gauge (post-snap)"
+            if source_layer is not None and not source_layer.empty
+            else "gauges_sfincs"
+        ),
         "gauges_usgs": "reviewed USGS gage",
     }
     default_gauge_style = dict(marker="d", markersize=35, facecolor="red", edgecolor="red", linewidth=0.6)
@@ -215,6 +229,21 @@ def plot_wflow_basemap(
                 markeredgecolor=style["edgecolor"],
                 markersize=7,
                 label=label,
+            )
+        )
+    if source_layer is not None and not source_layer.empty:
+        source_style = dict(marker="D", markersize=48, facecolor="crimson", edgecolor="black", linewidth=0.7)
+        source_layer.plot(ax=ax, zorder=8, **source_style)
+        legend_handles.append(
+            Line2D(
+                [0],
+                [0],
+                marker=source_style["marker"],
+                color="none",
+                markerfacecolor=source_style["facecolor"],
+                markeredgecolor=source_style["edgecolor"],
+                markersize=7,
+                label="SFINCS source",
             )
         )
 
@@ -238,7 +267,11 @@ def plot_wflow_basemap(
 
     xlim, ylim = _combined_axis_limits(
         elevation,
-        (frame for frame in (basins, sfincs_domains) if frame is not None and not frame.empty),
+        (
+            frame
+            for frame in (basins, sfincs_domains, source_layer)
+            if frame is not None and not frame.empty
+        ),
     )
     ax.set_xlim(*xlim)
     ax.set_ylim(*ylim)
@@ -961,6 +994,19 @@ def _to_map_crs(frame, crs):
     if frame is None or frame.empty or crs is None or frame.crs is None:
         return frame
     return frame.to_crs(crs)
+
+
+def _handoff_source_layer(handoff_sources, map_crs):
+    if handoff_sources is None or (isinstance(handoff_sources, str) and handoff_sources == ""):
+        return None
+    import geopandas as gpd
+
+    layer = gpd.read_file(handoff_sources) if not hasattr(handoff_sources, "geometry") else handoff_sources.copy()
+    if layer.empty:
+        return layer
+    if layer.crs is None and map_crs is not None:
+        layer = layer.set_crs(map_crs)
+    return _to_map_crs(layer, map_crs)
 
 
 def _gauge_layers(model, fallback_gages):

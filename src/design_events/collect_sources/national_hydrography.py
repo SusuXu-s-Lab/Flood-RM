@@ -85,7 +85,18 @@ def collect_national_hydrography(settings, *, skip_existing=True, smoke=False):
         and collect_reservoirs
         and not reservoirs_gpkg.exists()
         and all(path.exists() for path in base_outputs)
-        and _hydromt_basemap_ready(hydrography_nc, target_resolution_degrees)
+        and _hydromt_basemap_ready(
+            hydrography_nc,
+            target_resolution_degrees,
+            expected_outlets=str(collection.get("dem_outlets", "edge")),
+            expected_mask_geometry=str(
+                _optional_location_path(
+                    location_root,
+                    collection.get("dem_mask_geometry", static_sources.get("wflow_collection_extent", {}).get("watersheds")),
+                )
+                or ""
+            ),
+        )
     ):
         reservoir_summary = write_wflow_reservoir_waterbodies(
             static_sources.get("wflow_collection_extent", {}).get("watersheds", "data/static/aoi/wflow_nhdplus_watersheds.geojson"),
@@ -117,7 +128,18 @@ def collect_national_hydrography(settings, *, skip_existing=True, smoke=False):
     if (
         skip_existing
         and all(path.exists() for path in required_outputs)
-        and _hydromt_basemap_ready(hydrography_nc, target_resolution_degrees)
+        and _hydromt_basemap_ready(
+            hydrography_nc,
+            target_resolution_degrees,
+            expected_outlets=str(collection.get("dem_outlets", "edge")),
+            expected_mask_geometry=str(
+                _optional_location_path(
+                    location_root,
+                    collection.get("dem_mask_geometry", static_sources.get("wflow_collection_extent", {}).get("watersheds")),
+                )
+                or ""
+            ),
+        )
     ):
         result = _result(
             "reused",
@@ -165,6 +187,14 @@ def collect_national_hydrography(settings, *, skip_existing=True, smoke=False):
         hydrography_nc,
         target_resolution_degrees=target_resolution_degrees,
         min_stream_uparea_km2=float(collection.get("min_stream_uparea_km2", 5.0)),
+        river_geometry=river_gpkg if river_gpkg.exists() else None,
+        river_burn_method=str(collection.get("dem_river_burn_method", "uparea")),
+        river_burn_depth=float(collection.get("dem_river_burn_depth_m", 5.0)),
+        outlets=str(collection.get("dem_outlets", "edge")),
+        mask_geometry=_optional_location_path(
+            location_root,
+            collection.get("dem_mask_geometry", wflow_extent.get("watersheds")),
+        ),
     )
     if collect_review_vectors:
         river_summary = write_review_hydrography_vectors(
@@ -182,6 +212,20 @@ def collect_national_hydrography(settings, *, skip_existing=True, smoke=False):
             stream_geo_join_method=str(collection.get("stream_geo_join_method", "attribute_transfer")),
             nhdplus_v2_flowlines=nhdplus_v2_flowlines,
             stream_geo_join_max_distance_m=float(collection.get("stream_geo_join_max_distance_m", 2500)),
+        )
+        hydrography_summary = write_dem_derived_hydromt_basemap(
+            dem_path,
+            hydrography_nc,
+            target_resolution_degrees=target_resolution_degrees,
+            min_stream_uparea_km2=float(collection.get("min_stream_uparea_km2", 5.0)),
+            river_geometry=river_gpkg,
+            river_burn_method=str(collection.get("dem_river_burn_method", "uparea")),
+            river_burn_depth=float(collection.get("dem_river_burn_depth_m", 5.0)),
+            outlets=str(collection.get("dem_outlets", "edge")),
+            mask_geometry=_optional_location_path(
+                location_root,
+                collection.get("dem_mask_geometry", wflow_extent.get("watersheds")),
+            ),
         )
     else:
         river_summary = {
@@ -310,10 +354,26 @@ def refresh_wflow_hydrography_basemap(settings, *, skip_existing=False):
     static_sources = config.get("static_sources", {})
 
     hydrography_nc = _location_path(location_root, collection.get("hydromt_basemap", "data/wflow/hydrography/us_hydrography_basemap.nc"))
+    river_gpkg = _location_path(location_root, collection.get("river_geometry", "data/sources/national_hydrography/nhdplus_hr_river_geometry.gpkg"))
     manifest = Path(paths.get("source_artifacts_root", location_root / "data/sources/source_artifacts")) / "national_hydrography_wflow_sources.json"
     target_resolution_degrees = float(collection.get("basemap_source_resolution_degrees", 1 / 1080))
 
-    if skip_existing and hydrography_nc.exists() and _hydromt_basemap_ready(hydrography_nc, target_resolution_degrees):
+    if (
+        skip_existing
+        and hydrography_nc.exists()
+        and _hydromt_basemap_ready(
+            hydrography_nc,
+            target_resolution_degrees,
+            expected_outlets=str(collection.get("dem_outlets", "edge")),
+            expected_mask_geometry=str(
+                _optional_location_path(
+                    location_root,
+                    collection.get("dem_mask_geometry", wflow_extent.get("watersheds")),
+                )
+                or ""
+            ),
+        )
+    ):
         return {
             "status": "reused",
             "reused": True,
@@ -339,6 +399,14 @@ def refresh_wflow_hydrography_basemap(settings, *, skip_existing=False):
         hydrography_nc,
         target_resolution_degrees=target_resolution_degrees,
         min_stream_uparea_km2=float(collection.get("min_stream_uparea_km2", 5.0)),
+        river_geometry=river_gpkg if river_gpkg.exists() else None,
+        river_burn_method=str(collection.get("dem_river_burn_method", "uparea")),
+        river_burn_depth=float(collection.get("dem_river_burn_depth_m", 5.0)),
+        outlets=str(collection.get("dem_outlets", "edge")),
+        mask_geometry=_optional_location_path(
+            location_root,
+            collection.get("dem_mask_geometry", wflow_extent.get("watersheds")),
+        ),
     )
     _update_hydrography_manifest(
         manifest,
@@ -588,8 +656,18 @@ def write_dem_derived_hydromt_basemap(
     *,
     target_resolution_degrees=1 / 1080,
     min_stream_uparea_km2=5.0,
+    river_geometry=None,
+    river_burn_method="uparea",
+    river_burn_depth=5.0,
+    outlets="edge",
+    mask_geometry=None,
 ):
-    """Write HydroMT-Wflow RasterDataset variables from a local USGS 3DEP DEM."""
+    """Write HydroMT-Wflow RasterDataset variables from a local USGS 3DEP DEM.
+
+    When reviewed river geometry is available, burn it into the DEM before deriving D8
+    flow directions. This keeps flat reservoirs/floodplains from being resolved as
+    artificial diagonal flow paths by the depression-filling algorithm.
+    """
     import hydromt  # noqa: F401
     from hydromt.gis import flw
 
@@ -611,6 +689,9 @@ def write_dem_derived_hydromt_basemap(
         if factor > 1:
             dem = dem.coarsen(y=factor, x=factor, boundary="trim").mean()
             dem = dem.rio.write_crs(dem.rio.crs)
+        mask = _load_mask_geometry(mask_geometry, target_crs=dem.rio.crs)
+        if mask is not None:
+            dem = dem.rio.clip(mask.geometry.values, mask.crs, drop=False, all_touched=True)
         dem = dem.astype("float32")
         nodata = dem.rio.nodata
         values = dem.values
@@ -619,17 +700,29 @@ def write_dem_derived_hydromt_basemap(
         finite = np.isfinite(values)
         if not np.any(finite):
             raise ValueError(f"DEM has no finite elevation values: {dem_path}")
-        fill_value = float(np.nanmedian(values))
-        elevtn = np.where(finite, values, fill_value).astype("float32")
+        nodata_value = np.float32(-9999)
+        elevtn = np.where(finite, values, nodata_value).astype("float32")
         dem = dem.copy(data=elevtn)
-        dem = dem.rio.write_nodata(np.float32(-9999), encoded=False)
-        da_flwdir = flw.d8_from_dem(dem, max_depth=-1.0, outlets="edge")
+        dem = dem.rio.write_nodata(nodata_value, encoded=False)
+        burn_rivers = _load_river_burn_geometry(river_geometry, target_crs=dem.rio.crs)
+        da_flwdir = flw.d8_from_dem(
+            dem,
+            max_depth=-1.0,
+            outlets=str(outlets or "edge"),
+            gdf_riv=burn_rivers,
+            riv_burn_method=str(river_burn_method or "uparea"),
+            riv_depth=float(river_burn_depth),
+        )
         flwdir = flw.flwdir_from_da(da_flwdir, ftype="infer", check_ftype=True)
         flwdir_arr = da_flwdir.values.astype("uint8")
         uparea = flwdir.upstream_area(unit="km2").astype("float32")
         strord = flwdir.stream_order().astype("int16")
         basins = flwdir.basins(idxs=flwdir.idxs_pit).astype("int32")
-        stream_mask = (uparea >= float(min_stream_uparea_km2)).astype("uint8")
+        valid = elevtn != nodata_value
+        uparea = np.where(valid, uparea, np.float32(-9999)).astype("float32")
+        strord = np.where(valid, strord, np.int16(0)).astype("int16")
+        basins = np.where(valid, basins, np.int32(0)).astype("int32")
+        stream_mask = (valid & (uparea >= float(min_stream_uparea_km2))).astype("uint8")
 
         ds = xr.Dataset(
             data_vars={
@@ -645,6 +738,11 @@ def write_dem_derived_hydromt_basemap(
                 "source": "USGS 3DEP DEM",
                 "status": "review_required",
                 "review_note": "HydroMT d8_from_dem LDD basemap from local DEM; review stream order, upstream area, and outlets before production.",
+                "river_burn_features": int(len(burn_rivers)) if burn_rivers is not None else 0,
+                "river_burn_method": str(river_burn_method or ""),
+                "outlets": str(outlets or "edge"),
+                "mask_geometry": str(mask_geometry or ""),
+                "masked_cells": int(np.count_nonzero(~valid)),
             },
         )
         ds.raster.set_crs(_hydromt_crs(dem.rio.crs))
@@ -663,6 +761,11 @@ def write_dem_derived_hydromt_basemap(
             "max_uparea_km2": float(np.nanmax(uparea)),
             "stream_cells": int(np.count_nonzero(stream_mask)),
             "resolution_degrees": _coordinate_resolution_degrees(dem, dem.rio.x_dim),
+            "river_burn_features": int(len(burn_rivers)) if burn_rivers is not None else 0,
+            "river_burn_method": str(river_burn_method or ""),
+            "outlets": str(outlets or "edge"),
+            "mask_geometry": str(mask_geometry or ""),
+            "masked_cells": int(np.count_nonzero(~valid)),
         }
     finally:
         if dem is not None:
@@ -670,7 +773,57 @@ def write_dem_derived_hydromt_basemap(
                 dem.close()
 
 
-def hydromt_basemap_readiness(hydrography_nc: Path, target_resolution_degrees: float) -> dict:
+def _load_river_burn_geometry(river_geometry, *, target_crs) -> gpd.GeoDataFrame | None:
+    if river_geometry is None:
+        return None
+    river_path = Path(river_geometry)
+    if not river_path.exists():
+        return None
+    rivers = gpd.read_file(river_path)
+    if rivers.empty:
+        return None
+    if rivers.crs is None:
+        rivers = rivers.set_crs("EPSG:4326")
+    rivers = rivers.to_crs(target_crs)
+    uparea_col = _first_column(rivers, ("uparea", "uparea_km2", "TotDASqKm", "totdasqkm", "drainage_area_km2"))
+    if uparea_col is not None and uparea_col != "uparea":
+        rivers = rivers.copy()
+        rivers["uparea"] = pd.to_numeric(rivers[uparea_col], errors="coerce")
+    elif uparea_col is None:
+        rivers = rivers.copy()
+        rivers["uparea"] = 1.0
+    rivers = rivers[rivers.geometry.notna() & ~rivers.geometry.is_empty].copy()
+    rivers = rivers[pd.to_numeric(rivers["uparea"], errors="coerce").fillna(0.0) > 0].copy()
+    if rivers.empty:
+        return None
+    return rivers
+
+
+def _load_mask_geometry(mask_geometry, *, target_crs) -> gpd.GeoDataFrame | None:
+    if mask_geometry in (None, ""):
+        return None
+    mask_path = Path(mask_geometry)
+    if not mask_path.exists():
+        return None
+    mask = gpd.read_file(mask_path)
+    if mask.empty:
+        return None
+    if mask.crs is None:
+        mask = mask.set_crs("EPSG:4326")
+    mask = mask.to_crs(target_crs)
+    mask = mask[mask.geometry.notna() & ~mask.geometry.is_empty].copy()
+    if mask.empty:
+        return None
+    return mask
+
+
+def hydromt_basemap_readiness(
+    hydrography_nc: Path,
+    target_resolution_degrees: float,
+    *,
+    expected_outlets: str | None = None,
+    expected_mask_geometry: str | None = None,
+) -> dict:
     """Return fast QA for the collected HydroMT-Wflow hydrography basemap.
 
     Wflow land-slope derivation is sensitive to stale geographic CRS metadata. We
@@ -707,17 +860,30 @@ def hydromt_basemap_readiness(hydrography_nc: Path, target_resolution_degrees: f
             )
         )
         crs_ok = epsg == 4326
-        status = "ready" if resolution_ok and crs_ok else "stale"
+        outlets = str(ds.attrs.get("outlets", "") or "")
+        outlets_ok = expected_outlets is None or outlets == str(expected_outlets)
+        mask_geometry = str(ds.attrs.get("mask_geometry", "") or "")
+        mask_ok = expected_mask_geometry is None or mask_geometry == str(expected_mask_geometry or "")
+        status = "ready" if resolution_ok and crs_ok and outlets_ok and mask_ok else "stale"
         messages = []
         if not crs_ok:
             messages.append(f"crs_epsg={epsg}; expected EPSG:4326")
         if not resolution_ok:
             messages.append(f"resolution={resolution}; expected {target_resolution_degrees}")
+        if not outlets_ok:
+            messages.append(f"outlets={outlets or 'unset'}; expected {expected_outlets}")
+        if not mask_ok:
+            messages.append(f"mask_geometry={mask_geometry or 'unset'}; expected {expected_mask_geometry}")
         return {
             "status": status,
             "path": str(hydrography_nc),
             "crs_epsg": epsg,
             "resolution_degrees": resolution,
+            "river_burn_features": int(ds.attrs.get("river_burn_features", 0) or 0),
+            "river_burn_method": str(ds.attrs.get("river_burn_method", "") or ""),
+            "outlets": outlets,
+            "mask_geometry": mask_geometry,
+            "masked_cells": int(ds.attrs.get("masked_cells", 0) or 0),
             "message": "; ".join(messages) if messages else "ready",
         }
     except Exception as exc:
@@ -733,8 +899,22 @@ def hydromt_basemap_readiness(hydrography_nc: Path, target_resolution_degrees: f
             ds.close()
 
 
-def _hydromt_basemap_ready(hydrography_nc: Path, target_resolution_degrees: float) -> bool:
-    return hydromt_basemap_readiness(hydrography_nc, target_resolution_degrees)["status"] == "ready"
+def _hydromt_basemap_ready(
+    hydrography_nc: Path,
+    target_resolution_degrees: float,
+    *,
+    expected_outlets: str | None = None,
+    expected_mask_geometry: str | None = None,
+) -> bool:
+    return (
+        hydromt_basemap_readiness(
+            hydrography_nc,
+            target_resolution_degrees,
+            expected_outlets=expected_outlets,
+            expected_mask_geometry=expected_mask_geometry,
+        )["status"]
+        == "ready"
+    )
 
 
 def _coordinate_resolution_degrees(data_array, coord: str) -> float:

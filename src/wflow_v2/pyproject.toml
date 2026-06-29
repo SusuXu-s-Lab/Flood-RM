@@ -1,0 +1,17 @@
+[project]
+name = "wflow-boundary-native-refactor"
+version = "0.2.0"
+description = "Minimal HydroMT-Wflow stochastic boundary-condition component with compatibility shims outside the core package."
+requires-python = ">=3.11"
+dependencies = [
+  "geopandas",
+  "numpy",
+  "pandas",
+  "pyproj",
+  "pyyaml",
+  "xarray",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["wflow_boundary*", "wflow_boundary_compat*"]

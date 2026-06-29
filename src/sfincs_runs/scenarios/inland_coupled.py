@@ -17,6 +17,7 @@ from sfincs_runs.build_base import (
 )
 from sfincs_runs.scenarios.inland_initial_conditions import init_hydrographs
 from wflow_runs.dynamic_handoff import dynamic_handoff_paths, require_handoff
+from wflow_runs.notebook import resolve_location_path
 from wflow_runs.streamflow_realization import wflow_streamflow_gage_overlap
 
 
@@ -843,12 +844,10 @@ def _location_root(paths) -> Path:
 
 
 def _location_path(location_root: Path, value) -> Path:
-    path = Path(value)
-    if path.is_absolute():
-        return path
+    path = resolve_location_path(location_root, value)
     if path.parts[:2] == ("locations", location_root.name):
         return location_root.parents[1] / path
-    return location_root / path
+    return path
 
 
 def _clean(value):

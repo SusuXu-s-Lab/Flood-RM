@@ -24,21 +24,11 @@ from design_events.build_events.compound_timing import (
     attach_empirical_rainfall_lags,
     enrich_rainfall_member_timing,
 )
-from design_events.build_events.probability.dependence import (
-    DriverDependenceModel,
-    check_stress_budget,
-    fit_driver_dependence,
-    fit_storm_type_mixture,
-    sample_mixture_catalog,
-    sample_tail_enriched_catalog,
-)
+from design_events.build_events.probability.dependence import check_stress_budget
 from design_events.build_events.selection import assign_severity_bands
-from design_events.build_events.probability.exceedance import (
-    and_return_period,
-    and_survival_from_cdf,
-    combined_return_period,
-)
+from design_events.build_events.probability.exceedance import and_return_period
 from design_events.build_events.probability.realization import attach_field_preserving_realization
+from design_events_v2.workflow import fit_law, sample_catalog
 from design_events.fit_history.extreme_value import fit_best_distribution
 from design_events.fit_history.return_curve import EmpiricalMarginal, HistoricalPeakMarginal
 
@@ -55,7 +45,7 @@ default_realization_specs = {
 class JointCatalogResult:
     catalog: pd.DataFrame
     budget_report: pd.DataFrame
-    model: DriverDependenceModel
+    model: object
     population_report: pd.DataFrame = None  # per-storm-type fit summary when stratified (Fix 3)
 
 
@@ -113,15 +103,13 @@ def build_tail(
         return _empty_historical_tail_frame(driver_vector)
 
     physical = frame[driver_vector].to_numpy(dtype=float)
-    if hasattr(model, "populations"):
-        freq, sample_rp = combined_return_period(physical, model.populations)
+    if hasattr(model, "populations"):  # MixtureLaw
+        freq, sample_rp = model.combined_return_period(physical)
         frame["and_joint_exceedance_prob"] = np.clip(freq / max(float(model.total_rate), 1e-12), 0.0, 1.0)
-    else:
-        u = np.column_stack(
-            [np.asarray(m.cdf(physical[:, j]), dtype=float) for j, m in enumerate(model.marginals)]
-        )
-        survival = and_survival_from_cdf(np.clip(u, 1e-12, 1.0 - 1e-12), model.vine.cdf)
-        _, sample_rp = and_return_period(survival, model.event_rate)
+    else:  # JointLaw
+        u = model.u(physical)
+        survival = model.S_and(u)
+        _, sample_rp = and_return_period(survival, model.rate)
         frame["and_joint_exceedance_prob"] = survival
         for j, driver in enumerate(driver_vector):
             frame[f"{driver}_u"] = u[:, j]
@@ -345,47 +333,12 @@ def build_joint_catalog(
     if "rainfall" in member_libraries:
         member_libraries["rainfall"] = enrich_rainfall_member_timing(member_libraries["rainfall"])
 
-    marginal_kinds = dependence.get("marginals", {}) or {}
-    driver_kinds = {d: str((marginal_kinds.get(d, {}) or {}).get("kind", "pot")) for d in driver_vector}
-    strat = dependence.get("storm_stratification", {}) or {}
-
+    # Single composable v2 seam (ADR-0021): fit_law dispatches single JointLaw vs storm-type
+    # MixtureLaw; sample_catalog produces the long AND-labeled, importance-weighted catalog.
+    law = fit_law(paired_observations, driver_vector, event_rate, dependence, seed=seed)
+    catalog, _u_selected, _x_selected = sample_catalog(law, config, dependence, seed=seed, id_prefix=id_prefix)
+    model = law
     population_report = None
-    if strat.get("enabled") and "storm_type" in paired_observations.columns:
-        # Fix 3: fit a separate copula per storm-type population and combine their AEPs.
-        model, population_report = fit_storm_type_mixture(
-            paired_observations,
-            driver_vector,
-            marginal_kinds=driver_kinds,
-            base_rate=event_rate,
-            fit_marginal=lambda values, rate, kind: fit_index_marginal(values, event_rate=rate, kind=kind),
-            min_population_events=int(strat.get("min_population_events", 20)),
-            seed=seed,
-        )
-        catalog = sample_mixture_catalog(
-            model,
-            n_catalog,
-            target_band_fractions=band_fractions,
-            severity_bands=severity_bands,
-            pool_size=pool_size,
-            seed=seed,
-            id_prefix=id_prefix,
-        )
-    else:
-        observations = paired_observations[driver_vector].to_numpy(dtype=float)
-        marginals = [
-            fit_index_marginal(observations[:, j], event_rate=event_rate, kind=driver_kinds[driver])
-            for j, driver in enumerate(driver_vector)
-        ]
-        model = fit_driver_dependence(observations, marginals, driver_vector, event_rate, seed=seed)
-        catalog = sample_tail_enriched_catalog(
-            model,
-            n_catalog,
-            target_band_fractions=band_fractions,
-            severity_bands=severity_bands,
-            pool_size=pool_size,
-            seed=seed,
-            id_prefix=id_prefix,
-        )
     budget_report = check_stress_budget(
         catalog,
         config.get("resilience_stress_training", {}) or {},

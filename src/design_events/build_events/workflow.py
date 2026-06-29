@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
 
 from design_events.runtime import build_paths
+from design_events_v2.audit import audit_from_catalog
 from study_location import define_location
 
 
@@ -505,6 +507,14 @@ def materialize_inland_catalog_outputs(
     scenario_catalog = pd.concat([stress_training_catalog, historical_tail_catalog], ignore_index=True, sort=False)
     scenario_catalog.to_csv(paths["scenario_catalog_csv"], index=False)
     scenario_catalog[_replay_columns(scenario_catalog)].copy().to_csv(paths["wflow_scenario_replay_set_csv"], index=False)
+
+    # Reviewer-facing audit summary (ADR-0021), emitted alongside the catalog without
+    # requiring a notebook edit. Catalog-derived sections (band mass, realization
+    # provenance, probability-weight check); model rate read from config when present.
+    event_rate = (((runtime.config.get("event_catalog", {}) or {}).get("dependence", {}) or {}).get("event_rate_per_year"))
+    audit = audit_from_catalog(event_catalog, event_rate=(float(event_rate) if event_rate else None), drivers=["rainfall"])
+    paths["audit_json"] = catalog_root / "audit.json"
+    paths["audit_json"].write_text(json.dumps(audit, indent=2, sort_keys=True), encoding="utf-8")
 
     preview_columns = [
         column

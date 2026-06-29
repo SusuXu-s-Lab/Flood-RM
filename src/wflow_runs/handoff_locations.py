@@ -6,12 +6,16 @@ import geopandas as gpd
 import pandas as pd
 from shapely.geometry import Point
 
+RESERVOIR_BOUNDARY_HANDOFF_MODES = {
+    "sfincs_native_reservoir_boundary_inflow",
+}
+
 STREAM_BOUNDARY_HANDOFF_MODES = {
     "stream_boundary_intersection",
     "sfincs_stream_boundary",
     "boundary_stream_intersection",
     "sfincs_native_river_inflow",
-}
+} | RESERVOIR_BOUNDARY_HANDOFF_MODES
 LEGACY_BOUNDARY_HANDOFF_MODES = {"sfincs_domain_boundary", "domain_boundary", "boundary"}
 
 
@@ -25,6 +29,17 @@ def handoff_location_mode(config: dict) -> str:
 
 def uses_stream_boundary_handoff(config: dict) -> bool:
     return handoff_location_mode(config) in STREAM_BOUNDARY_HANDOFF_MODES
+
+
+def _accepted_stream_boundary_artifact_placements(config: dict) -> set[str]:
+    mode = handoff_location_mode(config)
+    if mode == "sfincs_native_river_inflow":
+        return {"sfincs_native_river_inflow"} | RESERVOIR_BOUNDARY_HANDOFF_MODES
+    if mode in RESERVOIR_BOUNDARY_HANDOFF_MODES:
+        return {mode}
+    if mode in {"stream_boundary_intersection", "sfincs_stream_boundary", "boundary_stream_intersection"}:
+        return {"stream_boundary_intersection", "sfincs_stream_boundary", "boundary_stream_intersection"}
+    return {mode} if mode in STREAM_BOUNDARY_HANDOFF_MODES else set()
 
 
 def crossing_handoff_sources(domain_plan) -> gpd.GeoDataFrame:
@@ -140,8 +155,9 @@ def read_stream_boundary_handoff_location_artifacts(
         if frame.empty or "sfincs_handoff_id" not in frame:
             continue
         if "handoff_placement" in frame:
+            accepted_placements = _accepted_stream_boundary_artifact_placements(config)
             frame = frame[
-                frame["handoff_placement"].fillna("").astype(str).str.lower().isin(STREAM_BOUNDARY_HANDOFF_MODES)
+                frame["handoff_placement"].fillna("").astype(str).str.lower().isin(accepted_placements)
             ].copy()
         else:
             frame = frame.iloc[[]].copy()

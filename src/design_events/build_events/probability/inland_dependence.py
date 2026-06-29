@@ -27,6 +27,7 @@ from design_events.build_events.selection import (
     attach_antecedent_soil_moisture,
     default_severity_bands,
 )
+from design_events_v2.probability import select_catalog_indices
 
 
 @dataclass
@@ -237,9 +238,22 @@ def build_inland_catalog(
     pool_rp = 1.0 / np.clip(event_rate * (1.0 - u), 1e-12, None)
     pool_band = assign_severity_bands(pool_rp, severity_bands)
 
-    catalog = _select_band_stratified(
-        pool_rainfall, pool_rp, pool_band, n_catalog, band_fractions, rng, id_prefix=id_prefix
-    )
+    # Tail-Enriched sampler shared with the coastal path (ADR-0021): corrected Sampling
+    # Weight w_b = p_b/q_b and target-filling oversample of thin tail bands (replaces the
+    # old inland-only _select_band_stratified with its inverted weight and replace=False
+    # under-fill). probability_weight = normalized p_b/n_b is unchanged.
+    band_names = list(band_fractions.keys()) if band_fractions else list(pd.unique(pool_band))
+    selection = select_catalog_indices(pool_band.to_numpy(), band_names, n_catalog, band_fractions, rng)
+    catalog = pd.DataFrame(
+        {
+            "rainfall_mm": pool_rainfall[selection.idx],
+            "sample_rp_years": pool_rp[selection.idx],
+            "severity_band": selection.band,
+            "sampling_weight": selection.sampling_weight,
+            "probability_weight": selection.probability_weight,
+        }
+    ).sort_values("sample_rp_years").reset_index(drop=True)
+    catalog.insert(0, "event_id", [f"{id_prefix}_{i:04d}" for i in range(len(catalog))])
     catalog["catalog_role"] = "inland_design"
     catalog["scenario_name"] = "base"
 
@@ -302,44 +316,6 @@ def build_inland_catalog(
         streamflow_reference_pot=streamflow_reference_pot,
         budget_report=budget_report,
     )
-
-
-def _select_band_stratified(pool_value, pool_rp, pool_band, n_catalog, band_fractions, rng, *, id_prefix):
-    """Tail-enriched selection across severity bands with reconstructed probability weights.
-
-    Mirrors the shared sampler's intent: enrich rare/extreme bands to the configured budget by
-    count, while ``probability_weight`` reconstructs the true (body-dominated) mass so the
-    Probability Catalog stays unbiased.
-    """
-    pool = pd.DataFrame({"rainfall_mm": pool_value, "sample_rp_years": pool_rp})
-    if pool_band is not None:
-        pool["severity_band"] = np.asarray(pool_band, dtype=object)
-    else:
-        pool["severity_band"] = "all"
-    band_names = list(band_fractions.keys()) if band_fractions else list(pd.unique(pool["severity_band"]))
-
-    picks = []
-    for band in band_names:
-        frac = float(band_fractions[band]) if band_fractions else (1.0 / len(band_names))
-        target = max(int(round(frac * n_catalog)), 0)
-        band_pool = pool[pool["severity_band"] == band]
-        if band_pool.empty or target == 0:
-            continue
-        take = min(target, len(band_pool))
-        idx = rng.choice(band_pool.index.to_numpy(), size=take, replace=False)
-        chosen = band_pool.loc[idx].copy()
-        true_band_mass = len(band_pool) / len(pool)
-        chosen["sampling_weight"] = float(take) / max(true_band_mass * n_catalog, 1e-9)
-        chosen["probability_weight"] = (true_band_mass / take) if take else 0.0
-        picks.append(chosen)
-
-    catalog = pd.concat(picks, ignore_index=True) if picks else pool.head(n_catalog).copy()
-    total_pw = catalog["probability_weight"].sum()
-    if total_pw > 0:
-        catalog["probability_weight"] = catalog["probability_weight"] / total_pw
-    catalog = catalog.sort_values("sample_rp_years").reset_index(drop=True)
-    catalog.insert(0, "event_id", [f"{id_prefix}_{i:04d}" for i in range(len(catalog))])
-    return catalog
 
 
 def _first_present(frame, candidates):

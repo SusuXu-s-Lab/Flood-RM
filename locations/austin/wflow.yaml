@@ -18,6 +18,9 @@ collection:
 
   national_hydrography:
     collect_review_vectors: true
+    dem_source: data/wflow/static/processed/dem_wflow_coarse.tif
+    dem_mask_geometry: data/static/aoi/wflow_nhdplus_watersheds.geojson
+    dem_outlets: min
     basemap_source_resolution_degrees: 0.000925925925925926
     river_geometry: data/sources/national_hydrography/nhdplus_hr_river_geometry.gpkg
     catchments: data/sources/national_hydrography/nhdplus_hr_catchments.gpkg

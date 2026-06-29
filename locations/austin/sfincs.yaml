@@ -57,7 +57,7 @@ inland_coupling:
     buffer_m: 30000.0
   discharge_forcing:
     source: wflow_dynamic
-    handoff_location: sfincs_native_river_inflow
+    handoff_location: stream_boundary_intersection
     river_upa_km2: 10.0
     river_len_m: 500.0
     river_inflow_buffer_m: 200.0

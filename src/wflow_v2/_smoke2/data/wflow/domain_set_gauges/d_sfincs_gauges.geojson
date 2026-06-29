@@ -1,0 +1,9 @@
+{
+"type": "FeatureCollection",
+"name": "d_sfincs_gauges",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+"features": [
+{ "type": "Feature", "properties": { "index": 1, "name": "a", "sfincs_handoff_id": "a", "sfincs_domain_id": "d", "wflow_submodel_id": "d", "uparea": 1.0 }, "geometry": { "type": "Point", "coordinates": [ 0.0, 0.0 ] } },
+{ "type": "Feature", "properties": { "index": 2, "name": "b", "sfincs_handoff_id": "b", "sfincs_domain_id": "d", "wflow_submodel_id": "d", "uparea": 2.0 }, "geometry": { "type": "Point", "coordinates": [ 1.0, 1.0 ] } }
+]
+}

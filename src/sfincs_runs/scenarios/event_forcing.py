@@ -24,6 +24,7 @@ from sfincs_runs.scenarios.scenarios import (
 )
 from sfincs_runs.scenarios.timing import plan_event_forcing_support_window
 from sfincs_runs.snapwave_setup import era5_spectra_to_snapwave_timeseries
+from wflow_runs.notebook import resolve_location_path
 
 
 @dataclass(frozen=True)
@@ -978,11 +979,8 @@ def _required_catalog_value(catalog, key):
 
 
 def _resolve_catalog_path(value, *, paths):
-    path = Path(str(value))
-    if path.is_absolute():
-        return path
     location_root = Path(paths.get("location_root", "."))
-    return location_root / path
+    return resolve_location_path(location_root, value)
 
 
 def _find_aorc_event_window(event_windows_dir, *, member_id=None, storm_start=None):

@@ -1836,7 +1836,7 @@ def plot_copula_fit_diagnostics(model, paired, *, n=5000, seed=11):
 
     names = list(model.driver_names)
     observed = pv.to_pseudo_obs(np.asfortranarray(paired[names].to_numpy(dtype=float)), ties_method="random", seeds=[int(seed)])
-    simulated = np.asarray(model.vine.simulate(int(n), qrng=True, seeds=[int(seed)]), dtype=float)
+    simulated = np.asarray(model.copula.simulate(int(n), qrng=True, seeds=[int(seed)]), dtype=float)
     fig, ax = plt.subplots(figsize=(6.0, 6.0))
     ax.hexbin(
         simulated[:, 0],
@@ -1849,7 +1849,7 @@ def plot_copula_fit_diagnostics(model, paired, *, n=5000, seed=11):
         label=f"fitted vine sample (n={len(simulated):,})",
     )
     ax.scatter(observed[:, 0], observed[:, 1], s=22, alpha=0.80, color="#d62728", label=f"observed pseudo-obs (n={len(observed):,})")
-    families = ", ".join(sorted({str(f) for row in model.vine.families for f in row})) if hasattr(model.vine, "families") else ""
+    families = ", ".join(sorted({str(f) for row in model.copula.families for f in row})) if hasattr(model.copula, "families") else ""
     ax.set_xlabel(f"u[{names[0]}]")
     ax.set_ylabel(f"u[{names[1]}]")
     ax.set_title(f"Vine copula fit (semiparametric, simulated n={len(simulated):,})\nfamilies: {families}")
@@ -1874,19 +1874,19 @@ def plot_and_joint_isolines(
     if model.dim != 2:
         raise ValueError("AND isoline plot supports exactly two drivers")
     names = list(model.driver_names)
-    u = np.asarray(model.vine.simulate(int(n_sample), qrng=True, seeds=[int(seed)]), dtype=float)
-    x = np.asarray(model.marginals[0].ppf(np.clip(u[:, 0], 1e-9, 1 - 1e-9)), dtype=float)
-    y = np.asarray(model.marginals[1].ppf(np.clip(u[:, 1], 1e-9, 1 - 1e-9)), dtype=float)
-    _, rp_points = and_return_period(and_survival_from_cdf(u, model.vine.cdf), model.event_rate)
+    u = np.asarray(model.copula.simulate(int(n_sample), qrng=True, seeds=[int(seed)]), dtype=float)
+    x = np.asarray(model.stochastic[0].marginal.ppf(np.clip(u[:, 0], 1e-9, 1 - 1e-9)), dtype=float)
+    y = np.asarray(model.stochastic[1].marginal.ppf(np.clip(u[:, 1], 1e-9, 1 - 1e-9)), dtype=float)
+    _, rp_points = and_return_period(and_survival_from_cdf(u, model.copula.cdf), model.rate)
 
     xs = np.linspace(np.quantile(x, 0.01), np.quantile(x, 0.999), grid)
     ys = np.linspace(np.quantile(y, 0.01), np.quantile(y, 0.999), grid)
     xx, yy = np.meshgrid(xs, ys)
     ug = np.column_stack([
-        np.asarray(model.marginals[0].cdf(xx.ravel()), dtype=float),
-        np.asarray(model.marginals[1].cdf(yy.ravel()), dtype=float),
+        np.asarray(model.stochastic[0].marginal.cdf(xx.ravel()), dtype=float),
+        np.asarray(model.stochastic[1].marginal.cdf(yy.ravel()), dtype=float),
     ])
-    _, rp_grid = and_return_period(and_survival_from_cdf(ug, model.vine.cdf), model.event_rate)
+    _, rp_grid = and_return_period(and_survival_from_cdf(ug, model.copula.cdf), model.rate)
     rp_grid = rp_grid.reshape(xx.shape)
     # The vine CDF is a QMC estimate, so the raw RP surface is noisy; smooth in log space
     # to give clean, single-segment isolines (removes jaggedness and duplicate labels).
@@ -1978,7 +1978,7 @@ def plot_population_copula_fits(model, paired, *, n=4000, seed=11):
     fig, axes = plt.subplots(1, len(pops), figsize=(5.2 * len(pops), 5.0), squeeze=False)
     for ax, pop in zip(axes[0], pops):
         sub = paired[paired["storm_type"] == pop.storm_type]
-        simulated = np.asarray(pop.vine.simulate(int(n), qrng=True, seeds=[int(seed)]), dtype=float)
+        simulated = np.asarray(pop.copula.simulate(int(n), qrng=True, seeds=[int(seed)]), dtype=float)
         ax.hexbin(simulated[:, 0], simulated[:, 1], gridsize=30, extent=(0, 1, 0, 1), mincnt=1, cmap="Greys", alpha=0.65)
         if len(sub) >= 2:
             observed = pv.to_pseudo_obs(np.asfortranarray(sub[names].to_numpy(dtype=float)), ties_method="random", seeds=[int(seed)])
@@ -1995,23 +1995,21 @@ def plot_combined_and_isolines(model, *, return_periods=(10, 50, 100, 500), grid
     """Combined AND isolines across storm-type populations."""
     from scipy.ndimage import gaussian_filter
 
-    from design_events.build_events.probability.exceedance import combined_return_period
-
     names = list(model.driver_names)
     # mixture pool for axis ranges and the scatter
     phys_parts, type_parts = [], []
     for k, pop in enumerate(model.populations):
         n_pop = max(50, int(round(int(n_sample) * pop.rate / model.total_rate)))
-        u = np.asarray(pop.vine.simulate(n_pop, qrng=True, seeds=[int(seed) + k]), dtype=float)
+        u = np.asarray(pop.copula.simulate(n_pop, qrng=True, seeds=[int(seed) + k]), dtype=float)
         phys_parts.append(np.column_stack([np.asarray(m.ppf(np.clip(u[:, j], 1e-9, 1 - 1e-9)), dtype=float) for j, m in enumerate(pop.marginals)]))
         type_parts.append(np.array([pop.storm_type] * n_pop))
     phys = np.vstack(phys_parts)
-    _, rp_points = combined_return_period(phys, model.populations)
+    _, rp_points = model.combined_return_period(phys)
 
     xs = np.linspace(np.quantile(phys[:, 0], 0.01), np.quantile(phys[:, 0], 0.999), grid)
     ys = np.linspace(np.quantile(phys[:, 1], 0.01), np.quantile(phys[:, 1], 0.999), grid)
     xx, yy = np.meshgrid(xs, ys)
-    _, rp_grid = combined_return_period(np.column_stack([xx.ravel(), yy.ravel()]), model.populations)
+    _, rp_grid = model.combined_return_period(np.column_stack([xx.ravel(), yy.ravel()]))
     rp_grid = rp_grid.reshape(xx.shape)
     rp_cap = 10.0 * float(max(return_periods))
     finite = rp_grid[np.isfinite(rp_grid)]

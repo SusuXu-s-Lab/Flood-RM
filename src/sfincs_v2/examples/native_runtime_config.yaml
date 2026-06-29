@@ -1,0 +1,24 @@
+paths:
+  base_model_root: data/sfincs/base
+  scenarios_root: data/sfincs/scenarios
+  storage_root: data/sfincs/run_outputs
+  run_root: data/sfincs/run_stage
+  data_catalog: data/static/data_catalogue.yaml
+  event_catalog: data/event_catalog/catalog/event_catalog.csv
+
+inland_coupling:
+  discharge_forcing:
+    source_contract: data/sfincs/base/gis/wflow_handoff_sources.geojson
+    hydrography: us_hydrography_basemap
+    river_upa_km2: 5.0
+    river_len_m: 500.0
+    river_inflow_buffer_m: 200.0
+    river_width_m: 0.0
+  direct_rainfall:
+    enabled: true
+    cumulative_input: true
+    time_label: right
+    buffer_m: 30000.0
+
+wflow:
+  events_root: data/wflow/events

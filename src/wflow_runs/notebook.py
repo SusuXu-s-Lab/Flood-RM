@@ -96,6 +96,12 @@ def _load_wflow_sfincs_runtime(
     location_name = location_root.name
     sfincs_scenarios_root = location_root / "data/sfincs/scenarios"
     wflow = config.get("wflow", {})
+    readiness_validation = wflow.setdefault("readiness_validation", {})
+    readiness_validation.setdefault(
+        "report",
+        f"data/sfincs/scenarios/{location_name}_dynamic_handoff_readiness.csv",
+    )
+    readiness_validation.setdefault("decision", "required")
     return WflowCoupledNotebookRuntime(
         location_root=location_root,
         location_name=location_name,
@@ -210,8 +216,30 @@ def find_location_root(location_name: str | None = None, *, start: Path | None =
 
 
 def resolve_location_path(location_root: Path, relative_path) -> Path:
+    location_root = Path(location_root)
     path = Path(relative_path)
-    return path if path.is_absolute() else location_root / path
+    if not path.is_absolute():
+        return location_root / path
+    relocated = _relocate_absolute_location_path(location_root, path)
+    return relocated if relocated is not None else path
+
+
+def _relocate_absolute_location_path(location_root: Path, path: Path) -> Path | None:
+    """Map serialized absolute location paths onto the active checkout.
+
+    Generated manifests can move between local workstations and DSAI. If a path
+    was serialized as ``.../locations/<location>/...``, treat the part after the
+    location name as the stable artifact address and resolve it from the current
+    ``location_root``.
+    """
+    location_root = Path(location_root)
+    parts = path.parts
+    marker = ("locations", location_root.name)
+    for index in range(len(parts) - 1):
+        if parts[index : index + 2] == marker:
+            suffix = Path(*parts[index + 2 :])
+            return location_root / suffix
+    return None
 
 
 def exists_table(location_root: Path, named_paths: dict) -> pd.DataFrame:

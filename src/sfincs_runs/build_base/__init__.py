@@ -25,6 +25,7 @@ from sfincs_runs.build_base.inland_base import (
     set_observations,
     write_inland_sfincs_domain_set_manifest,
     write_inland_sfincs_handoff_locations,
+    write_inland_sfincs_handoff_locations_from_wflow_rivers,
 )
 from sfincs_runs.build_base.infiltration import validate_physics
 from sfincs_runs.build_base.static_intake import (
@@ -103,6 +104,7 @@ __all__ = [
     "set_observations",
     "write_inland_sfincs_domain_set_manifest",
     "write_inland_sfincs_handoff_locations",
+    "write_inland_sfincs_handoff_locations_from_wflow_rivers",
     "validate_physics",
     "worldcover_tile_urls",
 ]

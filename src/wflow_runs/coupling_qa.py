@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from wflow_runs.notebook import resolve_location_path
+
 
 @dataclass(frozen=True)
 class CoupledDomainReview:
@@ -330,6 +332,143 @@ def validate_baseflow_against_observed(
     )
 
 
+def validate_handoff_gauge_locations(
+    source_locations,
+    gauge_locations,
+    *,
+    model_crs: str | None = None,
+    max_distance_m: float = 100.0,
+    reservoir_boundary_max_distance_m: float | None = None,
+    submodel_id: str | None = None,
+    raise_on_error: bool = True,
+) -> pd.DataFrame:
+    """Check post-HydroMT Wflow handoff gauges against SFINCS source points."""
+    import geopandas as gpd
+
+    sources = _read_geodataframe(source_locations, gpd)
+    gauges = _read_geodataframe(gauge_locations, gpd)
+    if submodel_id is not None and "wflow_submodel_id" in sources:
+        sources = sources[sources["wflow_submodel_id"].astype(str).eq(str(submodel_id))].copy()
+
+    row: dict[str, object] = {
+        "check": "wflow_gauge_source_distance",
+        "status": "passed",
+        "message": "",
+    }
+    if submodel_id is not None:
+        row["submodel_id"] = str(submodel_id)
+
+    if sources.empty:
+        row.update({"status": "skipped", "message": "no SFINCS handoff sources for submodel"})
+        return _handoff_gauge_location_report(row, raise_on_error=raise_on_error)
+    if gauges.empty:
+        row.update({"status": "failed", "message": "empty Wflow gauges_sfincs layer"})
+        return _handoff_gauge_location_report(row, raise_on_error=raise_on_error)
+    if "sfincs_handoff_id" not in sources:
+        row.update({"status": "failed", "message": "SFINCS source layer lacks sfincs_handoff_id"})
+        return _handoff_gauge_location_report(row, raise_on_error=raise_on_error)
+    if "sfincs_handoff_id" not in gauges and "name" not in gauges:
+        row.update({"status": "failed", "message": "Wflow gauges layer lacks sfincs_handoff_id/name"})
+        return _handoff_gauge_location_report(row, raise_on_error=raise_on_error)
+
+    sources = _normalize_geodataframe_crs(sources, model_crs)
+    gauges = _normalize_geodataframe_crs(gauges, str(sources.crs) if sources.crs is not None else model_crs)
+    sources_m, gauges_m = _project_distance_geometries(sources, gauges)
+
+    source_ids = set(sources_m["sfincs_handoff_id"].astype(str))
+    gauge_ids = _gauge_ids(gauges_m)
+    missing = sorted(source_ids - gauge_ids)
+    stale = sorted(gauge_ids - source_ids)
+    distances: dict[str, float] = {}
+    limits: dict[str, float] = {}
+    for _, source in sources_m.iterrows():
+        gauge_id = str(source["sfincs_handoff_id"])
+        if gauge_id not in gauge_ids:
+            continue
+        matched = _match_gauge(gauges_m, gauge_id)
+        distances[gauge_id] = float(matched.geometry.distance(source.geometry).min())
+        limits[gauge_id] = _handoff_gauge_distance_limit(
+            source,
+            max_distance_m=max_distance_m,
+            reservoir_boundary_max_distance_m=reservoir_boundary_max_distance_m,
+        )
+
+    max_seen = max(distances.values()) if distances else float("nan")
+    too_far = {
+        gauge_id: distance
+        for gauge_id, distance in sorted(distances.items())
+        if distance > limits.get(gauge_id, float(max_distance_m))
+    }
+    status = "passed" if not missing and not stale and not too_far else "failed"
+    too_far_preview = ", ".join(
+        f"{gauge_id}={distance:.1f} m"
+        for gauge_id, distance in list(too_far.items())[:8]
+    )
+    if len(too_far) > 8:
+        too_far_preview += f", +{len(too_far) - 8} more"
+    row.update(
+        {
+            "status": status,
+            "message": (
+                f"max_distance_m={max_seen:.3f}; limit_m={float(max_distance_m):g}; "
+                f"reservoir_limit_m={reservoir_boundary_max_distance_m if reservoir_boundary_max_distance_m is not None else 'none'}; "
+                f"too_far={too_far_preview or 'none'}; missing={missing or 'none'}; stale={stale or 'none'}"
+            ),
+        }
+    )
+    return _handoff_gauge_location_report(row, raise_on_error=raise_on_error)
+
+
+def _handoff_gauge_distance_limit(
+    source,
+    *,
+    max_distance_m: float,
+    reservoir_boundary_max_distance_m: float | None,
+) -> float:
+    if reservoir_boundary_max_distance_m is None:
+        return float(max_distance_m)
+    placement = str(source.get("handoff_placement", "") or "").lower()
+    if placement == "sfincs_native_reservoir_boundary_inflow":
+        return float(reservoir_boundary_max_distance_m)
+    return float(max_distance_m)
+
+
+def _read_geodataframe(value, gpd):
+    if hasattr(value, "geometry") and hasattr(value, "crs"):
+        return value.copy()
+    return gpd.read_file(value)
+
+
+def _normalize_geodataframe_crs(gdf, model_crs: str | None):
+    if model_crs is not None:
+        if gdf.crs is None:
+            return gdf.set_crs(model_crs)
+        return gdf.to_crs(model_crs)
+    return gdf
+
+
+def _handoff_gauge_location_report(row: dict, *, raise_on_error: bool) -> pd.DataFrame:
+    report = pd.DataFrame([row])
+    failed = report[report["status"].isin(["failed", "review_required"])]
+    if raise_on_error and not failed.empty:
+        details = "; ".join(f"{item.check}: {item.message}" for item in failed.itertuples())
+        raise RuntimeError(f"Wflow handoff gauge location QA failed: {details}")
+    return report
+
+
+def _project_distance_geometries(points, targets):
+    crs = points.crs
+    if crs is not None and getattr(crs, "is_projected", False):
+        return points, targets
+    try:
+        target_crs = points.estimate_utm_crs()
+    except Exception:
+        target_crs = None
+    if target_crs is None:
+        target_crs = "EPSG:3857"
+    return points.to_crs(target_crs), targets.to_crs(target_crs)
+
+
 def _handoff_upareas(location_root: Path, reference_gage: str, gpd):
     """Map sfincs_handoff_id -> Wflow uparea, and the reference gage's uparea."""
     uparea_by_handoff: dict[str, float] = {}
@@ -496,8 +635,7 @@ def _match_gauge(gauges, gauge_id: str):
 
 
 def _location_path(location_root: Path, value) -> Path:
-    path = Path(value)
-    return path if path.is_absolute() else location_root / path
+    return resolve_location_path(location_root, value)
 
 
 def _relative_path(path: Path, root: Path) -> str:

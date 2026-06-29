@@ -24,7 +24,9 @@ from design_events.fit_history.paired_observations import (
     calibrate_threshold_for_rate,
     declustered_pot_peaks,
 )
-from design_events.fit_history.tidal import non_tidal_residual
+# Driver-series loading + per-timestamp member libraries are the single source of truth
+# in v2 (ADR-0021); the config/wave-coupling orchestration below stays in the compat shim.
+from design_events_v2.records import load_driver_series, member_library_from_records
 
 # Source-record schemas (see locations/greensboro/data/sources/...). AORC SST stores per-storm
 # basin-mean depths (sparse storm-event series), the rainfall conditioning record; NWM soil
@@ -72,47 +74,6 @@ def _resolve(path, location_root):
     return Path(location_root) / path
 
 
-def load_driver_series(record_specs, *, location_root=None, sites=None):
-    """Read each record spec into a clean ``pd.Series`` on a DatetimeIndex.
-
-    ``sites`` optionally restricts a spec with a ``group_column`` to selected ids
-    (e.g. only frequency-basis streamgages) before aggregation.
-    """
-    series = {}
-    for driver, spec in record_specs.items():
-        path = _resolve(spec["path"], location_root)
-        if not path.exists():
-            raise FileNotFoundError(f"{driver} record not found: {path}")
-        frame = pd.read_csv(path)
-        group_column = spec.get("group_column")
-        if group_column and sites and group_column in frame:
-            frame = frame[frame[group_column].astype(str).isin({str(s) for s in sites})]
-        time_column = spec["time_column"]
-        value_column = spec["value_column"]
-        missing_columns = [column for column in [time_column, value_column] if column not in frame]
-        if missing_columns:
-            raise ValueError(
-                f"{driver} record is missing configured column(s) {missing_columns}: {path}. "
-                "Refresh the source artifact or update event_catalog.dependence.driver_records "
-                "so the dependence sample uses the intended driver timestamp and value."
-            )
-        time = pd.to_datetime(frame[time_column], errors="coerce")
-        value = pd.to_numeric(frame[value_column], errors="coerce")
-        clean = pd.Series(value.to_numpy(dtype=float), index=pd.DatetimeIndex(time)).dropna().sort_index()
-        aggregate = spec.get("aggregate")
-        if aggregate:
-            clean = getattr(clean.groupby(level=0), aggregate)()
-        # transform: 'ntr' replaces the raw total-water-level record with its non-tidal
-        # residual (surge) via utide, so the coastal copula axis and realization see surge,
-        # not tide (Fix 2). The CORA CSV is untouched; the split is computed on the fly.
-        if spec.get("transform") == "ntr":
-            clean = non_tidal_residual(clean, latitude=float(spec["latitude"])).dropna().sort_index()
-        if clean.empty:
-            raise ValueError(f"{driver} record produced no usable values: {path}")
-        series[driver] = clean
-    return series
-
-
 def assemble_paired_observations(record_specs, driver_vector, *, location_root=None, sites=None, **paired_kwargs):
     """Load the records for ``driver_vector`` and build the two-sided POT co-occurrence sample."""
     specs = {driver: record_specs[driver] for driver in driver_vector}
@@ -133,24 +94,6 @@ def assemble_paired_observations_from_config(config, *, location_root=None, site
     return assemble_paired_observations(
         record_specs_from_config(config), driver_vector, location_root=location_root, sites=sites, **params
     )
-
-
-def member_library_from_records(records, *, value_column, time_column, index_column, aggregate="mean", id_prefix, member_file):
-    """Build a per-timestamp member library (field pointers) from driver records.
-
-    One member per timestamp (multi-point/site/layer collapsed by ``aggregate``); each row
-    carries ``member_id``/``member_file``/``time`` plus the realization index column so the
-    Field-Preserving Realization can select and scale a real observed field.
-    """
-    frame = records.copy()
-    frame["_time"] = pd.to_datetime(frame[time_column], errors="coerce")
-    grouped = frame.dropna(subset=["_time"]).groupby("_time", as_index=False)[value_column].agg(aggregate)
-    return pd.DataFrame({
-        "member_id": id_prefix + "_" + grouped["_time"].dt.strftime("%Y%m%dT%H%M%S"),
-        "member_file": str(member_file),
-        "time": grouped["_time"].dt.strftime("%Y-%m-%dT%H:%M:%S"),
-        index_column: grouped[value_column].to_numpy(dtype=float),
-    })
 
 
 def build_member_libraries(config, *, location_root=None):

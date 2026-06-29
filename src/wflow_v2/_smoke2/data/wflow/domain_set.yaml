@@ -1,0 +1,40 @@
+# GENERATED FILE — source: wflow_boundary.domain
+method: sfincs_handoff_artifact_subbasins
+handoff:
+  target: sfincs_discharge_forcing
+  source_standard_name: river_water__volume_flow_rate
+submodels:
+- wflow_submodel_id: d
+  region_kind: subbasin
+  hydromt_region:
+    subbasin:
+    - - 0.0
+      - 1.0
+    - - 0.0
+      - 1.0
+    uparea: 5.0
+  handoff_outlet_region:
+    subbasin:
+    - - 0.0
+      - 1.0
+    - - 0.0
+      - 1.0
+    uparea: 5.0
+  sfincs_domain_ids:
+  - d
+  sfincs_handoff_ids:
+  - a
+  - b
+  handoff_points:
+  - sfincs_handoff_id: a
+    sfincs_domain_id: d
+    lon: 0.0
+    lat: 0.0
+    uparea_km2: 1.0
+  - sfincs_handoff_id: b
+    sfincs_domain_id: d
+    lon: 1.0
+    lat: 1.0
+    uparea_km2: 2.0
+  gauges_fn: data/wflow/domain_set_gauges/d_sfincs_gauges.geojson
+  observation_gauges_fn: null
