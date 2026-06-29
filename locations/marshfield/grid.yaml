@@ -1,6 +1,7 @@
 # Generated SHIFT/GDM/DiTTo grid, not a SMART-DS dataset.
 grid:
   asset_registry: data/power_grid/asset_registry
+  augmented_artifacts: data/static/power_grid/smart_ds_compat
   source_area:
     source: osmnx_place
     extra_areas:
