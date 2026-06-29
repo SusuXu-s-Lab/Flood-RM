@@ -4,7 +4,10 @@
 Use these files first if you are trying to understand the overall catalog workflow.
 
 - `workflow.py`  
-  Runs the main event-catalog workflow. This is the best starting point for understanding how events are sampled, drivers are realized, timing is added, and outputs are written.
+  Runs the core reference-bundle workflow. This is the best starting point for understanding how records become paired POT samples, fitted laws, sampled events, realized drivers, timing metadata, and reviewer bundle outputs.
+
+- `notebook.py`  
+  Contains the notebook-facing runtime loader, coastal policy helpers, source inventory, and inland catalog/replay materialization.
 
 - `runtime.py`  
   Turns a location YAML file and artifact manifests into the runtime configuration used by the workflow. Look here for path handling and catalog plan setup.
@@ -23,13 +26,10 @@ Use these files when working with event probabilities, fitted records, return pe
   Joint-exceedance probability, joint return periods, severity bands, importance weights, joint-law objects, mixture-law objects, and catalog index selection.
 
 - `records.py`  
-  Driver records, fitted marginals, paired POT/co-occurrence samples, coastal NTR handling, and member-library construction.
+  Driver records, fitted marginals, paired POT/co-occurrence samples, coastal NTR handling, config-to-record-spec normalization, and member-library construction.
 
 - `extreme_value.py`  
   POT and block-maxima fitting, distribution selection, return values, bootstrap confidence bands, and EVA plotting helpers.
-
-- `driver_records.py`  
-  Loads real driver records from configuration and converts them into aligned time series and paired observations.
 
 - `mixture.py`  
   Fits and samples storm-type mixtures, especially when different coastal storm populations have different dependence structures.
@@ -58,7 +58,10 @@ Use these files when tracing location-specific catalog behavior.
   Handles coastal NTR/tide behavior, sampled coastal peaks, surge hydrograph templates, member artifacts, and realization audit metadata.
 
 - `inland.py`  
-  Handles inland rainfall-first catalogs, streamflow and soil-moisture roles, Wflow-coupled event artifacts, handoff files, and inland audit manifests.
+  Handles inland rainfall-first reference-bundle normalization, streamflow/soil-moisture role metadata, Wflow-coupled event artifacts, handoff files, and inland audit manifests.
+
+- `streamgage.py`  
+  Builds USGS streamgage event-member tables for the inland external-boundary fluvial path. Notebooks should import streamgage member construction from this module directly.
 
 - `peaks.py`  
   Loads boundary water levels, detrends records, extracts peaks, writes marginal catalogs, and creates threshold-model sensitivity artifacts.

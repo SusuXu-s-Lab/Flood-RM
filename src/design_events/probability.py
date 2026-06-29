@@ -483,27 +483,8 @@ def check_stress_budget(catalog, stress_settings, *, severity_bands=None, raise_
     return report
 
 
-def build_joint_catalog(*args, **kwargs):
-    from design_events.build import build_joint_catalog as _build_joint_catalog
-
-    return _build_joint_catalog(*args, **kwargs)
-
-
-def build_inland_catalog(*args, **kwargs):
-    from design_events.build import build_inland_catalog as _build_inland_catalog
-
-    return _build_inland_catalog(*args, **kwargs)
-
-
-def attach_field_preserving_realization(*args, **kwargs):
-    from design_events.realization import attach_field_preserving_realization as _attach
-
-    return _attach(*args, **kwargs)
-
-
 __all__ = [
     "Band", "default_bands", "assign_band", "default_severity_bands", "assign_severity_bands",
-    "build_joint_catalog", "build_inland_catalog", "attach_field_preserving_realization",
     "check_stress_budget",
     "and_survival_from_cdf", "and_survival_empirical", "and_survival", "and_return_period",
     "combined_and_frequency", "combined_return_period",

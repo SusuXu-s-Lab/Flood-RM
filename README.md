@@ -2,7 +2,9 @@
 
 ![Flood-RM](artifacts/FLOOD-RM_README_img.png)
 
-**In-progress** Flood-RM prepares the following data pipeline:
+--- **WORK IN PROGRESS** --- 
+
+Flood-RM prepares the following data pipeline:
 
 ### 1. Synthetic Distribution Feeder
 
