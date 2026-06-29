@@ -11,8 +11,8 @@ import xarray as xr
 
 from .domain import domain_submodels, plan_domain
 from .paths import location_path
-from wflow_boundary_compat.catalog import ensure_local_catalog
-from wflow_boundary_compat.hydromt_native import build_model, workflow_steps
+from wflow_v2.wflow_boundary_compat.catalog import ensure_local_catalog
+from wflow_v2.wflow_boundary_compat.hydromt_native import build_model, workflow_steps
 
 
 DEFAULT_Q_STANDARD_NAME = "river_water__volume_flow_rate"

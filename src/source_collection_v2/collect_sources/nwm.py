@@ -5,9 +5,9 @@ from pathlib import Path
 import pandas as pd
 import xarray as xr
 
-from design_events.stochastic_boundary.audit import Artifact, covers, resolve, write_artifact
-from design_events.stochastic_boundary.gridded import open_zarr
-from design_events.stochastic_boundary.hydrology import derive_soilsat_top, nwm_points
+from source_collection_v2.stochastic_boundary.audit import Artifact, covers, resolve, write_artifact
+from source_collection_v2.stochastic_boundary.gridded import open_zarr
+from source_collection_v2.stochastic_boundary.hydrology import derive_soilsat_top, nwm_points
 
 
 def collect(settings: dict, *, skip_existing=False) -> Artifact:

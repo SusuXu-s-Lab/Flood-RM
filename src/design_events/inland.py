@@ -17,9 +17,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from scipy.signal import find_peaks
 
-from design_events_v2.catalog import attach_forcing_members, validate_event_catalog
-from design_events_v2.probability import assign_severity_bands
-from design_events_v2.coastal import hybrid_peak_sample_frame
+from design_events.catalog import attach_forcing_members, validate_event_catalog
+from design_events.probability import assign_severity_bands
+from design_events.coastal import hybrid_peak_sample_frame
 
 
 def build_inland_reference_bundle_inputs(config):

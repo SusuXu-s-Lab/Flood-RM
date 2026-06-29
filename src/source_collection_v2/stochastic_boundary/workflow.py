@@ -8,20 +8,20 @@ import pandas as pd
 
 
 COLLECTORS = {
-    "aorc": "design_events.collect_sources.aorc:collect",
-    "aorc_sst": "design_events.stochastic_boundary.rainfall:collect",
-    "cora": "design_events.collect_sources.cora:collect",
-    "era5": "design_events.collect_sources.era5:collect",
-    "era5_waves": "design_events.collect_sources.era5:collect",
-    "nwm": "design_events.collect_sources.nwm:collect",
-    "usgs": "design_events.collect_sources.usgs:collect",
-    "usgs_streamgages": "design_events.collect_sources.usgs:collect",
-    "hurdat2": "design_events.collect_sources.hurdat2:collect",
-    "lcra_hydromet": "design_events.collect_sources.lcra_hydromet:collect",
-    "stream_geo": "design_events.collect_sources.stream_geo:collect",
-    "stream_geo_nldi": "design_events.collect_sources.stream_geo:collect",
-    "ssurgo": "design_events.collect_sources.ssurgo:collect",
-    "national_hydrography": "design_events.collect_sources.national_hydrography:collect",
+    "aorc": "collect_sources.aorc:collect",
+    "aorc_sst": "source_collection_v2.stochastic_boundary.rainfall:collect",
+    "cora": "collect_sources.cora:collect",
+    "era5": "collect_sources.era5:collect",
+    "era5_waves": "collect_sources.era5:collect",
+    "nwm": "collect_sources.nwm:collect",
+    "usgs": "collect_sources.usgs:collect",
+    "usgs_streamgages": "collect_sources.usgs:collect",
+    "hurdat2": "collect_sources.hurdat2:collect",
+    "lcra_hydromet": "collect_sources.lcra_hydromet:collect",
+    "stream_geo": "collect_sources.stream_geo:collect",
+    "stream_geo_nldi": "collect_sources.stream_geo:collect",
+    "ssurgo": "collect_sources.ssurgo:collect",
+    "national_hydrography": "collect_sources.national_hydrography:collect",
 }
 
 ORDER = tuple(COLLECTORS)

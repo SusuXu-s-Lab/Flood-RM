@@ -22,7 +22,7 @@ def gauge_discharge(run_model_root: str | Path, gauges_geojson: str | Path, *, r
 def _native_gauge_discharge(run_model_root, gauges_geojson, *, run_output_dir=None, model_cls=None):
     import geopandas as gpd
     from hydromt_wflow import utils as wflow_utils
-    from wflow_boundary_compat.hydromt_native import read_model
+    from wflow_v2.wflow_boundary_compat.hydromt_native import read_model
 
     root = Path(run_model_root)
     model = read_model(root, model_cls=model_cls, mode="r")

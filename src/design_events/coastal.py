@@ -16,13 +16,13 @@ import xarray as xr
 from scipy.signal import find_peaks
 from scipy.stats import ks_2samp, wasserstein_distance
 
-from design_events_v2.records import (
+from design_events.records import (
     coastal_components,
     load_historical_peak_marginal,
     non_tidal_residual,
 )
-from design_events_v2.peaks import load_hourly_waterlevel
-from design_events_v2.probability import assign_severity_bands
+from design_events.peaks import load_hourly_waterlevel
+from design_events.probability import assign_severity_bands
 
 
 def tide_preserving_total_water_level(components, *, ntr_scale_factor=1.0, msl_shift=0.0):
@@ -75,8 +75,8 @@ def coastal_realization_metadata(events, drivers, components=None, config=None):
 
 
 # --------------------------------------------------------------------------------------
-# Production coastal hybrid sampler + surge hydrograph templates/members (moved from
-# design_events.build_events.coastal; ADR-0021). NTR/tide contract preserved: the copula
+# Production coastal hybrid sampler + surge hydrograph templates/members (moved from the
+# legacy nested coastal builders; ADR-0021). NTR/tide contract preserved: the copula
 # and sampler use NTR; tide rides back unscaled in the realized total water level.
 # --------------------------------------------------------------------------------------
 

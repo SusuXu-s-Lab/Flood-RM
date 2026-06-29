@@ -154,7 +154,7 @@ def transpose(ds: xr.Dataset, member: pd.Series | dict) -> xr.Dataset:
 
 def build_aorc_sst(settings: dict, *, skip_existing=True, opener=None) -> Artifact:
     """Science step: AORC hourly source -> POT/SST rainfall catalog."""
-    from design_events.collect_sources.aorc import open_year
+    from collect_sources.aorc import open_year
 
     paths, spec = settings["paths"], settings["spec"]
     start, end = pd.Timestamp(settings["start"]), pd.Timestamp(settings["end"])

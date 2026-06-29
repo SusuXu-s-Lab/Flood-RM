@@ -280,8 +280,8 @@ def _first_existing_column(frame, candidates):
 
 
 # --------------------------------------------------------------------------------------
-# Production wide-catalog timing (moved from design_events.build_events.compound_timing
-# and design_events.build_events.inland_timing; ADR-0021 convergence). These annotate the
+# Production wide-catalog timing (moved from the legacy compound and inland timing
+# builders; ADR-0021 convergence). These annotate the
 # wide production catalog; the reviewer ``attach_timing`` above stays on the long tables.
 # --------------------------------------------------------------------------------------
 

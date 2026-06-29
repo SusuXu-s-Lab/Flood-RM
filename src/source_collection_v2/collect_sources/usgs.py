@@ -8,7 +8,7 @@ import geopandas as gpd
 import pandas as pd
 import requests
 
-from design_events.stochastic_boundary.audit import Artifact, covers, resolve, write_artifact
+from source_collection_v2.stochastic_boundary.audit import Artifact, covers, resolve, write_artifact
 
 SITE_URL = "https://waterservices.usgs.gov/nwis/site/"
 DV_URL = "https://waterservices.usgs.gov/nwis/dv/"

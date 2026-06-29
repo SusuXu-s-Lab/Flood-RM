@@ -16,15 +16,15 @@ import numpy as np
 import pandas as pd
 import pyvinecopulib as pv
 
-from design_events_v2.coastal import coastal_realization_metadata
-from design_events_v2.catalog import ReferenceBundle, write_reference_bundle
-from design_events_v2.runtime import build_paths
-from design_events_v2.audit import audit_from_catalog as _audit_from_catalog
+from design_events.coastal import coastal_realization_metadata
+from design_events.catalog import ReferenceBundle, write_reference_bundle
+from design_events.runtime import build_paths
+from design_events.audit import audit_from_catalog as _audit_from_catalog
 from study_location import define_location
-from design_events_v2.diagnostics import audit_diagnostics
-from design_events_v2.inland import build_inland_reference_bundle_inputs, inland_reference_metadata
-from design_events_v2.mixture import fit_mixture_law, sample_mixture
-from design_events_v2.probability import (
+from design_events.diagnostics import audit_diagnostics
+from design_events.inland import build_inland_reference_bundle_inputs, inland_reference_metadata
+from design_events.mixture import fit_mixture_law, sample_mixture
+from design_events.probability import (
     Driver,
     JointLaw,
     MixtureLaw,
@@ -33,9 +33,9 @@ from design_events_v2.probability import (
     default_bands,
     select_catalog_indices,
 )
-from design_events_v2.realization import realize_driver
-from design_events_v2.records import fit_marginal, load_records, paired_pot
-from design_events_v2.timing import attach_timing
+from design_events.realization import realize_driver
+from design_events.records import fit_marginal, load_records, paired_pot
+from design_events.timing import attach_timing
 
 
 @dataclass(frozen=True)
@@ -398,7 +398,7 @@ __all__ = ["build_reference_bundle", "fit_law", "sample_catalog"]
 
 # --------------------------------------------------------------------------------------
 # Notebook-facing config policies + runtime + catalog/replay materialization
-# (moved from design_events.build_events.workflow; ADR-0021).
+# (moved from the legacy nested workflow; ADR-0021).
 # --------------------------------------------------------------------------------------
 
 

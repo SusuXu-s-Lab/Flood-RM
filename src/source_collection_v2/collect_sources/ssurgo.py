@@ -7,7 +7,7 @@ import geopandas as gpd
 import pandas as pd
 import requests
 
-from design_events.stochastic_boundary.audit import Artifact, resolve, write_artifact
+from source_collection_v2.stochastic_boundary.audit import Artifact, resolve, write_artifact
 
 WFS = "https://sdmdataaccess.nrcs.usda.gov/Spatial/SDMWGS84Geographic.wfs"
 POST = "https://sdmdataaccess.nrcs.usda.gov/tabular/post.rest"

@@ -18,8 +18,8 @@ import xarray as xr
 from shapely.geometry import LineString, box
 from shapely.ops import split
 
-from design_events.collect_sources.ssurgo import ssurgo_attribute_columns
-from design_events.collect_sources.national_hydrography import WBD_MAPSERVER, fetch_nhdplus_hr_catchments, fetch_wbd_huc
+from collect_sources.ssurgo import ssurgo_attribute_columns
+from collect_sources.national_hydrography import WBD_MAPSERVER, fetch_nhdplus_hr_catchments, fetch_wbd_huc
 from sfincs_runs.build_base.crossings import select_encompassing_huc
 from sfincs_runs.build_base.inland_base import (
     plan_inland_sfincs_domain_set,
@@ -535,7 +535,7 @@ def collect_configured_coastal_ssurgo(
     domain: CoastalRegionDomain,
 ) -> pd.Series:
     """Collect SSURGO polygons/attributes and write coastal infiltration rasters."""
-    from design_events.collect_sources.ssurgo import (
+    from collect_sources.ssurgo import (
         fetch_ssurgo_mapunit_attributes,
         fetch_ssurgo_mapunit_polygons,
         normalize_ssurgo_axis_order,

@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 import pandas as pd
 import requests
 
-from design_events.stochastic_boundary.audit import Artifact, resolve, write_artifact
+from source_collection_v2.stochastic_boundary.audit import Artifact, resolve, write_artifact
 
 FIGSHARE_API = "https://api.figshare.com/v2/articles/{article_id}"
 ARTICLE_ID = 24463240

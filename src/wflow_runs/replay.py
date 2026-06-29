@@ -44,7 +44,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from design_events.collect_sources.aorc_event_meteo import (
+from collect_sources.aorc_event_meteo import (
     aorc_wflow_temp_pet_variables,
     prepare_aorc_temp_pet_for_wflow,
 )

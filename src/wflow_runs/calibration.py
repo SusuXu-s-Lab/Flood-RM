@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from design_events.collect_sources.usgs_streamgages import fetch_nwis_discharge_records
+from collect_sources.usgs_streamgages import fetch_nwis_discharge_records
 from wflow_runs.coupling_qa import validate_baseflow_against_observed
 from wflow_runs.dynamic_handoff import dynamic_handoff_paths, plan_handoff
 from wflow_runs.dynamic_handoff_batch import run_handoffs

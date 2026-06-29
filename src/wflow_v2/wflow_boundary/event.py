@@ -14,10 +14,10 @@ from .domain import domain_submodels, model_crs, read_handoff_artifacts, read_ha
 from .paths import event_catalog_path, location_path, write_json
 from .qa import read_acceptance, validate_event_boundary, write_acceptance
 from .states import prepare_event_instate, validate_instates
-from wflow_boundary_compat.catalog import bind_event_catalog_template, ensure_local_catalog, write_event_update_workflow
-from wflow_boundary_compat.hydromt_native import update_model, workflow_steps
-from wflow_boundary_compat.output import gauge_discharge, match_gauge_column
-from wflow_boundary_compat.runner import clean_output_dir, run_solver, zero_event_forcing
+from wflow_v2.wflow_boundary_compat.catalog import bind_event_catalog_template, ensure_local_catalog, write_event_update_workflow
+from wflow_v2.wflow_boundary_compat.hydromt_native import update_model, workflow_steps
+from wflow_v2.wflow_boundary_compat.output import gauge_discharge, match_gauge_column
+from wflow_v2.wflow_boundary_compat.runner import clean_output_dir, run_solver, zero_event_forcing
 
 CFS_TO_CMS = 0.028316846592
 

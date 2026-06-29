@@ -616,7 +616,7 @@ from collect_sources.usgs_streamgages import (
     collect_usgs_streamflow_records,
     write_reviewed_streamgage_network,
 )
-from design_events_v2.runtime import build_paths
+from design_events.runtime import build_paths
 from study_location import define_location
 
 

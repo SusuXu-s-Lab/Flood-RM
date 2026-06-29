@@ -1292,7 +1292,7 @@ def plan_wflow_domain_set_from_encompassing_huc(config, paths) -> WflowDomainSet
 
 def _wbd_huc_loader(config, location_root: Path, coverage_union):
     """Return a level->GeoDataFrame loader over the WBD service for the coverage area."""
-    from design_events.collect_sources.national_hydrography import WBD_MAPSERVER, fetch_wbd_huc
+    from collect_sources.national_hydrography import WBD_MAPSERVER, fetch_wbd_huc
 
     huc_cfg = config.get("wflow", {}).get("domain_set", {}).get("huc", {})
     service_url = str(huc_cfg.get("service_url", WBD_MAPSERVER))

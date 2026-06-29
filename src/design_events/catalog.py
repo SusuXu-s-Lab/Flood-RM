@@ -20,8 +20,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from design_events_v2.runtime import plan
-from design_events_v2.probability import assign_severity_bands
+from design_events.runtime import plan
+from design_events.probability import assign_severity_bands
 
 
 EVENT_COLUMNS = [
@@ -156,7 +156,7 @@ __all__ = [
 
 # --------------------------------------------------------------------------------------
 # Production wide Event Catalog assembly + forcing pairing + validation
-# (moved from design_events.build_events.catalog; ADR-0021).
+# (moved from the legacy nested catalog builders; ADR-0021).
 # --------------------------------------------------------------------------------------
 
 

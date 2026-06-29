@@ -28,9 +28,9 @@ clip_eps = 1e-9
 # --------------------------------------------------------------------------- #
 # Marginals F_j and their extreme-value fit                                  #
 # --------------------------------------------------------------------------- #
-# The extreme-value fit is the single source of truth in design_events_v2.extreme_value
+# The extreme-value fit is the single source of truth in design_events.extreme_value
 # (ADR-0021); the Marginal classes below build on it.
-from design_events_v2.extreme_value import fit_best_distribution, get_frozen_dist
+from design_events.extreme_value import fit_best_distribution, get_frozen_dist
 
 
 class HistoricalPeakMarginal:
@@ -425,9 +425,8 @@ def member_library_from_records(records, *, value_column, time_column, index_col
     })
 
 # --------------------------------------------------------------------------------------
-# EVA-dataset adapter + marginal params/RP CSV schema (moved from
-# design_events.fit_history.return_curve; ADR-0021). Consumed by fit_history.peaks and
-# build_events.coastal.
+# EVA-dataset adapter + marginal params/RP CSV schema (moved from the legacy
+# return-curve helpers; ADR-0021). Consumed by peak-fitting and coastal builders.
 # --------------------------------------------------------------------------------------
 
 

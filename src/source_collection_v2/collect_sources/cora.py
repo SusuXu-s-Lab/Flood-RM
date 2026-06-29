@@ -10,7 +10,7 @@ import requests
 import xarray as xr
 from pyproj import Transformer
 
-from design_events.stochastic_boundary.audit import Artifact, covers, nonempty, resolve, write_artifact
+from source_collection_v2.stochastic_boundary.audit import Artifact, covers, nonempty, resolve, write_artifact
 
 
 def boundary_center(paths: dict, spec: dict) -> tuple[float, float]:

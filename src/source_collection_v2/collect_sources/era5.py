@@ -5,8 +5,8 @@ from pathlib import Path
 import pandas as pd
 import xarray as xr
 
-from design_events.stochastic_boundary.audit import Artifact, covers, netcdf_covers, resolve, write_artifact
-from design_events.stochastic_boundary.gridded import coord, subset
+from source_collection_v2.stochastic_boundary.audit import Artifact, covers, netcdf_covers, resolve, write_artifact
+from source_collection_v2.stochastic_boundary.gridded import coord, subset
 
 CDS_WAVE_VARIABLES = [
     "significant_height_of_combined_wind_waves_and_swell",

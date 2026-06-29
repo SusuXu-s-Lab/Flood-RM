@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from design_events.stochastic_boundary.audit import Artifact, nonempty, write_artifact
-from design_events.stochastic_boundary.gridded import open_zarr, subset
-from design_events.stochastic_boundary.meteo import aorc_source_variables
+from source_collection_v2.stochastic_boundary.audit import Artifact, nonempty, write_artifact
+from source_collection_v2.stochastic_boundary.gridded import open_zarr, subset
+from source_collection_v2.stochastic_boundary.meteo import aorc_source_variables
 
 AORC_ZARR = "s3://noaa-nws-aorc-v1-1-1km/{year}.zarr"
 

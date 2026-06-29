@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 import yaml
 
-from wflow_boundary.paths import location_path
+from wflow_v2.wflow_boundary.paths import location_path
 
 
 _GENERATED = "# GENERATED FILE — source: wflow_boundary_compat.catalog\n"

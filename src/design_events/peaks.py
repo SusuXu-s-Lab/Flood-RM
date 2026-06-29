@@ -6,7 +6,7 @@ import pandas as pd
 import xarray as xr
 from scipy import stats
 
-from design_events_v2.extreme_value import (
+from design_events.extreme_value import (
     bootstrap_return_values,
     eva_block_maxima,
     eva_peaks_over_threshold,
@@ -14,7 +14,7 @@ from design_events_v2.extreme_value import (
     plot_return_values,
     rps_default,
 )
-from design_events_v2.records import (
+from design_events.records import (
     from_eva_dataset,
     marginal_params_frame,
     marginal_rps_frame,

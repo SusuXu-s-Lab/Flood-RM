@@ -14,7 +14,7 @@ from rioxarray.exceptions import NoDataInBounds
 from rioxarray.merge import merge_arrays
 from shapely.geometry import box
 
-from design_events.collect_sources.ssurgo import (
+from collect_sources.ssurgo import (
     fetch_ssurgo_mapunit_attributes,
     fetch_ssurgo_mapunit_polygons,
     normalize_ssurgo_axis_order,

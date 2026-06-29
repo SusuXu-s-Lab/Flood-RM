@@ -5,7 +5,7 @@ import re
 import pandas as pd
 import requests
 
-from design_events.stochastic_boundary.audit import Artifact, nonempty, resolve, write_artifact
+from source_collection_v2.stochastic_boundary.audit import Artifact, nonempty, resolve, write_artifact
 
 URL = "https://www.nhc.noaa.gov/data/hurdat/hurdat2-1851-2023-051124.txt"
 HEADER = re.compile(r"^[A-Z]{2}\d{6}$")

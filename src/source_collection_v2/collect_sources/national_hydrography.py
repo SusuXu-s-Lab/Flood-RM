@@ -6,7 +6,7 @@ import geopandas as gpd
 import pandas as pd
 import requests
 
-from design_events.stochastic_boundary.audit import Artifact, resolve, write_artifact
+from source_collection_v2.stochastic_boundary.audit import Artifact, resolve, write_artifact
 
 NHDPLUS = "https://hydro.nationalmap.gov/arcgis/rest/services/NHDPlus_HR/MapServer"
 LAYERS = {"flowlines": 3, "waterbodies": 9, "catchments": 10}

@@ -7,13 +7,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from design_events_v2.timing import (
+from design_events.timing import (
     attach_empirical_rainfall_lags,
     enrich_rainfall_member_timing,
 )
 
 # Severity bands (dict config schema + assignment) are the single source of truth in v2 (ADR-0021).
-from design_events_v2.probability import assign_severity_bands, default_severity_bands
+from design_events.probability import assign_severity_bands, default_severity_bands
 
 
 def _configured_bands(config):
@@ -705,7 +705,7 @@ def _draw_cooccurrence_lag(role, observed_lags, real_window_hours, seed, index):
     """
     if role not in {"empirical_analog_lag", "high_rainfall_cooccurrence"} or observed_lags is None or len(observed_lags) == 0:
         return None
-    from design_events_v2.realization import draw_lags as draw_relative_lags
+    from design_events.realization import draw_lags as draw_relative_lags
 
     lag = float(draw_relative_lags(1, observed_lags=observed_lags, seed=int(seed) + int(index))[0])
     return float(np.clip(lag, -float(real_window_hours), float(real_window_hours)))

@@ -569,7 +569,7 @@ def _hydromt_subprocess_env(location_root: Path | None = None) -> dict[str, str]
 # Compact notebook-facing workflow verbs. These wrappers import lazily so the
 # Wflow facade does not create circular imports with replay/handoff modules.
 def collect_warmup(*args, **kwargs):
-    from design_events.collect_sources.aorc_sst import collect_warmup
+    from collect_sources.aorc_sst import collect_warmup
 
     return collect_warmup(*args, **kwargs)
 

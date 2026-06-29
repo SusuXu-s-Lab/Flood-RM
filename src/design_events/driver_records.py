@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from design_events_v2.records import (
+from design_events.records import (
     build_paired_observations,
     calibrate_threshold_for_rate,
     declustered_pot_peaks,

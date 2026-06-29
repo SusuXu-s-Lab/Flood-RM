@@ -1,4 +1,4 @@
-"""Source-name collection adapters only; science lives in design_events.stochastic_boundary."""
+"""Source-name collection adapters only; science lives in source_collection_v2.stochastic_boundary."""
 
 from .aorc import collect as collect_aorc
 from .cora import collect as collect_cora

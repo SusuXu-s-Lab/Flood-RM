@@ -1,9 +1,9 @@
 """Copula-joint + inland design-catalog builders (ADR-0021 single source of truth).
 
-The keystone build stage relocated out of design_events.build_events.probability:
+The keystone build stage relocated out of the legacy nested probability builders:
 ``build_joint_catalog`` (copula-joint coastal/compound) and ``build_inland_catalog``
 (rainfall-driven Wflow-coupled), with the shared marginal fit and historical-tail builders.
-Composes the v2 law/realization/timing/selection seams; imports no production design_events.
+Composes the flat law/realization/timing/selection seams.
 """
 from __future__ import annotations
 
@@ -12,23 +12,23 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from design_events_v2.timing import (
+from design_events.timing import (
     attach_empirical_rainfall_lags,
     attach_inland_rainfall_timing,
     enrich_rainfall_member_timing,
 )
-from design_events_v2.probability import (
+from design_events.probability import (
     and_return_period,
     assign_severity_bands,
     check_stress_budget,
     default_severity_bands,
     select_catalog_indices,
 )
-from design_events_v2.realization import attach_field_preserving_realization
-from design_events_v2.records import EmpiricalMarginal, HistoricalPeakMarginal
-from design_events_v2.selection import attach_antecedent_soil_moisture
-from design_events_v2.extreme_value import fit_best_distribution
-from design_events_v2.workflow import fit_law, sample_catalog
+from design_events.realization import attach_field_preserving_realization
+from design_events.records import EmpiricalMarginal, HistoricalPeakMarginal
+from design_events.selection import attach_antecedent_soil_moisture
+from design_events.extreme_value import fit_best_distribution
+from design_events.workflow import fit_law, sample_catalog
 
 
 # Per-driver defaults for mapping a member library onto the realization bridge.

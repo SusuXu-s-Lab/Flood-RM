@@ -10,7 +10,7 @@ import xarray as xr
 
 from .domain import domain_submodels
 from .paths import location_path
-from wflow_boundary_compat.hydromt_native import copy_instate, read_model, set_state_paths
+from wflow_v2.wflow_boundary_compat.hydromt_native import copy_instate, read_model, set_state_paths
 
 
 def warmup_window(reference_time, *, warmup_days: float = 90.0, timestep_seconds: int = 3600) -> tuple[pd.Timestamp, pd.Timestamp]:

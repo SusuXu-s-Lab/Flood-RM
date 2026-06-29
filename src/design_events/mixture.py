@@ -17,14 +17,14 @@ import numpy as np
 import pandas as pd
 import pyvinecopulib as pv
 
-from design_events_v2.probability import (
+from design_events.probability import (
     MixtureLaw,
     assign_band,
     combined_return_period,
     default_bands,
     select_catalog_indices,
 )
-from design_events_v2.records import fit_marginal
+from design_events.records import fit_marginal
 
 clip_eps = 1e-12
 
