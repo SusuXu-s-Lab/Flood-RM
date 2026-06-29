@@ -1,4 +1,4 @@
-"""Storm-type mixture of joint laws (coastal, ADR-0011).
+"""Storm-type mixture of joint laws for coastal events.
 
 Different coastal storm mechanisms (tropical, nor'easter, other) have different
 dependence. Fit a separate vine + marginals per **Storm Type** population, weight each by

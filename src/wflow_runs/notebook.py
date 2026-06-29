@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from copy import deepcopy
 from dataclasses import dataclass
 import importlib.util
 import os
@@ -13,9 +12,8 @@ import sys
 import pandas as pd
 import yaml
 
-from design_events.runtime import load_runtime as load_design_runtime
-from sfincs_runs.config import load_runtime as load_sfincs_runtime
 from study_location import define_location
+from wflow_v2.runtime import build_wflow_runtime
 from wflow_runs.build_plan import (
     build_wflow_build_plan,
     plan_wflow_domain_set,
@@ -86,46 +84,31 @@ def _load_wflow_sfincs_runtime(
     """
     location_root = Path(location_root).resolve()
     repo_root = location_root.parents[1]
-    config, paths = load_sfincs_runtime(location_root / "config.yaml")
-    _, design_paths = load_design_runtime(location_root / "config.yaml")
-    config = deepcopy(config)
-    if wflow_domain_review_required is not None:
-        config["wflow"]["domain_set"]["review_required"] = bool(wflow_domain_review_required)
-    config.setdefault("scenario_run", {})
-
-    location_name = location_root.name
-    sfincs_scenarios_root = location_root / "data/sfincs/scenarios"
-    wflow = config.get("wflow", {})
-    readiness_validation = wflow.setdefault("readiness_validation", {})
-    readiness_validation.setdefault(
-        "report",
-        f"data/sfincs/scenarios/{location_name}_dynamic_handoff_readiness.csv",
+    runtime = build_wflow_runtime(
+        define_location(location_root / "config.yaml"),
+        wflow_domain_review_required=wflow_domain_review_required,
     )
-    readiness_validation.setdefault("decision", "required")
     return WflowCoupledNotebookRuntime(
-        location_root=location_root,
-        location_name=location_name,
+        location_root=runtime.location_root,
+        location_name=runtime.location_name,
         repo_root=repo_root,
-        config=config,
-        paths=paths,
-        design_paths=design_paths,
-        runtime_config=config,
-        sfincs_config=config,
-        wflow_config={"wflow": wflow},
-        sfincs_scenarios_root=sfincs_scenarios_root,
-        scenario_catalog_path=location_root / "data/event_catalog/catalog/scenario_catalog.csv",
-        probability_catalog_path=location_root / "data/event_catalog/catalog/probability_catalog.csv",
-        readiness_path=sfincs_scenarios_root / f"{location_name}_dynamic_handoff_readiness.csv",
-        blocked_path=sfincs_scenarios_root / f"{location_name}_blocked_dynamic_handoffs.csv",
-        accepted_path=sfincs_scenarios_root / f"{location_name}_accepted_dynamic_handoffs.csv",
-        joint_worklist_path=sfincs_scenarios_root / f"{location_name}_joint_wflow_sfincs_worklist.csv",
-        incompatible_path=sfincs_scenarios_root / f"{location_name}_incompatible_dynamic_handoffs.csv",
-        events_root=resolve_location_path(location_root, wflow.get("events_root", "data/wflow/events")),
-        wflow_base_root=resolve_location_path(location_root, wflow.get("base_model_root", "data/wflow/base")),
-        wflow_handoff_manifest=resolve_location_path(
-            location_root,
-            wflow.get("handoff", {}).get("manifest", "data/wflow/domain_set_handoff.yaml"),
-        ),
+        config=runtime.config,
+        paths=runtime.paths,
+        design_paths=runtime.design_paths,
+        runtime_config=runtime.runtime_config,
+        sfincs_config=runtime.sfincs_config,
+        wflow_config=runtime.wflow_config,
+        sfincs_scenarios_root=runtime.sfincs_scenarios_root,
+        scenario_catalog_path=runtime.scenario_catalog_path,
+        probability_catalog_path=runtime.probability_catalog_path,
+        readiness_path=runtime.readiness_path,
+        blocked_path=runtime.blocked_path,
+        accepted_path=runtime.accepted_path,
+        joint_worklist_path=runtime.joint_worklist_path,
+        incompatible_path=runtime.incompatible_path,
+        events_root=runtime.events_root,
+        wflow_base_root=runtime.wflow_base_root,
+        wflow_handoff_manifest=runtime.wflow_handoff_manifest,
     )
 
 
@@ -139,17 +122,37 @@ def load_calibration_runtime(
     When ``create_audit_dirs`` is true, the helper creates the calibration plot
     output directory used by the notebook.
     """
-    base = _load_wflow_sfincs_runtime(location_root, wflow_domain_review_required=False)
-    streamflow_records_path = base.location_root / "data/sources/usgs_streamgages/streamflow_records.csv"
-    event_streamflow_iv_root = base.location_root / "data/sources/usgs_streamgages/event_streamflow_iv"
-    audit_plots_dir = base.location_root / "data/wflow/audit/plots"
-    if create_audit_dirs:
-        audit_plots_dir.mkdir(parents=True, exist_ok=True)
+    location_root = Path(location_root).resolve()
+    repo_root = location_root.parents[1]
+    runtime = build_wflow_runtime(
+        define_location(location_root / "config.yaml"),
+        workflow="calibration",
+        create_audit_dirs=create_audit_dirs,
+    )
     return WflowCalibrationNotebookRuntime(
-        **base.__dict__,
-        streamflow_records_path=streamflow_records_path,
-        event_streamflow_iv_root=event_streamflow_iv_root,
-        audit_plots_dir=audit_plots_dir,
+        location_root=runtime.location_root,
+        location_name=runtime.location_name,
+        repo_root=repo_root,
+        config=runtime.config,
+        paths=runtime.paths,
+        design_paths=runtime.design_paths,
+        runtime_config=runtime.runtime_config,
+        sfincs_config=runtime.sfincs_config,
+        wflow_config=runtime.wflow_config,
+        sfincs_scenarios_root=runtime.sfincs_scenarios_root,
+        scenario_catalog_path=runtime.scenario_catalog_path,
+        probability_catalog_path=runtime.probability_catalog_path,
+        readiness_path=runtime.readiness_path,
+        blocked_path=runtime.blocked_path,
+        accepted_path=runtime.accepted_path,
+        joint_worklist_path=runtime.joint_worklist_path,
+        incompatible_path=runtime.incompatible_path,
+        events_root=runtime.events_root,
+        wflow_base_root=runtime.wflow_base_root,
+        wflow_handoff_manifest=runtime.wflow_handoff_manifest,
+        streamflow_records_path=runtime.streamflow_records_path,
+        event_streamflow_iv_root=runtime.event_streamflow_iv_root,
+        audit_plots_dir=runtime.audit_plots_dir,
     )
 
 

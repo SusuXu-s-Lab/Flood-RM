@@ -1,6 +1,6 @@
 """Extreme-value fitting: POT / block-maxima tails, AIC/BIC selection, return values.
 
-The low-level extreme-value layer under the ``Marginal`` classes (ADR-0021): fit an
+The low-level extreme-value layer under the ``Marginal`` classes: fit an
 AIC/BIC-selected tail (Exp/GPD for POT, Gumbel/GEV for block maxima), convert between
 return period and magnitude, and bootstrap return-value confidence bands. Pure
 scipy/numpy/pandas; ``plot_return_values`` imports matplotlib lazily so headless runs

@@ -133,7 +133,7 @@ def and_survival_empirical(u, reference, *, block_size=256) -> np.ndarray:
 
 def seeded_cdf(copula, seed=0):
     """A reproducible copula CDF callable. A vine ``.cdf`` is QMC Monte-Carlo integration
-    (nondeterministic unless seeded, ADR-0020); pass ``seeds=[seed]``. Analytic copulas
+    (nondeterministic unless seeded); pass ``seeds=[seed]``. Analytic copulas
     whose ``.cdf`` takes no ``seeds`` kwarg pass through unchanged.
     """
     def _cdf(corner):
@@ -145,8 +145,8 @@ def seeded_cdf(copula, seed=0):
 
 
 def and_survival(u, copula, *, method="cdf", n_reference=500_000, seed=0) -> np.ndarray:
-    """AND survival for each event. ``method`` is explicit (ADR-0020 resolves the
-    auto/cdf ambiguity in production): ``"cdf"`` uses exact inclusion-exclusion over a
+    """AND survival for each event. ``method`` resolves the auto/cdf ambiguity:
+    ``"cdf"`` uses exact inclusion-exclusion over a
     seeded (reproducible) copula CDF; ``"mc"`` uses the Monte-Carlo proportion estimator.
     """
     if method == "cdf":
@@ -300,7 +300,7 @@ class Marginal(Protocol):
 
 @dataclass(frozen=True)
 class Driver:
-    """One catalog driver and its declared physical role (ADR-0011)."""
+    """One catalog driver and its declared physical role."""
 
     name: str
     role: str                    # stochastic | conditioning | response | validation
@@ -411,8 +411,8 @@ def select_catalog_indices(pool_band, band_names, n_catalog, target_band_fractio
 
     ``target_band_fractions=None`` -> proportional draw (counts follow the fitted law,
     ``w_b=1``, ``pi_i=1/n``). Otherwise fill each band ``b`` to its target ``n_b``; every
-    event in the band carries the same Sampling Weight ``w_b = p_b/q_b`` (the one
-    canonical convention, ADR-0020), and ``probability_weight`` normalizes ``w_b`` so it
+    event in the band carries the same Sampling Weight ``w_b = p_b/q_b`` (the canonical
+    convention), and ``probability_weight`` normalizes ``w_b`` so it
     rebuilds the true mass ``p_b`` per band.
     """
     pool_band = np.asarray(pool_band)

@@ -2107,7 +2107,7 @@ def plot_storm_loading_pattern(catalog, *, ax=None):
     """Inland Storm Timing Descriptor: where storms peak within their accumulation window.
 
     Histogram of normalized peak position (0=onset, 1=window end) with front/center/back
-    tercile bands — a diversity axis for the Resilience Stress/Training Set (ADR-0019).
+    tercile bands — a diversity axis for the Resilience Stress/Training Set.
     """
     position = pd.to_numeric(catalog.get("storm_loading_position"), errors="coerce").dropna()
     fig, ax = _axis(ax, (6.5, 4.5))

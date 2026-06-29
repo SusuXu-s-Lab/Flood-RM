@@ -1,4 +1,4 @@
-"""Canonical reviewer-facing Event Catalog bundle for ADR-0020.
+"""Canonical reviewer-facing Event Catalog bundle.
 
 The v2 reference emits two long tables plus one audit JSON:
 
@@ -62,7 +62,7 @@ DRIVER_COLUMNS = [
 
 @dataclass(frozen=True)
 class ReferenceBundle:
-    """In-memory and on-disk handles for the ADR-0020 reference bundle."""
+    """In-memory and on-disk handles for the reference bundle."""
 
     events: pd.DataFrame
     drivers: pd.DataFrame
@@ -156,7 +156,7 @@ __all__ = [
 
 # --------------------------------------------------------------------------------------
 # Production wide Event Catalog assembly + forcing pairing + validation
-# (moved from the legacy nested catalog builders; ADR-0021).
+# (moved from the legacy nested catalog builders).
 # --------------------------------------------------------------------------------------
 
 

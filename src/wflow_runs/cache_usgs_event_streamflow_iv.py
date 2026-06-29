@@ -14,7 +14,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Fetch USGS instantaneous (IV) streamflow hydrographs for Wflow calibration/validation "
-            "(Wflow Readiness) over named historical event windows. ADR-0016: not runtime forcing."
+            "(Wflow Readiness) over named historical event windows; not runtime forcing."
         )
     )
     parser.add_argument("--location", required=True, help="Location name, e.g. greensboro or austin.")

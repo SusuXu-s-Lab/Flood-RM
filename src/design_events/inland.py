@@ -1,4 +1,4 @@
-"""Inland Wflow-coupled reference helpers for ADR-0020.
+"""Inland Wflow-coupled reference helpers.
 
 For inland Wflow-coupled Study Locations, rainfall is the stochastic design driver,
 antecedent soil moisture is conditioning, and streamflow is Wflow response or
@@ -85,8 +85,8 @@ __all__ = ["build_inland_reference_bundle_inputs", "inland_reference_metadata"]
 
 
 # --------------------------------------------------------------------------------------
-# ADR-0017 external-boundary fluvial streamgage path + Wflow handoff manifest
-# (relocated out of legacy build_events.inland; ADR-0021). Not a copula dup — the
+# External-boundary fluvial streamgage path + Wflow handoff manifest
+# (relocated out of legacy build_events.inland). Not a copula dup — the
 # streamgage-network design path is retained as the external-boundary realization.
 # --------------------------------------------------------------------------------------
 

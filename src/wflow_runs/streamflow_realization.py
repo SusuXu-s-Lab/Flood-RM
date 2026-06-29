@@ -381,7 +381,7 @@ def _event_model_rainfall_forcing_rows(event_model_root: Path) -> list[dict]:
             "check": "wflow_no_external_inflow",
             "status": "passed" if not has_inflow else "review_required",
             "message": (
-                "no external river_inflow (rainfall-driven, ADR-0016)"
+                "no external river_inflow (rainfall-driven)"
                 if not has_inflow
                 else "legacy external river_inflow present — rainfall-runoff double-count risk"
             ),

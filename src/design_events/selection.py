@@ -12,7 +12,7 @@ from design_events.timing import (
     enrich_rainfall_member_timing,
 )
 
-# Severity bands (dict config schema + assignment) are the single source of truth in v2 (ADR-0021).
+# Severity bands (dict config schema + assignment) are the single source of truth in v2.
 from design_events.probability import assign_severity_bands, default_severity_bands
 
 

@@ -1,4 +1,4 @@
-"""Thin runtime_config adapter for ADR-0020 reference bundles.
+"""Thin runtime_config adapter for reference bundles.
 
 This module resolves Location Configuration and Source Artifact manifests into the
 plain ``runtime_config`` consumed by ``workflow.build_reference_bundle``. It does
@@ -356,7 +356,7 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 # --------------------------------------------------------------------------------------
 # Production path layout + Event Catalog Plan (relocated out of the legacy runtime and
-# build_events.workflow modules; ADR-0021).
+# build_events.workflow modules).
 # --------------------------------------------------------------------------------------
 
 

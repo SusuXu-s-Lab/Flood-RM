@@ -3,7 +3,7 @@
 v2 keeps the catalog long (one ``drivers`` row per event-driver Field-Preserving
 Realization). The SFINCS/Wflow handoff and the notebooks consume a wide per-driver schema
 (``<driver>_member_id``, ``<driver>_member_file``, ``<driver>_scale_factor``, ...). This
-adapter is the compatibility seam (ADR-0021): it lets ``build_*_catalog`` become thin v2
+adapter is the compatibility seam: it lets ``build_*_catalog`` become thin v2
 wrappers that still emit the wide columns ``materialize_*`` and ``wflow_runs/replay`` read.
 """
 

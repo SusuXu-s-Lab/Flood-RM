@@ -1,4 +1,4 @@
-"""Copula-joint + inland design-catalog builders (ADR-0021 single source of truth).
+"""Copula-joint + inland design-catalog builders.
 
 The keystone build stage relocated out of the legacy nested probability builders:
 ``build_joint_catalog`` (copula-joint coastal/compound) and ``build_inland_catalog``
@@ -332,7 +332,7 @@ def build_joint_catalog(
     if "rainfall" in member_libraries:
         member_libraries["rainfall"] = enrich_rainfall_member_timing(member_libraries["rainfall"])
 
-    # Single composable v2 seam (ADR-0021): fit_law dispatches single JointLaw vs storm-type
+    # Single composable seam: fit_law dispatches single JointLaw vs storm-type
     # MixtureLaw; sample_catalog produces the long AND-labeled, importance-weighted catalog.
     law = fit_law(paired_observations, driver_vector, event_rate, dependence, seed=seed)
     catalog, _u_selected, _x_selected = sample_catalog(law, config, dependence, seed=seed, id_prefix=id_prefix)
@@ -610,7 +610,7 @@ def build_inland_catalog(
     pool_rp = 1.0 / np.clip(event_rate * (1.0 - u), 1e-12, None)
     pool_band = assign_severity_bands(pool_rp, severity_bands)
 
-    # Tail-Enriched sampler shared with the coastal path (ADR-0021): corrected Sampling
+    # Tail-Enriched sampler shared with the coastal path: corrected Sampling
     # Weight w_b = p_b/q_b and target-filling oversample of thin tail bands (replaces the
     # old inland-only _select_band_stratified with its inverted weight and replace=False
     # under-fill). probability_weight = normalized p_b/n_b is unchanged.
@@ -652,7 +652,7 @@ def build_inland_catalog(
     if soil_moisture_members is not None:
         catalog = attach_antecedent_soil_moisture(catalog, soil_moisture_members, config=config)
 
-    # Inland Event Reference Time = true rainfall peak (ADR-0019). rainfall_member_time stays
+    # Inland Event Reference Time = true rainfall peak. rainfall_member_time stays
     # the storm onset (the AORC event-window lookup key); the rainfall peak centres the Wflow
     # forcing window and the storm-loading descriptors are attached for the stress set.
     catalog = attach_inland_rainfall_timing(

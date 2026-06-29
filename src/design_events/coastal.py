@@ -1,4 +1,4 @@
-"""Coastal-only helpers for the ADR-0020 reference bundle.
+"""Coastal-only helpers for the reference bundle.
 
 The v2 coastal contract is narrow: use NTR/surge as the stochastic Driver
 Probability Index and preserve mean sea level + astronomical tide unscaled in metadata
@@ -76,7 +76,7 @@ def coastal_realization_metadata(events, drivers, components=None, config=None):
 
 # --------------------------------------------------------------------------------------
 # Production coastal hybrid sampler + surge hydrograph templates/members (moved from the
-# legacy nested coastal builders; ADR-0021). NTR/tide contract preserved: the copula
+# legacy nested coastal builders). NTR/tide contract preserved: the copula
 # and sampler use NTR; tide rides back unscaled in the realized total water level.
 # --------------------------------------------------------------------------------------
 

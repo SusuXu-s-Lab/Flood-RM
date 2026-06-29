@@ -1,4 +1,4 @@
-"""ADR-0020 reference workflow.
+"""Reference workflow.
 
 The public Interface is intentionally small: ``build_reference_bundle`` takes an
 Event Catalog-style config plus Source Artifact paths, then writes the reviewer-facing
@@ -114,7 +114,7 @@ def fit_law(paired, driver_vector, event_rate, dependence, *, seed=0):
     """Fit the joint law over the stochastic Driver Probability Indices (the public seam).
 
     Dispatches to a storm-type **MixtureLaw** when ``storm_stratification`` is enabled and the
-    paired sample carries a ``storm_type`` column (ADR-0011), else a single **JointLaw**.
+    paired sample carries a ``storm_type`` column, else a single **JointLaw**.
     """
     strat = dependence.get("storm_stratification", {}) or {}
     if strat.get("enabled") and "storm_type" in getattr(paired, "columns", []):
@@ -398,7 +398,7 @@ __all__ = ["build_reference_bundle", "fit_law", "sample_catalog"]
 
 # --------------------------------------------------------------------------------------
 # Notebook-facing config policies + runtime + catalog/replay materialization
-# (moved from the legacy nested workflow; ADR-0021).
+# (moved from the legacy nested workflow).
 # --------------------------------------------------------------------------------------
 
 
@@ -763,7 +763,7 @@ def materialize_inland_catalog_outputs(
     scenario_catalog.to_csv(paths["scenario_catalog_csv"], index=False)
     scenario_catalog[_replay_columns(scenario_catalog)].copy().to_csv(paths["wflow_scenario_replay_set_csv"], index=False)
 
-    # Reviewer-facing audit summary (ADR-0021), emitted alongside the catalog without
+    # Reviewer-facing audit summary, emitted alongside the catalog without
     # requiring a notebook edit. Catalog-derived sections (band mass, realization
     # provenance, probability-weight check); model rate read from config when present.
     event_rate = (((runtime.config.get("event_catalog", {}) or {}).get("dependence", {}) or {}).get("event_rate_per_year"))

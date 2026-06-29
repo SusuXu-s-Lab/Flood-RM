@@ -12,7 +12,7 @@ From real driver records to fitted marginals, the paired POT sample, and member 
 
 Coastal water level enters as **non-tidal residual** (NTR/surge), never total water level:
 the copula axis and the realization use NTR while the astronomical tide is added back
-unscaled downstream (ADR-0011). Faithful to production ``fit_history`` (reconciled by test).
+unscaled downstream. Faithful to production ``fit_history`` (reconciled by test).
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ clip_eps = 1e-9
 # Marginals F_j and their extreme-value fit                                  #
 # --------------------------------------------------------------------------- #
 # The extreme-value fit is the single source of truth in design_events.extreme_value
-# (ADR-0021); the Marginal classes below build on it.
+# and the Marginal classes below build on it.
 from design_events.extreme_value import fit_best_distribution, get_frozen_dist
 
 
@@ -426,7 +426,7 @@ def member_library_from_records(records, *, value_column, time_column, index_col
 
 # --------------------------------------------------------------------------------------
 # EVA-dataset adapter + marginal params/RP CSV schema (moved from the legacy
-# return-curve helpers; ADR-0021). Consumed by peak-fitting and coastal builders.
+# return-curve helpers). Consumed by peak-fitting and coastal builders.
 # --------------------------------------------------------------------------------------
 
 

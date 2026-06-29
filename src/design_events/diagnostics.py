@@ -1,4 +1,4 @@
-"""Diagnostics for ADR-0020 reference bundle tables.
+"""Diagnostics for reference bundle tables.
 
 Diagnostics consume ``events``, ``drivers``, and ``audit`` only. They do not rebuild
 catalogs, read source data, or stage hydrodynamic forcing.

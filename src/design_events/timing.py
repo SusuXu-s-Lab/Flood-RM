@@ -1,4 +1,4 @@
-"""Timing descriptors for the ADR-0020 reference bundle.
+"""Timing descriptors for the reference bundle.
 
 This module keeps timing as reviewer-facing Event Catalog metadata. It does not stage
 SFINCS/Wflow forcing; it only annotates the long v2 ``events`` and ``drivers`` tables.
@@ -281,7 +281,7 @@ def _first_existing_column(frame, candidates):
 
 # --------------------------------------------------------------------------------------
 # Production wide-catalog timing (moved from the legacy compound and inland timing
-# builders; ADR-0021 convergence). These annotate the
+# builders). These annotate the
 # wide production catalog; the reviewer ``attach_timing`` above stays on the long tables.
 # --------------------------------------------------------------------------------------
 

@@ -138,7 +138,7 @@ def plot_flood_response_diagnostics(response: FloodResponseDiagnostics):
     axes[1].set_ylabel("peak incremental flooded area (km2)")
 
     plotted = False
-    # Use the NTR/surge index (the copula axis, ADR-0011), not the tide-inclusive total
+    # Use the NTR/surge index (the copula axis), not the tide-inclusive total
     # water level, so this panel correlates the same physical coastal driver as the joint model.
     coastal_col = "coastal_peak_m" if "coastal_peak_m" in flood else "coastal_absolute_peak_m"
     coastal_label = "coastal NTR / surge peak (m)" if coastal_col == "coastal_peak_m" else "coastal absolute peak (m)"
