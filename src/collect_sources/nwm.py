@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from design_events.collect_sources.source_artifacts import (
+from collect_sources.source_artifacts import (
     read_source_artifact,
     source_artifact_covers,
     source_artifact_path,
@@ -107,7 +107,7 @@ def collect_streamflow(settings, open_zarr=_open_zarr):
 
 
 def collect_soil_moisture(settings, open_zarr=_open_zarr):
-    from design_events.collect_sources.ssurgo import load_points
+    from collect_sources.ssurgo import load_points
 
     paths = settings["paths"]
     nwm = settings["nwm"]

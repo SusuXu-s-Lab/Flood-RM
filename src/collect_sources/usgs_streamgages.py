@@ -9,7 +9,7 @@ import geopandas as gpd
 import pandas as pd
 import requests
 
-from design_events.collect_sources.source_artifacts import (
+from collect_sources.source_artifacts import (
     read_source_artifact,
     source_artifact_covers,
     source_artifact_path,

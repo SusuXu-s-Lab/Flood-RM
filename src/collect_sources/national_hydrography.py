@@ -13,10 +13,10 @@ import rioxarray as rxr
 from shapely.geometry import box
 import xarray as xr
 
-from design_events.collect_sources.reservoir_conditions import (
+from collect_sources.reservoir_conditions import (
     enrich_wflow_reservoirs_with_public_conditions,
 )
-from design_events.collect_sources.ssurgo import (
+from collect_sources.ssurgo import (
     fetch_ssurgo_mapunit_attributes,
     ssurgo_attribute_columns,
 )

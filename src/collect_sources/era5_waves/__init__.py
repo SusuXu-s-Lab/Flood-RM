@@ -5,15 +5,15 @@ from pathlib import Path
 import pandas as pd
 import xarray as xr
 
-from design_events.collect_sources.era5_waves.cds import (
+from collect_sources.era5_waves.cds import (
     era5_wave_variables,
     fetch_era5_waves,
 )
-from design_events.collect_sources.era5_waves.earthdatahub import (
+from collect_sources.era5_waves.earthdatahub import (
     earthdatahub_wave_variables,
     fetch_era5_waves_from_earthdatahub,
 )
-from design_events.collect_sources.source_artifacts import (
+from collect_sources.source_artifacts import (
     read_source_artifact,
     source_artifact_covers,
     source_artifact_path,

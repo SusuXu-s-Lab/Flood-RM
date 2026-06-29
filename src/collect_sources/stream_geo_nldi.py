@@ -9,11 +9,11 @@ from urllib.parse import urlparse
 import pandas as pd
 import requests
 
-from design_events.collect_sources.national_hydrography import (
+from collect_sources.national_hydrography import (
     STREAM_GEO_FIGSHARE_ARTICLE_ID,
     fetch_nldi_comid,
 )
-from design_events.collect_sources.source_artifacts import write_source_artifact
+from collect_sources.source_artifacts import write_source_artifact
 
 FIGSHARE_ARTICLE_API = "https://api.figshare.com/v2/articles/{article_id}"
 

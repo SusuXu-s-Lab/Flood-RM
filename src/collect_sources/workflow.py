@@ -140,15 +140,15 @@ from tqdm.auto import tqdm as iter_progress
 
 
 def _default_run_collect_funcs():
-    from design_events.collect_sources.aorc_sst import collect_aorc_sst
-    from design_events.collect_sources.cora import collect_cora
-    from design_events.collect_sources.era5_waves import collect_era5_waves
-    from design_events.collect_sources.hurdat2 import collect_hurdat2
-    from design_events.collect_sources.lcra_hydromet import collect_lcra_hydromet
-    from design_events.collect_sources.national_hydrography import collect_national_hydrography
-    from design_events.collect_sources.nwm import collect_nwm
-    from design_events.collect_sources.stream_geo_nldi import collect_stream_geo_nldi
-    from design_events.collect_sources.usgs_streamgages import collect_usgs_streamgages
+    from collect_sources.aorc_sst import collect_aorc_sst
+    from collect_sources.cora import collect_cora
+    from collect_sources.era5_waves import collect_era5_waves
+    from collect_sources.hurdat2 import collect_hurdat2
+    from collect_sources.lcra_hydromet import collect_lcra_hydromet
+    from collect_sources.national_hydrography import collect_national_hydrography
+    from collect_sources.nwm import collect_nwm
+    from collect_sources.stream_geo_nldi import collect_stream_geo_nldi
+    from collect_sources.usgs_streamgages import collect_usgs_streamgages
 
     return {
         "collect_aorc_sst": collect_aorc_sst,
@@ -459,7 +459,7 @@ def prepare(config, paths):
 
 
 def prepare_nwm_soil_moisture_points(config, paths):
-    from design_events.collect_sources.ssurgo import ensure_points_geojson, has_footprint
+    from collect_sources.ssurgo import ensure_points_geojson, has_footprint
 
     spec = config.get("collection", {}).get("nwm", {}).get("soil_moisture", {})
     if not spec or spec.get("points"):
@@ -605,18 +605,18 @@ def _location_path(paths, value):
 
 import matplotlib.pyplot as plt
 
-from design_events.collect_sources import era5_waves as era5_waves_module
-from design_events.collect_sources import lcra_hydromet as lcra_hydromet_module
-from design_events.collect_sources import usgs_streamgages as usgs_streamgages_module
-from design_events.collect_sources.nwm import soil_moisture_csv_has_variables
-from design_events.collect_sources.source_artifacts import source_artifact_covers
-from design_events.collect_sources.usgs_streamgages import (
+from collect_sources import era5_waves as era5_waves_module
+from collect_sources import lcra_hydromet as lcra_hydromet_module
+from collect_sources import usgs_streamgages as usgs_streamgages_module
+from collect_sources.nwm import soil_moisture_csv_has_variables
+from collect_sources.source_artifacts import source_artifact_covers
+from collect_sources.usgs_streamgages import (
     active_streamgage_candidate_artifact_ready,
     build_reviewed_streamgage_decisions,
     collect_usgs_streamflow_records,
     write_reviewed_streamgage_network,
 )
-from design_events.runtime import build_paths
+from design_events_v2.runtime import build_paths
 from study_location import define_location
 
 
@@ -944,7 +944,7 @@ def refresh_wflow_hydrography_basemap(
     force: bool = True,
 ) -> dict:
     """Refresh only the Wflow HydroMT hydrography basemap for notebook use."""
-    from design_events.collect_sources.national_hydrography import (
+    from collect_sources.national_hydrography import (
         refresh_wflow_hydrography_basemap as _refresh_wflow_hydrography_basemap,
     )
 
@@ -1421,7 +1421,7 @@ def _wave_dataset_variables(path):
 
 
 def check_wave_forcing(config, paths):
-    from design_events.collect_sources.era5_waves import era5_wave_short_variables, wave_dataset_covers
+    from collect_sources.era5_waves import era5_wave_short_variables, wave_dataset_covers
 
     required = bool(config.get("coastal_waves", False))
     spec = config.get("collection", {}).get("era5_waves")
@@ -1611,7 +1611,7 @@ def collect_aorc_sst_event_windows(
     *,
     skip_existing=True,
 ) -> pd.Series:
-    from design_events.collect_sources.aorc_sst import collect_aorc_sst_event_windows as _collect_event_windows
+    from collect_sources.aorc_sst import collect_aorc_sst_event_windows as _collect_event_windows
 
     if not collection_plan.has("aorc_sst"):
         raise KeyError("aorc_sst is not configured in the source collection plan")
@@ -1641,7 +1641,7 @@ def repair_aorc_sst_event_window_meteo(
     *,
     skip_existing=True,
 ) -> pd.Series:
-    from design_events.collect_sources.aorc_sst import repair_aorc_sst_event_window_meteo as _repair_event_meteo
+    from collect_sources.aorc_sst import repair_aorc_sst_event_window_meteo as _repair_event_meteo
 
     if not collection_plan.has("aorc_sst"):
         raise KeyError("aorc_sst is not configured in the source collection plan")
@@ -1669,7 +1669,7 @@ def aorc_sst_event_window_readiness(
     paths: dict,
     collection_plan,
 ) -> pd.Series:
-    from design_events.collect_sources.aorc_sst import event_window_variable_readiness
+    from collect_sources.aorc_sst import event_window_variable_readiness
 
     if not collection_plan.has("aorc_sst"):
         raise KeyError("aorc_sst is not configured in the source collection plan")
