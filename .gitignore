@@ -6,6 +6,7 @@ dist/
 wheels/
 *.egg-info
 AGENTS.md
+CONTEXT.md
 .pytest_cache
 
 # environments
@@ -45,6 +46,9 @@ locations/greensboro/02_flood/06*
 locations/*/02_flood/07*
 locations/*/02_flood/08*
 src/fiat_runs
-AGENTS.md
 docs/
 src/fiat_runs/
+src/power_v2
+src/sfincs_v2
+src/src_collection_v2
+src/wflow_v2
