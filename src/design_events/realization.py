@@ -79,6 +79,10 @@ def draw_lags(n, observed_lags=None, *, default_lag_hours=0.0, seed=0):
     return rng.choice(pool, size=int(n), replace=True)
 
 
+select_analog_realization = select_analog
+draw_relative_lags = draw_lags
+
+
 def realize_driver(catalog, members, *, driver, target_column, index_column,
                    member_id_column="member_id", member_file_column="member_file",
                    time_column=None, design_method="scaled_analog", observed_lags=None,
@@ -178,4 +182,12 @@ def attach_field_preserving_realization(
     return catalog
 
 
-__all__ = ["select_analog", "draw_lags", "realize_driver", "attach_field_preserving_realization", "clip_eps"]
+__all__ = [
+    "select_analog",
+    "select_analog_realization",
+    "draw_lags",
+    "draw_relative_lags",
+    "realize_driver",
+    "attach_field_preserving_realization",
+    "clip_eps",
+]
