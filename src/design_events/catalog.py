@@ -1,6 +1,4 @@
-"""Canonical reviewer-facing Event Catalog bundle.
-
-The v2 reference emits two long tables plus one audit JSON:
+"""Canonical Event Catalog bundle.
 
 * ``events.csv``: one row per Event Catalog row with probability labels and weights.
 * ``drivers.csv``: one row per event-driver Field-Preserving Realization.

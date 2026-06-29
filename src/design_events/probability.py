@@ -1,22 +1,5 @@
 """
-The probability functions for the Design Event Catalog (Layer 1 of the two-layer framework).
-
-    X_j               driver j physical value (a Driver Probability Index)
-    F_j(x)            marginal cdf of driver j
-    U_j = F_j(X_j)    probability-scale index
-    C(u)              copula cdf,  P(U_1<=u_1, ..., U_d<=u_d)
-    S_and(u)          AND survival, P(U_1>u_1, ..., U_d>u_d)
-    nu(x)  = lambda * S_and(F(x))         annual exceedance frequency (1/yr)
-    T_and(x) = 1 / nu(x)                  AND Joint Return Period (years)
-    nu(x)  = sum_g lambda_g S_and,g(x)    storm-type mixture frequency
-    w_b = p_b / q_b                       Sampling Weight (between-band importance)
-    pi_i = p_b / n_b                      Probability Weight (row mass, sums to 1)
-
-``p_b`` is a band's true probability mass in the fitted pool; ``q_b = n_b/n`` is its
-design-catalog sampling fraction. 
-
-The Sampling Weight is the importance weight ``w_b = p_b/q_b`` (``<1`` for an over-sampled tail band);
-production's coastal path uses this convention, the inland path used its reciprocal
+The probability functions for the Design Event Catalog 
 """
 
 from __future__ import annotations

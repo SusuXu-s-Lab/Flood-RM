@@ -1,10 +1,8 @@
 """Stakeholder-readable audit derived from a (wide) Event Catalog.
 
-The reviewer-facing summary of one catalog build: the AND/return-period and weight
-formulas, band true-mass vs design-fraction (the Tail-Enriched importance picture), each
+The AND/return-period and weight formulas, band true-mass vs design-fraction (the Tail-Enriched importance picture), each
 driver's Field-Preserving Realization provenance (unique members, scale-factor spread, max
-reuse), and the probability-weight check. Computed from the catalog DataFrame alone so it
-can be written as ``audit.json`` without the internal fit objects.
+reuse), and the probability-weight check. 
 """
 
 from __future__ import annotations

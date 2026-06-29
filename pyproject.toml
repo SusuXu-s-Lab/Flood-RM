@@ -61,14 +61,10 @@ packages = [
     "src/collect_sources",
     "src/sfincs_runs",
     "src/sfincs_v2",
-    "src/sfincs_v2/sfincs_native_runtime",
     "src/wflow_runs",
     "src/wflow_v2",
-    "src/wflow_v2/wflow_boundary",
-    "src/wflow_v2/wflow_boundary_compat",
     "src/power",
     "src/power_v2",
-    "src/power_v2/nlr_distribution_case",
     "src/fiat_runs",
 ]
 only-include = [

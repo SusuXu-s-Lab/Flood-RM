@@ -1,15 +1,4 @@
 """Load real driver records into aligned Series for paired-observation assembly.
-
-The location-specific data step that feeds `build_paired_observations`: read the
-collected source records (USGS discharge, AORC SST basin-mean storm depths, NWM
-antecedent soil moisture, CORA water level) into per-driver pandas Series on a
-DatetimeIndex, collapsing multi-point / multi-site / multi-layer records to one value
-per timestamp. The downstream copula stages are source-agnostic, so all location
-coupling lives here in the per-driver record specs.
-
-A record spec is ``{"path", "time_column", "value_column", "aggregate"?, "group_column"?}``.
-``aggregate`` (e.g. "mean", "max") collapses duplicate timestamps from gridded/multi-site
-records; ``group_column`` optionally restricts to selected ids (e.g. a frequency-basis gage).
 """
 
 from __future__ import annotations

@@ -1,9 +1,4 @@
 """Copula-joint + inland design-catalog builders.
-
-The keystone build stage relocated out of the legacy nested probability builders:
-``build_joint_catalog`` (copula-joint coastal/compound) and ``build_inland_catalog``
-(rainfall-driven Wflow-coupled), with the shared marginal fit and historical-tail builders.
-Composes the flat law/realization/timing/selection seams.
 """
 from __future__ import annotations
 

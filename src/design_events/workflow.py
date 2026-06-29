@@ -1,9 +1,4 @@
 """Reference workflow.
-
-The public Interface is intentionally small: ``build_reference_bundle`` takes an
-Event Catalog-style config plus Source Artifact paths, then writes the reviewer-facing
-``events.csv`` / ``drivers.csv`` / ``audit.json`` bundle. Production notebooks do not
-call this module.
 """
 
 from __future__ import annotations

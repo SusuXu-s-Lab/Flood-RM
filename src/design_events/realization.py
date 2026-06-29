@@ -1,11 +1,5 @@
 """
 Field-Preserving Realization (Layer 2): a sampled scalar index to an observed field.
-
-Layer 1 (``probability.py``) samples scalar Driver Probability Indices. This bridge maps
-each target to an *observed* member analog plus a scalar scale factor ``K = target/value``
-and a timing lag, so the physical forcing is the real spatio-temporal field (AORC SST
-``netampr`` rainfall, an observed hydrograph) scaled to the target — never a uniform
-scalar. Reuse-penalized kernel-weighted selection keeps the ensemble diverse.
 """
 
 from __future__ import annotations

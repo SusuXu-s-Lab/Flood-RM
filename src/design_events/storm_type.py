@@ -1,12 +1,4 @@
-"""Storm-type classification of historical compound events.
-
-Labels each paired-observation event by the storm population that produced it, so a separate
-copula can be fit per population (``mixture.fit_mixture_law``) and their AEPs combined. A
-``tc`` event has a HURDAT2 tropical-cyclone track point passing within ``radius_km`` of the
-study coast within a few days of the event; the remaining non-tropical events split by season
-into cool-season ``nor_easter`` (the dominant New England surge driver) and warm-season
-``other_non_tropical``. ``unresolved`` covers events the track record cannot adjudicate
-(missing time, or outside the HURDAT2 coverage window).
+"""Storm-type classification of historical compound events from HURDAT2
 """
 
 from __future__ import annotations

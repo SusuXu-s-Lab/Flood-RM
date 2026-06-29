@@ -1,9 +1,4 @@
 """Thin runtime_config adapter for reference bundles.
-
-This module resolves Location Configuration and Source Artifact manifests into the
-plain ``runtime_config`` consumed by ``workflow.build_reference_bundle``. It does
-not collect data, plot, stage hydrodynamic forcing, or import production
-``design_events`` modules.
 """
 
 from __future__ import annotations

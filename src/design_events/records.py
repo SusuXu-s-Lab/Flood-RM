@@ -12,7 +12,7 @@ From real driver records to fitted marginals, the paired POT sample, and member 
 
 Coastal water level enters as **non-tidal residual** (NTR/surge), never total water level:
 the copula axis and the realization use NTR while the astronomical tide is added back
-unscaled downstream. Faithful to production ``fit_history`` (reconciled by test).
+unscaled downstream.
 """
 
 from __future__ import annotations

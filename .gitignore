@@ -50,5 +50,5 @@ docs/
 src/fiat_runs/
 src/power_v2
 src/sfincs_v2
-src/src_collection_v2
+src/source_collection_v2
 src/wflow_v2

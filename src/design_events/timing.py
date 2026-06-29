@@ -1,7 +1,4 @@
 """Timing descriptors for the reference bundle.
-
-This module keeps timing as reviewer-facing Event Catalog metadata. It does not stage
-SFINCS/Wflow forcing; it only annotates the long v2 ``events`` and ``drivers`` tables.
 """
 
 from __future__ import annotations

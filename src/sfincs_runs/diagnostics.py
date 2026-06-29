@@ -1,8 +1,4 @@
 """SFINCS diagnostic tables, probability products, and compatibility exports.
-
-Matplotlib and animation implementations live in :mod:`sfincs_runs.plotting`. This
-module keeps the diagnostic/statistical helpers here and lazily exposes plotting names
-for existing notebooks that still import from ``sfincs_runs.diagnostics``.
 """
 from __future__ import annotations
 

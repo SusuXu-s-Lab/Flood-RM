@@ -1,12 +1,4 @@
 """Storm-type mixture of joint laws for coastal events.
-
-Different coastal storm mechanisms (tropical, nor'easter, other) have different
-dependence. Fit a separate vine + marginals per **Storm Type** population, weight each by
-its share of the distinct-storm rate, and add their AND exceedance frequencies:
-``nu(x) = sum_g lambda_g S_and,g(F_g(x))``. Faithful to production
-``dependence.fit_storm_type_mixture`` / ``sample_mixture_catalog`` (reconciled by test);
-the math (``combined_return_period``) and the importance sampler
-(``select_catalog_indices``) are shared with the single-law path.
 """
 
 from __future__ import annotations

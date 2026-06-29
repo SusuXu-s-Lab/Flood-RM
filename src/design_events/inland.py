@@ -1,8 +1,4 @@
 """Inland Wflow-coupled reference helpers.
-
-For inland Wflow-coupled Study Locations, rainfall is the stochastic design driver,
-antecedent soil moisture is conditioning, and streamflow is Wflow response or
-validation provenance. This module normalizes that role split for v2 reference bundles.
 """
 
 from __future__ import annotations
