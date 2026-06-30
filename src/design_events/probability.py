@@ -505,6 +505,23 @@ def poisson_exceedance_probability(annual_rate) -> np.ndarray:
     return 1.0 - np.exp(-rate)
 
 
+def outcome_coverage(outcomes: pd.DataFrame, events: pd.DataFrame) -> pd.Series:
+    """Coverage receipt for partial/full Event Catalog probability integration."""
+    covered = outcomes[pd.to_numeric(outcomes.get("probability_weight"), errors="coerce").notna()].copy()
+    total_weight = float(pd.to_numeric(events["probability_weight"], errors="coerce").sum())
+    covered_weight = float(pd.to_numeric(covered["probability_weight"], errors="coerce").sum())
+    return pd.Series(
+        {
+            "completed_outcome_events": int(len(covered)),
+            "catalog_weighted_events": int(len(events)),
+            "covered_probability_weight": covered_weight,
+            "catalog_probability_weight": total_weight,
+            "weight_coverage": covered_weight / total_weight if total_weight else np.nan,
+        },
+        name="catalog_probability_coverage",
+    )
+
+
 def completed_runs(storage_root: str | Path) -> pd.DataFrame:
     rows = []
     for path in sorted(Path(storage_root).glob("**/sfincs_map.nc")):
@@ -645,6 +662,6 @@ __all__ = [
     "Marginal", "Driver", "JointLaw", "MixtureLaw",
     "WeightedSelection", "select_catalog_indices",
     "M_TO_FT", "DEFAULT_SFINCS_DEPTH_THRESHOLDS_FT", "DEFAULT_THRESHOLDS_FT",
-    "annual_rate_table", "poisson_exceedance_probability",
+    "annual_rate_table", "poisson_exceedance_probability", "outcome_coverage",
     "completed_runs", "completed_sfincs_runs", "masked_sfincs_depth", "catalog_depth_probability",
 ]

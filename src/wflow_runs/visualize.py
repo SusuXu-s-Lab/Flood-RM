@@ -15,6 +15,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from wflow_v2.qa import (
+    event_peak_discharge_table as _v2_event_peak_discharge_table,
+    plot_event_precipitation_peak_discharge as _v2_plot_event_precipitation_peak_discharge,
+)
+
 
 def plot_wflow_basemap(
     model,
@@ -380,51 +385,12 @@ def event_peak_discharge_table(
     the peak of the summed handoff hydrograph, with the largest individual
     source peak retained for QA.
     """
-    import numpy as np
-    import pandas as pd
-    import xarray as xr
-
-    location_root = Path(location_root)
-    events_root = _resolve_path(location_root, events_root or "data/wflow/events")
-    frame = catalog.copy()
-    if "event_id" not in frame:
-        raise ValueError("catalog must include an event_id column")
-
-    rows = []
-    for _, row in frame.iterrows():
-        event_id = str(row["event_id"])
-        discharge_nc = _event_discharge_path(
-            row,
-            location_root=location_root,
-            events_root=events_root,
-            event_id=event_id,
-            discharge_filename=discharge_filename,
-        )
-        metrics = {
-            "event_id": event_id,
-            "wflow_discharge_nc": str(discharge_nc),
-            "wflow_discharge_exists": discharge_nc.exists(),
-            "peak_discharge_m3s": np.nan,
-            "max_source_peak_discharge_m3s": np.nan,
-            "handoff_source_count": np.nan,
-        }
-        if discharge_nc.exists():
-            with xr.open_dataset(discharge_nc) as ds:
-                if "discharge" in ds and "time" in ds["discharge"].dims:
-                    discharge = ds["discharge"]
-                    source_dims = tuple(dim for dim in discharge.dims if dim != "time")
-                    total = discharge.sum(dim=source_dims, skipna=True) if source_dims else discharge
-                    metrics["peak_discharge_m3s"] = float(total.max(skipna=True))
-                    if source_dims:
-                        source_peak = discharge.max(dim="time", skipna=True)
-                        metrics["max_source_peak_discharge_m3s"] = float(source_peak.max(skipna=True))
-                        metrics["handoff_source_count"] = int(source_peak.size)
-                    else:
-                        metrics["max_source_peak_discharge_m3s"] = metrics["peak_discharge_m3s"]
-                        metrics["handoff_source_count"] = 1
-        rows.append(metrics)
-
-    return frame.merge(pd.DataFrame(rows), on="event_id", how="left")
+    return _v2_event_peak_discharge_table(
+        catalog,
+        location_root=location_root,
+        events_root=events_root,
+        discharge_filename=discharge_filename,
+    )
 
 
 def plot_event_precipitation_peak_discharge(
@@ -438,83 +404,15 @@ def plot_event_precipitation_peak_discharge(
     ax=None,
 ):
     """Plot Event Catalog rainfall against Wflow-generated peak discharge."""
-    import matplotlib.pyplot as plt
-    import numpy as np
-    import pandas as pd
-
-    frame = event_peak_discharge_table(catalog, location_root=location_root, events_root=events_root)
-    rainfall_column = rainfall_column or _first_present(
-        frame,
-        ["rainfall_mm", "rainfall", "event_precipitation_mm", "mean_precip_mm"],
+    return _v2_plot_event_precipitation_peak_discharge(
+        catalog,
+        location_root=location_root,
+        events_root=events_root,
+        rainfall_column=rainfall_column,
+        soil_moisture_column=soil_moisture_column,
+        log_y=log_y,
+        ax=ax,
     )
-    soil_moisture_column = soil_moisture_column or _first_present(
-        frame,
-        ["soil_moisture_metric", "SOILSAT_TOP", "antecedent_soil_moisture", "mean_soil_moisture"],
-    )
-    if rainfall_column is None:
-        raise ValueError("catalog has no recognizable rainfall column")
-
-    plot_frame = frame.copy()
-    plot_frame["event_precipitation_mm"] = pd.to_numeric(plot_frame[rainfall_column], errors="coerce")
-    plot_frame["peak_discharge_m3s"] = pd.to_numeric(plot_frame["peak_discharge_m3s"], errors="coerce")
-    plot_frame = plot_frame.dropna(subset=["event_precipitation_mm", "peak_discharge_m3s"])
-
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(6.5, 5.2), constrained_layout=True)
-    else:
-        fig = ax.figure
-
-    if plot_frame.empty:
-        ax.text(0.5, 0.5, "No completed Wflow discharge artifacts found", ha="center", va="center")
-        ax.set_axis_off()
-        return fig, ax, frame
-
-    if soil_moisture_column and soil_moisture_column in plot_frame:
-        moisture = pd.to_numeric(plot_frame[soil_moisture_column], errors="coerce")
-    else:
-        moisture = pd.Series(np.nan, index=plot_frame.index)
-
-    if moisture.notna().any():
-        points = ax.scatter(
-            plot_frame["event_precipitation_mm"],
-            plot_frame["peak_discharge_m3s"],
-            c=moisture,
-            cmap="turbo_r",
-            s=18,
-            alpha=0.72,
-            edgecolors="none",
-        )
-        fig.colorbar(points, ax=ax, shrink=0.72, label="Antecedent soil moisture [-]")
-    else:
-        ax.scatter(
-            plot_frame["event_precipitation_mm"],
-            plot_frame["peak_discharge_m3s"],
-            color="#2b83ba",
-            s=22,
-            alpha=0.72,
-            edgecolors="white",
-            linewidths=0.25,
-        )
-        ax.text(
-            0.02,
-            0.98,
-            "antecedent soil moisture unavailable",
-            transform=ax.transAxes,
-            ha="left",
-            va="top",
-            fontsize=8,
-        )
-
-    ax.set_xlabel("Event precipitation [mm]")
-    ax.set_ylabel("Peak Wflow handoff discharge [m3 s$^{-1}$]")
-    if log_y:
-        ymin = max(float(plot_frame["peak_discharge_m3s"].min()) * 0.8, 1.0e-3)
-        ymax = float(plot_frame["peak_discharge_m3s"].max()) * 1.25
-        ax.set_yscale("log")
-        ax.set_ylim(ymin, ymax)
-    ax.grid(True, which="both", color="#d9d9d9", linewidth=0.7, alpha=0.8)
-    ax.set_title("Rainfall driver vs Wflow response")
-    return fig, ax, frame
 
 
 def plot_wflow_event_handoff(
@@ -616,38 +514,6 @@ def plot_wflow_event_handoff(
 
 def _first_present(frame, candidates):
     return next((column for column in candidates if column in frame), None)
-
-
-def _resolve_path(location_root: Path, value) -> Path:
-    path = Path(value)
-    return path if path.is_absolute() else location_root / path
-
-
-def _event_discharge_path(
-    row,
-    *,
-    location_root: Path,
-    events_root: Path,
-    event_id: str,
-    discharge_filename: str,
-) -> Path:
-    for column in ("wflow_discharge_forcing", "sfincs_discharge_forcing"):
-        value = row.get(column) if hasattr(row, "get") else None
-        if value not in (None, "") and not _is_missing_value(value):
-            return _resolve_path(location_root, value)
-    value = row.get("wflow_event_dir") if hasattr(row, "get") else None
-    if value not in (None, "") and not _is_missing_value(value):
-        return _resolve_path(location_root, value) / discharge_filename
-    return events_root / event_id / discharge_filename
-
-
-def _is_missing_value(value) -> bool:
-    try:
-        import pandas as pd
-
-        return bool(pd.isna(value))
-    except Exception:
-        return False
 
 
 def _mask_positive(data_array):

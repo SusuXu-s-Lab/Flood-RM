@@ -9,7 +9,7 @@ import pandas as pd
 import xarray as xr
 
 from design_events.catalog import write_event_catalog_audit
-from sfincs_runs.scenarios.coastal_realization import build_timeseries
+from sfincs_v2.coastal import coastal_timeseries_from_catalog_row as build_timeseries
 
 
 def write_handoff(joint_catalog, components, *, config, paths):

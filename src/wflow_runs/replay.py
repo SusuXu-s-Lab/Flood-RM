@@ -33,7 +33,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import json
-import re
 import shlex
 import shutil
 import subprocess
@@ -46,7 +45,7 @@ from collect_sources.aorc_event_meteo import (
     aorc_wflow_temp_pet_variables,
     prepare_aorc_temp_pet_for_wflow,
 )
-from sfincs_runs.hydrology import prepare_aorc_precip_for_sfincs
+from sfincs_v2.hydrology import prepare_aorc_precip_for_sfincs
 from wflow_runs.handoff_locations import read_stream_boundary_handoff_location_artifacts
 from wflow_runs.build_plan import (
     repair_wflow_canopy_parameters,
@@ -77,16 +76,18 @@ from wflow_v2.event import (
     match_gauge_column as _v2_match_gauge_column,
     merge_submodel_discharge as _v2_merge_submodel_discharge,
     _output_csv as _v2_output_csv,
+    catalog_rainfall_start as _v2_catalog_rainfall_start,
+    clean_legacy_replay_submodel_output_dir,
+    legacy_event_catalog_row,
+    required_event_value as _v2_required_event_value,
+    write_legacy_replay_data_catalog,
+    write_legacy_replay_update_config,
 )
 from wflow_v2.runner import clean_output_dir as _v2_clean_output_dir
 from wflow_v2.runner import wflow_run_command as _v2_wflow_run_command
 from wflow_v2.runner import zero_event_forcing as _zero_event_forcing
 
 CFS_TO_CMS = 0.028316846592
-_GENERATED_NOTICE = (
-    "# GENERATED FILE — do not edit. Overwritten when {source} runs.\n"
-    "# Source of truth is the location config and the code that produces this file.\n"
-)
 
 
 # ─── pure helpers (unit-tested) ───────────────────────────────────────────────
@@ -880,21 +881,7 @@ def run_zero_rain_control(
 
 
 def _event_catalog_row(location_root: Path, event_id: str, catalog_path):
-    catalog_path = (
-        Path(catalog_path)
-        if catalog_path
-        else resolve_location_path(location_root, "data/event_catalog/catalog/probability_catalog.csv")
-    )
-    if not catalog_path.is_absolute():
-        catalog_path = location_root / catalog_path
-    catalog = pd.read_csv(catalog_path)
-    catalog["event_id"] = catalog["event_id"].astype(str)
-    match = catalog[catalog["event_id"] == str(event_id)]
-    if match.empty:
-        raise ValueError(f"event_id {event_id!r} not in {catalog_path}")
-    if "event_reference_time" not in match:
-        raise ValueError(f"{catalog_path} has no event_reference_time column")
-    return match.iloc[0]
+    return legacy_event_catalog_row(location_root, event_id, catalog_path)
 
 
 def _event_reference_time(location_root: Path, event_id: str, catalog_path):
@@ -925,20 +912,11 @@ def _event_rainfall_source_nc(config: dict, location_root: Path, row: pd.Series)
 
 
 def _required_event_value(row: pd.Series, key: str):
-    value = row.get(key)
-    if value is None or pd.isna(value) or str(value).strip() == "":
-        raise ValueError(f"Event Catalog row is missing required Wflow forcing field: {key}")
-    return value
+    return _v2_required_event_value(row, key)
 
 
 def _catalog_rainfall_start(row: pd.Series):
-    reference = row.get("event_reference_time")
-    offset = row.get("rainfall_start_offset_hours")
-    if reference is not None and offset is not None and not pd.isna(reference) and not pd.isna(offset):
-        return pd.Timestamp(reference) + pd.Timedelta(hours=float(offset))
-    if reference is None or pd.isna(reference):
-        return None
-    return pd.Timestamp(reference)
+    return _v2_catalog_rainfall_start(row)
 
 
 def _positive_float(value, *, default: float) -> float:
@@ -993,69 +971,15 @@ def _domain_set_submodels(config: dict, location_root: Path) -> list[dict]:
 
 
 def _write_per_event_data_catalog(data_catalog: Path, event_dir: Path, event_id: str) -> Path:
-    """Materialise the data catalog with ``<event_id>`` placeholders bound to this event.
-
-    Source ``uri:`` paths in the base catalog are stored absolute against whatever
-    machine generated them (e.g. a local ``/home/<user>/.../locations/<name>/...``).
-    Re-root each one under the *runtime* location root so the catalog resolves
-    wherever the repo lives (local vs cluster). Paths already relative are made
-    absolute against the location root; paths outside this location are left as-is.
-    """
-    location_root = Path(data_catalog).resolve().parents[2]
-    marker = f"/locations/{location_root.name}/"
-    text = Path(data_catalog).read_text(encoding="utf-8").replace("<event_id>", str(event_id))
-
-    def _reroot(match: "re.Match[str]") -> str:
-        uri = match.group("path").strip()
-        if marker in uri:
-            uri = str(location_root / uri.split(marker, 1)[1])
-        elif not uri.startswith("/"):
-            uri = str(location_root / uri)
-        return f"{match.group('indent')}{uri}"
-
-    text = re.sub(r"(?m)^(?P<indent>\s*uri:\s*)(?P<path>\S.*)$", _reroot, text)
-    out = event_dir / "_replay_data_catalog.yml"
-    notice = (
-        "# GENERATED FILE — do not edit by hand. "
-        "Overwritten when the Wflow event replay step runs.\n"
-    )
-    out.write_text(notice + text, encoding="utf-8")
-    return out
+    return write_legacy_replay_data_catalog(data_catalog, event_dir, event_id)
 
 
 def _write_per_event_update_config(update_cfg: Path, event_dir: Path, start: pd.Timestamp, end: pd.Timestamp) -> Path:
-    """Copy the update-forcing config with the event window substituted into setup_config."""
-    workflow = yaml.safe_load(Path(update_cfg).read_text(encoding="utf-8")) or {}
-    if "setup_config" in workflow:
-        data = workflow["setup_config"].setdefault("data", {})
-        data["time.starttime"] = start.strftime("%Y-%m-%dT%H:%M:%S")
-        data["time.endtime"] = end.strftime("%Y-%m-%dT%H:%M:%S")
-    else:
-        for step in workflow.get("steps", []):
-            if "setup_config" in step:
-                data = step["setup_config"].setdefault("data", {})
-                data["time.starttime"] = start.strftime("%Y-%m-%dT%H:%M:%S")
-                data["time.endtime"] = end.strftime("%Y-%m-%dT%H:%M:%S")
-    out = event_dir / "_wflow_update_forcing.yml"
-    out.write_text(
-        _GENERATED_NOTICE.format(source="the Wflow event replay step")
-        + yaml.safe_dump(workflow, sort_keys=False),
-        encoding="utf-8",
-    )
-    return out
+    return write_legacy_replay_update_config(update_cfg, event_dir, start, end)
 
 
 def _prepare_replay_submodel_output_dir(event_dir: Path, out_dir: Path) -> None:
-    """Remove a generated event-submodel directory before HydroMT rewrites it."""
-    event_dir = Path(event_dir).resolve()
-    out_dir = Path(out_dir).resolve()
-    if out_dir == event_dir or event_dir not in out_dir.parents:
-        raise ValueError(f"refusing to clean replay output outside event dir: {out_dir}")
-    if out_dir.exists():
-        if out_dir.is_dir():
-            shutil.rmtree(out_dir)
-        else:
-            out_dir.unlink()
+    clean_legacy_replay_submodel_output_dir(event_dir, out_dir)
 
 
 def _prepare_wflow_run_output_dir(run_config: Path) -> None:

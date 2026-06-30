@@ -10,6 +10,8 @@ import json
 
 import pandas as pd
 
+from location_runtime import static_sources_with_defaults
+
 
 @dataclass(frozen=True)
 class SourceCollectionStep:
@@ -693,9 +695,6 @@ def load_runtime(
     # Fill in default static_sources keys (bbox, wflow_collection_extent, …) the same
     # way the region-setup runtime does, so locations that don't override them in YAML
     # (greensboro, austin) still resolve the review/QA layers instead of KeyError'ing.
-    # Imported lazily to avoid a circular import with sfincs_runs at module load.
-    from sfincs_runs.build_base.static_intake import static_sources_with_defaults
-
     runtime_config["static_sources"] = static_sources_with_defaults(runtime_config)
 
     if streamgage_review_settings:

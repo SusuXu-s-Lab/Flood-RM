@@ -3,10 +3,8 @@ from sfincs_runs.scenarios.audit import (
     ForcingManifestAudit,
     audit_forcing,
 )
-from sfincs_runs.scenarios.coastal_realization import (
-    build_timeseries,
-    build_coastal_hydrograph_from_analog,
-)
+from sfincs_v2.coastal import build_coastal_hydrograph_from_analog as _v2_build_coastal_hydrograph_from_analog
+from sfincs_v2.coastal import coastal_timeseries_from_catalog_row as build_timeseries
 from sfincs_runs.scenarios.inland_coupled import (
     InlandCoupledForcingStage,
     InlandCoupledExamplePlan,
@@ -27,6 +25,25 @@ from sfincs_runs.scenarios.outcome_catalogue import (
     FloodOutcomeCatalogue,
     build_flood_event_outcome_catalogue,
 )
+
+
+def build_coastal_hydrograph_from_analog(
+    components,
+    peak_time,
+    scale_factor,
+    *,
+    window_hours=72.0,
+    msl_offset_m=0.0,
+):
+    """Compatibility wrapper for legacy relative-hour coastal realizations."""
+    return _v2_build_coastal_hydrograph_from_analog(
+        components,
+        peak_time,
+        scale_factor,
+        window_hours=window_hours,
+        msl_offset_m=msl_offset_m,
+        return_absolute_time=False,
+    )
 
 
 __all__ = [

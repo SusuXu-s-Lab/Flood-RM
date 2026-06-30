@@ -13,7 +13,7 @@ import pandas as pd
 import yaml
 
 from study_location import define_location
-from location_runtime import build_wflow_runtime
+from location_runtime import WflowCalibrationRuntime, WflowRuntime, build_wflow_runtime, resolve_location_path
 from wflow_runs.build_plan import (
     build_wflow_build_plan,
     plan_wflow_domain_set,
@@ -33,43 +33,8 @@ class WflowNotebookContext:
     runtime_config: dict
 
 
-@dataclass(frozen=True)
-class WflowCoupledNotebookRuntime:
-    location_root: Path
-    location_name: str
-    repo_root: Path
-    config: dict
-    paths: dict
-    design_paths: dict
-    runtime_config: dict
-    sfincs_config: dict
-    wflow_config: dict
-    sfincs_scenarios_root: Path
-    scenario_catalog_path: Path
-    probability_catalog_path: Path
-    readiness_path: Path
-    blocked_path: Path
-    accepted_path: Path
-    joint_worklist_path: Path
-    incompatible_path: Path
-    events_root: Path
-    wflow_base_root: Path
-    wflow_handoff_manifest: Path
-
-    def resolve_location_path(self, value) -> Path:
-        return resolve_location_path(self.location_root, value)
-
-    def ensure_parent(self, value) -> Path:
-        path = self.resolve_location_path(value)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        return path
-
-
-@dataclass(frozen=True)
-class WflowCalibrationNotebookRuntime(WflowCoupledNotebookRuntime):
-    streamflow_records_path: Path
-    event_streamflow_iv_root: Path
-    audit_plots_dir: Path
+WflowCoupledNotebookRuntime = WflowRuntime
+WflowCalibrationNotebookRuntime = WflowCalibrationRuntime
 
 
 def _load_wflow_sfincs_runtime(
@@ -83,32 +48,9 @@ def _load_wflow_sfincs_runtime(
     instead of being repeated in notebook cells or location YAML.
     """
     location_root = Path(location_root).resolve()
-    repo_root = location_root.parents[1]
-    runtime = build_wflow_runtime(
+    return build_wflow_runtime(
         define_location(location_root / "config.yaml"),
         wflow_domain_review_required=wflow_domain_review_required,
-    )
-    return WflowCoupledNotebookRuntime(
-        location_root=runtime.location_root,
-        location_name=runtime.location_name,
-        repo_root=repo_root,
-        config=runtime.config,
-        paths=runtime.paths,
-        design_paths=runtime.design_paths,
-        runtime_config=runtime.runtime_config,
-        sfincs_config=runtime.sfincs_config,
-        wflow_config=runtime.wflow_config,
-        sfincs_scenarios_root=runtime.sfincs_scenarios_root,
-        scenario_catalog_path=runtime.scenario_catalog_path,
-        probability_catalog_path=runtime.probability_catalog_path,
-        readiness_path=runtime.readiness_path,
-        blocked_path=runtime.blocked_path,
-        accepted_path=runtime.accepted_path,
-        joint_worklist_path=runtime.joint_worklist_path,
-        incompatible_path=runtime.incompatible_path,
-        events_root=runtime.events_root,
-        wflow_base_root=runtime.wflow_base_root,
-        wflow_handoff_manifest=runtime.wflow_handoff_manifest,
     )
 
 
@@ -123,36 +65,10 @@ def load_calibration_runtime(
     output directory used by the notebook.
     """
     location_root = Path(location_root).resolve()
-    repo_root = location_root.parents[1]
-    runtime = build_wflow_runtime(
+    return build_wflow_runtime(
         define_location(location_root / "config.yaml"),
         workflow="calibration",
         create_audit_dirs=create_audit_dirs,
-    )
-    return WflowCalibrationNotebookRuntime(
-        location_root=runtime.location_root,
-        location_name=runtime.location_name,
-        repo_root=repo_root,
-        config=runtime.config,
-        paths=runtime.paths,
-        design_paths=runtime.design_paths,
-        runtime_config=runtime.runtime_config,
-        sfincs_config=runtime.sfincs_config,
-        wflow_config=runtime.wflow_config,
-        sfincs_scenarios_root=runtime.sfincs_scenarios_root,
-        scenario_catalog_path=runtime.scenario_catalog_path,
-        probability_catalog_path=runtime.probability_catalog_path,
-        readiness_path=runtime.readiness_path,
-        blocked_path=runtime.blocked_path,
-        accepted_path=runtime.accepted_path,
-        joint_worklist_path=runtime.joint_worklist_path,
-        incompatible_path=runtime.incompatible_path,
-        events_root=runtime.events_root,
-        wflow_base_root=runtime.wflow_base_root,
-        wflow_handoff_manifest=runtime.wflow_handoff_manifest,
-        streamflow_records_path=runtime.streamflow_records_path,
-        event_streamflow_iv_root=runtime.event_streamflow_iv_root,
-        audit_plots_dir=runtime.audit_plots_dir,
     )
 
 
@@ -216,33 +132,6 @@ def find_location_root(location_name: str | None = None, *, start: Path | None =
         if location_name is None
         else f"Could not locate locations/{location_name}/config.yaml"
     )
-
-
-def resolve_location_path(location_root: Path, relative_path) -> Path:
-    location_root = Path(location_root)
-    path = Path(relative_path)
-    if not path.is_absolute():
-        return location_root / path
-    relocated = _relocate_absolute_location_path(location_root, path)
-    return relocated if relocated is not None else path
-
-
-def _relocate_absolute_location_path(location_root: Path, path: Path) -> Path | None:
-    """Map serialized absolute location paths onto the active checkout.
-
-    Generated manifests can move between local workstations and DSAI. If a path
-    was serialized as ``.../locations/<location>/...``, treat the part after the
-    location name as the stable artifact address and resolve it from the current
-    ``location_root``.
-    """
-    location_root = Path(location_root)
-    parts = path.parts
-    marker = ("locations", location_root.name)
-    for index in range(len(parts) - 1):
-        if parts[index : index + 2] == marker:
-            suffix = Path(*parts[index + 2 :])
-            return location_root / suffix
-    return None
 
 
 def exists_table(location_root: Path, named_paths: dict) -> pd.DataFrame:

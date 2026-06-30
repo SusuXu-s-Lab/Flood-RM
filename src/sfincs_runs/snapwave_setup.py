@@ -4,20 +4,11 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import shapely
-import xarray as xr
 from pyproj import Transformer
 from shapely.geometry import LineString, MultiLineString, Polygon
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union
-
-# Default ERA5 short-name mapping. Caller may override per dataset version.
-era5_variable_map = {"bhs": "swh", "btp": "pp1d", "bwd": "mwd", "bds": "wdw"}
-
-def unwrap_direction_degrees(values):
-    """Return degrees unwrapped across the 0/360 seam for plotting."""
-    series = pd.Series(values)
-    radians = np.deg2rad(series.astype(float).to_numpy())
-    return pd.Series(np.rad2deg(np.unwrap(radians)), index=series.index)
+from sfincs_v2.snapwave import unwrap_direction_degrees
 
 def derive_seaward_boundary(
     domain: BaseGeometry,
@@ -143,55 +134,6 @@ def select_snapwave_boundary_points(
     kept = [p for p in raw_points if offshore_polygon.contains(p) or offshore_polygon.touches(p)]
     names = [f"{i + 1:04d}" for i in range(len(kept))]
     return gpd.GeoDataFrame({"name": names, "geometry": kept}, crs=crs)
-
-def era5_spectra_to_snapwave_timeseries(
-    ds: xr.Dataset,
-    points: gpd.GeoDataFrame,
-    event_window: tuple,
-    variables: dict | None = None,
-) -> dict:
-    variables = variables or era5_variable_map
-    start, stop = event_window
-    sliced = ds.sel(valid_time=slice(start, stop))
-    result = {}
-    for key, era5_name in variables.items():
-        per_point = {}
-        for _, row in points.iterrows():
-            per_point[row["name"]] = _nearest_finite_era5_series(
-                sliced,
-                era5_name,
-                longitude=float(row.geometry.x),
-                latitude=float(row.geometry.y),
-            )
-        result[key] = pd.DataFrame(per_point, index=sliced["valid_time"].values)
-    return result
-
-def _nearest_finite_era5_series(
-    ds: xr.Dataset,
-    variable: str,
-    *,
-    longitude: float,
-    latitude: float,
-) -> np.ndarray:
-    sample = ds[variable].sel(longitude=longitude, latitude=latitude, method="nearest")
-    values = sample.values
-    if np.isfinite(values).any():
-        return values
-
-    da = ds[variable].transpose("valid_time", "latitude", "longitude")
-    cube = da.values
-    finite_cells = np.isfinite(cube).any(axis=0)
-    if not finite_cells.any():
-        return values
-
-    lon_grid, lat_grid = np.meshgrid(
-        da["longitude"].values.astype(float),
-        da["latitude"].values.astype(float),
-    )
-    distance = (lon_grid - longitude) ** 2 + (lat_grid - latitude) ** 2
-    distance = np.where(finite_cells, distance, np.inf)
-    iy, ix = np.unravel_index(int(np.nanargmin(distance)), distance.shape)
-    return cube[:, iy, ix]
 
 def write_runup_gauges_file(path, transects) -> None:
     # SFINCS rug file: per transect, name line, "2 2" header, then x0 y0 and x1 y1.

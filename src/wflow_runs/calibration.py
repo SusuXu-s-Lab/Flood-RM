@@ -6,11 +6,9 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import xarray as xr
 
 from collect_sources.usgs_streamgages import fetch_nwis_discharge_records
-from wflow_runs.coupling_qa import validate_baseflow_against_observed
-from wflow_runs.dynamic_handoff import dynamic_handoff_paths, plan_handoff
+from wflow_runs.dynamic_handoff import plan_handoff
 from wflow_runs.dynamic_handoff_batch import run_handoffs
 from wflow_runs.replay import _event_reference_time, resolve_event_window
 from wflow_runs.usgs import usgs_instantaneous_streamflow_spec
@@ -27,22 +25,9 @@ class ValidationEvents:
 
 
 @dataclass(frozen=True)
-class HandoffHydrographReview:
-    summary: pd.DataFrame
-    pairs: pd.DataFrame
-
-
-@dataclass(frozen=True)
 class WflowValidationAudit:
     plan: pd.DataFrame
     report: pd.DataFrame
-
-
-@dataclass(frozen=True)
-class HandoffReadout:
-    zero_rain: pd.DataFrame
-    amplification: pd.DataFrame
-    baseflow: pd.DataFrame
 
 
 @dataclass(frozen=True)
@@ -90,49 +75,6 @@ def select_validation_events(
         name="wflow_validation_inputs",
     )
     return ValidationEvents(summary=summary, scenarios=scenarios, event_ids=event_ids)
-
-
-def active_domain_handoff(
-    location_root,
-    *,
-    default_submodel_id: str | None = None,
-) -> pd.Series:
-    """Resolve the active SFINCS handoff ids and Wflow submodel used by validation plots."""
-    import yaml
-
-    location_root = Path(location_root)
-    domain_manifest_path = location_root / "data/sfincs/domains/domain_set.yaml"
-    domain_manifest = yaml.safe_load(domain_manifest_path.read_text(encoding="utf-8")) or {}
-    domains = [domain for domain in domain_manifest.get("domains", []) if domain.get("sfincs_domain_id")]
-    active_domain = next((domain for domain in domains if domain.get("handoff_source_ids")), domains[0] if domains else {})
-    sfincs_domain_id = str(active_domain.get("sfincs_domain_id", ""))
-    handoff_ids = list(dict.fromkeys(str(value) for value in active_domain.get("handoff_source_ids", [])))
-
-    wflow_manifest_path = location_root / "data/wflow/domain_set.yaml"
-    wflow_manifest = yaml.safe_load(wflow_manifest_path.read_text(encoding="utf-8")) if wflow_manifest_path.exists() else {}
-    wflow_submodel_ids = [
-        str(item["wflow_submodel_id"])
-        for item in (wflow_manifest or {}).get("submodels", [])
-        if item.get("wflow_submodel_id")
-    ]
-    domain_submodel_ids = [str(value) for value in active_domain.get("wflow_submodel_ids", [])]
-    active_submodel_id = (
-        domain_submodel_ids[0]
-        if domain_submodel_ids
-        else wflow_submodel_ids[0]
-        if wflow_submodel_ids
-        else default_submodel_id
-        if default_submodel_id
-        else sfincs_domain_id
-    )
-    return pd.Series(
-        {
-            "expected_handoff_ids": handoff_ids,
-            "active_wflow_submodel_id": active_submodel_id,
-            "active_sfincs_domain_id": sfincs_domain_id,
-        },
-        name="active_wflow_validation_domain",
-    )
 
 
 def cache_validation_iv_records(
@@ -239,115 +181,6 @@ def cache_validation_event_iv_records(
     }
 
 
-def discharge_frame(discharge_nc) -> pd.DataFrame:
-    with xr.open_dataset(discharge_nc) as ds:
-        if "discharge" not in ds:
-            raise ValueError(f"{discharge_nc} lacks discharge variable")
-        da = ds["discharge"]
-        values = da.transpose("time", "index").to_pandas() if set(da.dims) >= {"index", "time"} else da.to_pandas()
-        if "name" in ds and len(ds["name"].values) == values.shape[1]:
-            values.columns = [str(value) for value in ds["name"].values]
-        else:
-            values.columns = [str(col) for col in values.columns]
-    values.index = pd.DatetimeIndex(values.index)
-    return values.astype(float)
-
-
-def summarize_handoff_hydrographs(
-    config: dict,
-    location_root,
-    event_ids: list[str],
-) -> HandoffHydrographReview:
-    rows = []
-    pair_rows = []
-    for event_id in event_ids:
-        paths = dynamic_handoff_paths(config, location_root, event_id)
-        for kind, path in [("event", paths["discharge"]), ("zero_rain", paths["zero_rain_discharge"])]:
-            event_rows, pairs = summarize_handoff_hydrograph(event_id, kind, path)
-            rows.extend(event_rows)
-            pair_rows.extend(pairs)
-    return HandoffHydrographReview(summary=pd.DataFrame(rows), pairs=pd.DataFrame(pair_rows))
-
-
-def summarize_handoff_hydrograph(event_id: str, kind: str, path) -> tuple[list[dict], list[dict]]:
-    path = Path(path)
-    if not path.exists():
-        return [], []
-    frame = discharge_frame(path)
-    rows = [
-        {
-            "event_id": event_id,
-            "kind": kind,
-            "source_id": source_id,
-            "peak_m3s": float(clean.max()) if not clean.empty else np.nan,
-            "peak_time": clean.idxmax() if not clean.empty else pd.NaT,
-            "volume_m3h": float(clean.sum()) if not clean.empty else np.nan,
-            "nonzero_steps": int((clean.abs() > 0).sum()) if not clean.empty else 0,
-            "path": str(path),
-        }
-        for source_id, series in frame.items()
-        for clean in [series.dropna()]
-    ]
-    pair_rows = []
-    if frame.shape[1] >= 2:
-        corr = frame.corr()
-        for i, left in enumerate(corr.columns):
-            for right in corr.columns[i + 1 :]:
-                right_peak = frame[right].max()
-                pair_rows.append(
-                    {
-                        "event_id": event_id,
-                        "kind": kind,
-                        "left_source_id": left,
-                        "right_source_id": right,
-                        "shape_correlation": float(corr.loc[left, right]),
-                        "peak_ratio_left_over_right": float(frame[left].max() / right_peak) if right_peak else np.nan,
-                    }
-                )
-    return rows, pair_rows
-
-
-def plot_handoff_discharge_audit(
-    config: dict,
-    location_root,
-    event_id: str,
-    *,
-    audit_plots_dir,
-    expected_handoff_ids: list[str] | None = None,
-):
-    import matplotlib.pyplot as plt
-    from IPython.display import display
-
-    paths = dynamic_handoff_paths(config, location_root, event_id)
-    frames = {
-        kind: discharge_frame(path)
-        for kind, path in [("event", paths["discharge"]), ("zero_rain", paths["zero_rain_discharge"])]
-        if Path(path).exists()
-    }
-    if not frames:
-        print(f"{event_id}: no sfincs_discharge.nc files found yet")
-        return None
-
-    source_ids = expected_handoff_ids or sorted({col for frame in frames.values() for col in frame.columns})
-    fig, axes = plt.subplots(len(source_ids), 1, figsize=(11, max(2.8, 2.4 * len(source_ids))), sharex=True)
-    axes = [axes] if len(source_ids) == 1 else axes
-    for ax, source_id in zip(axes, source_ids):
-        for kind, frame in frames.items():
-            if source_id in frame:
-                ax.plot(frame.index, frame[source_id], label=kind, linewidth=1.8)
-        ax.set_title(f"{event_id} | {source_id}")
-        ax.set_ylabel("m3/s")
-        ax.grid(True, alpha=0.25)
-        ax.legend(loc="upper right")
-    axes[-1].set_xlabel("time")
-    fig.tight_layout()
-    Path(audit_plots_dir).mkdir(parents=True, exist_ok=True)
-    fig.savefig(Path(audit_plots_dir) / f"{event_id}_handoff_discharge_audit.png", dpi=180, bbox_inches="tight")
-    display(fig)
-    plt.close(fig)
-    return fig
-
-
 def run_wflow_validation_audit(
     config: dict,
     location_root,
@@ -388,61 +221,6 @@ def run_wflow_validation_audit(
     ]
     report = pd.concat(reports, ignore_index=True) if reports else pd.DataFrame()
     return WflowValidationAudit(plan=plan, report=report)
-
-
-def post_run_handoff_readout(
-    config: dict,
-    location_root,
-    event_ids: list[str],
-    *,
-    streamflow_records_path,
-) -> HandoffReadout:
-    hydro_rows = []
-    amp_rows = []
-    baseflow_frames = []
-    for event_id in event_ids:
-        paths = dynamic_handoff_paths(config, location_root, event_id)
-        event_rows, _ = summarize_handoff_hydrograph(event_id, "event", paths["discharge"])
-        zero_rows, _ = summarize_handoff_hydrograph(event_id, "zero_rain", paths["zero_rain_discharge"])
-        event_peak = total_discharge_peak(paths["discharge"]) if paths["discharge"].exists() else np.nan
-        zero_peak = total_discharge_peak(paths["zero_rain_discharge"]) if paths["zero_rain_discharge"].exists() else np.nan
-        hydro_rows.append(
-            {
-                "event_id": event_id,
-                "event_source_count": len(event_rows),
-                "zero_rain_source_count": len(zero_rows),
-                "event_total_peak_m3s": event_peak,
-                "zero_rain_total_peak_m3s": zero_peak,
-                "zero_over_event_peak_fraction": zero_peak / event_peak if event_peak and np.isfinite(event_peak) else np.nan,
-                "event_discharge_exists": paths["discharge"].exists(),
-                "zero_rain_discharge_exists": paths["zero_rain_discharge"].exists(),
-            }
-        )
-        amp_json = Path(paths["discharge"]).with_name("sfincs_discharge.amplification.json")
-        if amp_json.exists():
-            amp = json.loads(amp_json.read_text(encoding="utf-8"))
-            amp_rows.append(
-                {
-                    "event_id": event_id,
-                    "K": amp.get("K"),
-                    "K_status": amp.get("status"),
-                    "reference_gage": amp.get("reference_gage"),
-                }
-            )
-        if paths["zero_rain_discharge"].exists():
-            baseflow = validate_baseflow_against_observed(
-                config,
-                location_root,
-                zero_rain_discharge_nc=paths["zero_rain_discharge"],
-                streamflow_records_csv=streamflow_records_path,
-            )
-            baseflow.insert(0, "event_id", event_id)
-            baseflow_frames.append(baseflow)
-    return HandoffReadout(
-        zero_rain=pd.DataFrame(hydro_rows),
-        amplification=pd.DataFrame(amp_rows),
-        baseflow=pd.concat(baseflow_frames, ignore_index=True) if baseflow_frames else pd.DataFrame(),
-    )
 
 
 def build_usgs_wflow_calibration(
@@ -494,103 +272,6 @@ def build_usgs_wflow_calibration(
         name="wflow_calibration_artifacts",
     )
     return WflowCalibration(summary=summary, artifacts=artifacts, patch=patch)
-
-
-def plot_wflow_sfincs_gauge_output(
-    event_id: str,
-    *,
-    events_root,
-    wflow_base_root,
-    audit_plots_dir,
-    submodel_id: str | None = None,
-):
-    import matplotlib.pyplot as plt
-    from IPython.display import display
-
-    sim = read_wflow_output_csv(event_id, events_root=events_root, submodel_id=submodel_id)
-    gauges = gauge_output_map(event_id, events_root=events_root, wflow_base_root=wflow_base_root, layer="gauges_sfincs", submodel_id=submodel_id)
-    if sim.empty or gauges.empty:
-        print(f"{event_id}: missing Wflow run_event/output.csv or gauges_sfincs.geojson")
-        return None
-    fig, ax = plt.subplots(figsize=(11, 4.5))
-    plotted = False
-    for _, gauge in gauges.sort_values("sfincs_handoff_id").iterrows():
-        q_col = str(gauge["q_column"])
-        label = str(gauge.get("sfincs_handoff_id") or gauge.get("name") or q_col)
-        if q_col in sim:
-            ax.plot(sim.index, sim[q_col].astype(float), label=label, linewidth=1.8)
-            plotted = True
-    if not plotted:
-        print(f"{event_id}: no gauges_sfincs Q columns found in output.csv")
-        plt.close(fig)
-        return None
-    ax.set_title(f"{event_id} | Wflow gauges_sfincs discharge")
-    ax.set_ylabel("m3/s")
-    ax.set_xlabel("time")
-    ax.grid(True, alpha=0.25)
-    ax.legend(loc="best")
-    fig.tight_layout()
-    Path(audit_plots_dir).mkdir(parents=True, exist_ok=True)
-    fig.savefig(Path(audit_plots_dir) / f"{event_id}_wflow_sfincs_gauge_output.png", dpi=180, bbox_inches="tight")
-    display(fig)
-    plt.close(fig)
-    return fig
-
-
-def plot_usgs_observation_comparison(
-    event_id: str,
-    *,
-    events_root,
-    wflow_base_root,
-    event_streamflow_iv_root,
-    audit_plots_dir,
-    submodel_id: str | None = None,
-    max_gauges: int = 6,
-):
-    import matplotlib.pyplot as plt
-    from IPython.display import display
-
-    sim = read_wflow_output_csv(event_id, events_root=events_root, submodel_id=submodel_id)
-    gauges = gauge_output_map(event_id, events_root=events_root, wflow_base_root=wflow_base_root, layer="gauges_usgs", submodel_id=submodel_id)
-    records = event_iv_records(event_id, event_streamflow_iv_root)
-    if sim.empty or gauges.empty:
-        print(f"{event_id}: missing Wflow output or gauges_usgs layer")
-        return None
-    if records.empty:
-        print(f"{event_id}: no cached USGS IV event-window records under {event_streamflow_iv_root}")
-        return None
-
-    rows = []
-    for _, gauge in gauges.iterrows():
-        q_col = str(gauge["q_column"])
-        if q_col not in sim:
-            continue
-        obs = observed_event_site_flow(event_id, gauge["site_no"], sim.index, event_streamflow_iv_root=event_streamflow_iv_root)
-        joined = pd.concat([sim[q_col].astype(float).rename("sim"), obs.rename("obs")], axis=1).dropna()
-        if joined.empty:
-            continue
-        rows.append((str(gauge["site_no"]), q_col, joined, hydrograph_scores(joined["sim"], joined["obs"])))
-    if not rows:
-        print(f"{event_id}: no overlapping USGS IV observed records for plotted gauge outputs")
-        return None
-
-    rows = rows[:max_gauges]
-    fig, axes = plt.subplots(len(rows), 1, figsize=(11, max(3.0, 2.6 * len(rows))), sharex=True)
-    axes = [axes] if len(rows) == 1 else axes
-    for ax, (site_no, _q_col, joined, score) in zip(axes, rows):
-        ax.plot(joined.index, joined["sim"], label="Wflow simulated", linewidth=1.8)
-        ax.plot(joined.index, joined["obs"], label="USGS IV observed, Wflow timestep", linewidth=1.5, alpha=0.85)
-        ax.set_title(f"{event_id} | USGS {site_no} | KGE={score['kge']:.2f} NSE={score['nse']:.2f}")
-        ax.set_ylabel("m3/s")
-        ax.grid(True, alpha=0.25)
-        ax.legend(loc="best")
-    axes[-1].set_xlabel("time")
-    fig.tight_layout()
-    Path(audit_plots_dir).mkdir(parents=True, exist_ok=True)
-    fig.savefig(Path(audit_plots_dir) / f"{event_id}_usgs_iv_observation_comparison.png", dpi=180, bbox_inches="tight")
-    display(fig)
-    plt.close(fig)
-    return fig
 
 
 def validation_gauge_sites(location_root, event_id, *, events_root, wflow_base_root, submodel_id=None, layer="gauges_usgs") -> list[str]:
@@ -740,14 +421,6 @@ def usgs_calibration_table(event_id, *, events_root, wflow_base_root, event_stre
         if scores["n"] > 0:
             rows.append({"event_id": event_id, "site_no": str(gauge["site_no"]), "q_column": q_col, **scores})
     return pd.DataFrame(rows)
-
-
-def total_discharge_peak(discharge_nc) -> float:
-    with xr.open_dataset(discharge_nc) as ds:
-        da = ds["discharge"]
-        if "index" in da.dims:
-            da = da.sum("index")
-        return float(da.max(skipna=True))
 
 
 def _calibration_patch(config: dict, location_root: Path, calibration_summary: pd.DataFrame, summary_path: Path) -> tuple[dict, str, float | None, int]:

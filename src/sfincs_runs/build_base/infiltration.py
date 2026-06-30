@@ -2,7 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 import numpy as np
 import xarray as xr
-from sfincs_runs.hydrology import condition_ksat_raster
+from sfincs_v2.hydrology import condition_ksat_raster
 
 def validate_infiltration_config(infiltration_cfg, *, event_drivers):
     """Validate that rain-on-grid runs have explicit infiltration inputs."""

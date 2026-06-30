@@ -28,6 +28,7 @@ from wflow_runs.streamflow_realization import validate_wflow_streamflow_realizat
 from wflow_runs.notebook import resolve_location_path
 from wflow_v2.event import (
     event_paths as v2_event_paths,
+    legacy_dynamic_handoff_paths as v2_legacy_dynamic_handoff_paths,
     require_discharge_window as require_v2_discharge_window,
     require_event_boundary as require_v2_event_boundary,
 )
@@ -44,16 +45,7 @@ class DynamicHandoffRun:
 
 
 def dynamic_handoff_paths(config: dict, location_root, event_id: str) -> dict[str, Path]:
-    location_root = Path(location_root)
-    events_root = resolve_location_path(location_root, config.get("wflow", {}).get("events_root", "data/wflow/events"))
-    event_root = events_root / str(event_id)
-    return {
-        "event_root": event_root,
-        "discharge": event_root / "sfincs_discharge.nc",
-        "qa_csv": event_root / "sfincs_discharge.dynamic_handoff_qa.csv",
-        "acceptance": event_root / "sfincs_discharge.dynamic_handoff.json",
-        "zero_rain_discharge": event_root / "_zero_rain" / "sfincs_discharge.nc",
-    }
+    return v2_legacy_dynamic_handoff_paths(config, location_root, event_id)
 
 
 def plan_handoff(config: dict, location_root, event_id: str, *, catalog_path=None) -> pd.Series:

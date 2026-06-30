@@ -16,12 +16,17 @@ import yaml
 from shapely.geometry import Point
 from shapely.ops import unary_union
 
+from location_runtime import resolve_location_path
 from wflow_runs.handoff_locations import (
     STREAM_BOUNDARY_HANDOFF_MODES,
     read_stream_boundary_handoff_location_artifacts,
     read_stream_boundary_handoff_locations,
 )
-from wflow_v2.domain import render_hydromt_build_steps
+from wflow_v2.domain import (
+    configured_or_manifest_submodels,
+    handoff_artifact_report,
+    render_hydromt_build_steps,
+)
 
 _GENERATED_NOTICE = (
     "# GENERATED FILE — do not edit. Overwritten when {source} runs.\n"
@@ -2413,7 +2418,7 @@ def validate_wflow_sfincs_handoff_artifacts_current(
     """Validate that Wflow gauges, SFINCS sources, and the manifest use one handoff set."""
     location_root = Path(location_root)
     if submodels is None:
-        submodels = _configured_or_manifest_submodels(config, location_root)
+        submodels = configured_or_manifest_submodels(config, location_root)
     base_root = _location_path(
         location_root,
         config.get("wflow", {}).get("base_model_root", "data/wflow/base"),
@@ -2423,91 +2428,12 @@ def validate_wflow_sfincs_handoff_artifacts_current(
         location_root,
         location_path=_location_path,
     )
-    rows = []
-    for submodel in submodels:
-        submodel_id = str(submodel.get("wflow_submodel_id", ""))
-        manifest_ids = {str(value) for value in submodel.get("sfincs_handoff_ids", ()) if value}
-        if sources is not None and "sfincs_handoff_id" in sources:
-            submodel_sources = sources
-            if "wflow_submodel_id" in submodel_sources:
-                submodel_sources = submodel_sources[
-                    submodel_sources["wflow_submodel_id"].astype(str) == submodel_id
-                ].copy()
-            source_ids = set(submodel_sources["sfincs_handoff_id"].astype(str))
-        else:
-            source_ids = set()
-        model_root = base_root / submodel_id
-        gauges_path = model_root / "staticgeoms" / "gauges_sfincs.geojson"
-        gauge_ids = _handoff_ids_from_geojson(gauges_path)
-        rows.append(
-            _handoff_artifact_row(
-                submodel_id,
-                "wflow_gauges_sfincs_match_sources",
-                gauges_path,
-                source_ids,
-                gauge_ids,
-            )
-        )
-        rows.append(
-            _handoff_artifact_row(
-                submodel_id,
-                "wflow_domain_manifest_matches_sources",
-                None,
-                source_ids,
-                manifest_ids,
-            )
-        )
-    report = pd.DataFrame(rows)
+    report = handoff_artifact_report(submodels, sources, base_root)
     failed = report[report["status"].isin(["failed", "review_required"])] if not report.empty else report
     if raise_on_error and not failed.empty:
         details = "; ".join(f"{row.submodel_id}:{row.check}: {row.message}" for row in failed.itertuples())
         raise RuntimeError(f"Wflow-SFINCS handoff artifacts are stale or incomplete: {details}")
     return report
-
-
-def _configured_or_manifest_submodels(config: dict, location_root: Path) -> list[dict]:
-    configured = list(config.get("wflow", {}).get("domain_set", {}).get("submodels", []) or [])
-    if configured:
-        return configured
-    manifest_path = _location_path(
-        location_root,
-        config.get("wflow", {}).get("domain_set_manifest", "data/wflow/domain_set.yaml"),
-    )
-    if not manifest_path.exists():
-        return []
-    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
-    return list(manifest.get("submodels", []) or [])
-
-
-def _handoff_ids_from_geojson(path: Path) -> set[str]:
-    if not path.exists():
-        return set()
-    frame = gpd.read_file(path)
-    if frame.empty or "sfincs_handoff_id" not in frame:
-        return set()
-    return set(frame["sfincs_handoff_id"].dropna().astype(str))
-
-
-def _handoff_artifact_row(
-    submodel_id: str,
-    check: str,
-    path: Path | None,
-    expected: set[str],
-    actual: set[str],
-) -> dict:
-    missing = sorted(expected - actual)
-    extra = sorted(actual - expected)
-    status = "passed" if expected and not missing and not extra else "failed"
-    path_text = "" if path is None else f"; path={path}"
-    return {
-        "submodel_id": submodel_id,
-        "check": check,
-        "status": status,
-        "message": (
-            f"expected={sorted(expected)}; actual={sorted(actual)}; "
-            f"missing={missing}; extra={extra}{path_text}"
-        ),
-    }
 
 
 def validate_wflow_reservoir_staticmaps(
@@ -3746,23 +3672,7 @@ def _location_root(paths):
 
 
 def _location_path(location_root: Path, value) -> Path:
-    path = Path(value)
-    if path.is_absolute():
-        relocated = _relocate_absolute_location_path(location_root, path)
-        return relocated if relocated is not None else path
-    if path.parts[:2] == ("locations", location_root.name):
-        return location_root.parents[1] / path
-    return location_root / path
-
-
-def _relocate_absolute_location_path(location_root: Path, path: Path) -> Path | None:
-    location_root = Path(location_root)
-    parts = path.parts
-    marker = ("locations", location_root.name)
-    for index in range(len(parts) - 1):
-        if parts[index : index + 2] == marker:
-            return location_root.joinpath(*parts[index + 2 :])
-    return None
+    return resolve_location_path(location_root, value)
 
 
 def _relative_to_location(path: Path, location_root: Path) -> str:

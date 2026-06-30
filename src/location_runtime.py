@@ -11,6 +11,47 @@ from paths import default_location_config_path, find_repo_root, resolve_repo_pat
 from study_location import LocationDefinition, define_location, resolve_study_location
 
 
+DEFAULT_STATIC_SOURCES = {
+    "bbox": {"output": "data/static/aoi/bbox.geojson"},
+    "terrain": {
+        "raw": "data/static/raw/topo/dem.tif",
+        "output": "data/static/processed/dem_region_setup.tif",
+    },
+    "landcover": {
+        "raw": "data/static/raw/landcover/landcover.tif",
+        "output": "data/static/processed/landcover_region_setup.tif",
+    },
+    "ssurgo": {
+        "output": "data/static/soils/ssurgo_mapunitpoly.gpkg",
+        "attributes_output": "data/static/soils/ssurgo_mapunit_attributes.csv",
+        "hsg_output": "data/static/soils/hsg.tif",
+        "ksat_output": "data/static/soils/ksat_mmhr.tif",
+    },
+    "wflow_collection_extent": {
+        "watersheds": "data/static/aoi/wflow_nhdplus_watersheds.geojson",
+        "boundary": "data/static/aoi/wflow_collection_region.geojson",
+        "terrain_raw": "data/wflow/static/raw/topo/dem_wflow.tif",
+        "terrain_output": "data/wflow/static/processed/dem_wflow_coarse.tif",
+        "landcover_raw": "data/wflow/static/raw/landcover/landcover_wflow.tif",
+        "landcover_output": "data/wflow/static/processed/landcover_wflow_coarse.tif",
+        "ssurgo_output": "data/wflow/static/soils/ssurgo_mapunitpoly_wflow.gpkg",
+        "ssurgo_attributes_output": "data/wflow/static/soils/ssurgo_mapunit_attributes_wflow.csv",
+        "hsg_output": "data/wflow/static/soils/hsg_wflow.tif",
+        "ksat_output": "data/wflow/static/soils/ksat_mmhr_wflow.tif",
+    },
+}
+
+
+def static_sources_with_defaults(config: dict[str, Any]) -> dict[str, Any]:
+    configured = config.get("static_sources", {}) or {}
+    sources = {
+        name: {**defaults, **configured.get(name, {})}
+        for name, defaults in DEFAULT_STATIC_SOURCES.items()
+    }
+    sources.update({name: values for name, values in configured.items() if name not in DEFAULT_STATIC_SOURCES})
+    return sources
+
+
 def load_runtime(path: str | Path | None = None, *, repo_root: str | Path | None = None) -> tuple[dict[str, Any], dict[str, Path | str]]:
     """Load a Location Workspace config and legacy-compatible path projection.
 
@@ -53,6 +94,7 @@ class WflowRuntime:
     definition: LocationDefinition
     location_root: Path
     location_name: str
+    repo_root: Path
     config: dict[str, Any]
     paths: dict[str, Path | str]
     design_paths: dict[str, Path | str]
@@ -70,6 +112,19 @@ class WflowRuntime:
     events_root: Path
     wflow_base_root: Path
     wflow_handoff_manifest: Path
+
+    def resolve_location_path(self, value) -> Path:
+        return resolve_location_path(
+            self.location_root,
+            value,
+            repo_root=self.repo_root,
+            location_name=self.location_name,
+        )
+
+    def ensure_parent(self, value) -> Path:
+        path = self.resolve_location_path(value)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
 
 
 @dataclass(frozen=True)
@@ -117,6 +172,7 @@ def _build_coupled_wflow_runtime(
     root = definition.root
     name = definition.name
     config = apply_inland_runtime_defaults(deepcopy(definition.config))
+    repo_root = repo_root_for_location(root, name)
     if wflow_domain_review_required is not None:
         config.setdefault("wflow", {}).setdefault("domain_set", {})["review_required"] = bool(
             wflow_domain_review_required
@@ -135,8 +191,9 @@ def _build_coupled_wflow_runtime(
         definition=definition,
         location_root=root,
         location_name=name,
+        repo_root=repo_root,
         config=config,
-        paths=build_sfincs_paths(root, name, config),
+        paths=build_sfincs_paths(root, name, config, repo_root=repo_root),
         design_paths=build_design_paths(root, name, config),
         runtime_config=config,
         sfincs_config=config,
@@ -226,6 +283,42 @@ def location_path(
         repo = Path(repo_root) if repo_root is not None else repo_root_for_location(root, name)
         return repo / path
     return root / path
+
+
+def resolve_location_path(
+    location_root: str | Path,
+    value: str | Path,
+    *,
+    repo_root: str | Path | None = None,
+    location_name: str | None = None,
+) -> Path:
+    """Resolve a location path and re-home serialized paths from another checkout."""
+    root = Path(location_root)
+    path = Path(value).expanduser()
+    name = location_name or root.name
+    if not path.is_absolute():
+        return location_path(root, path, repo_root=repo_root, location_name=name)
+    relocated = relocate_absolute_location_path(root, path, location_name=name)
+    return relocated if relocated is not None else path
+
+
+def relocate_absolute_location_path(
+    location_root: str | Path,
+    path: str | Path,
+    *,
+    location_name: str | None = None,
+) -> Path | None:
+    """Map ``.../locations/<name>/...`` paths onto the active location root."""
+    root = Path(location_root)
+    path = Path(path)
+    name = location_name or root.name
+    parts = path.parts
+    marker = ("locations", name)
+    for index in range(len(parts) - 1):
+        if parts[index : index + 2] == marker:
+            suffix = Path(*parts[index + 2 :])
+            return root / suffix
+    return None
 
 
 def location_or_repo_path(

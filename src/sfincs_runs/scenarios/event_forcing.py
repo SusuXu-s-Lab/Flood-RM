@@ -3,7 +3,6 @@ import json
 import os
 from pathlib import Path
 import re
-import subprocess
 
 import geopandas as gpd
 import numpy as np
@@ -13,7 +12,7 @@ from pyproj import Transformer
 from shapely.geometry import Point
 
 from sfincs_runs.config import parse_sfincs_inp
-from sfincs_runs.hydrology import prepare_aorc_precip_for_sfincs
+from sfincs_v2.hydrology import prepare_aorc_precip_for_sfincs
 from sfincs_runs.scenarios.scenarios import (
     assert_event_catalog_audit,
     build_event_timeseries,
@@ -21,9 +20,9 @@ from sfincs_runs.scenarios.scenarios import (
     select_zsini_from_series,
 )
 from sfincs_runs.scenarios.timing import plan_event_forcing_support_window
-from sfincs_runs.snapwave_setup import era5_spectra_to_snapwave_timeseries
+from sfincs_v2.snapwave import legacy_era5_spectra_to_snapwave_timeseries
 from sfincs_v2.io import copy_base_model, remove_solver_outputs
-from sfincs_v2.solver import build_sfincs_command, sfincs_subprocess_env
+from sfincs_v2.solver import build_sfincs_command, run_sfincs_process, sfincs_subprocess_env
 from wflow_runs.notebook import resolve_location_path
 
 
@@ -665,7 +664,7 @@ def stage_event_snapwave(run_root, forcing: EventForcing, *, paths=None, config=
     stop = pd.Timestamp(_required_catalog_value(catalog, "snapwave_valid_end_time"))
     points = _read_snapwave_boundary_points(run_root)
     with xr.open_dataset(wave_file) as ds:
-        timeseries = era5_spectra_to_snapwave_timeseries(
+        timeseries = legacy_era5_spectra_to_snapwave_timeseries(
             ds,
             points,
             event_window=(start, stop),
@@ -791,29 +790,13 @@ def build_sfincs_runner(
 def run_model(run_root, *, runner=None, require_map=True, config=None):
     run_root = Path(run_root)
     runner = runner or build_sfincs_runner(run_root, config=config)
-    log_path = run_root / "sfincs_log.txt"
-    env = _sfincs_subprocess_env(config)
-    with log_path.open("w", encoding="utf-8") as stream:
-        proc = subprocess.run(
-            runner,
-            cwd=run_root,
-            stdout=stream,
-            stderr=subprocess.STDOUT,
-            text=True,
-            check=False,
-            env=env,
-        )
-    if proc.returncode != 0:
-        raise RuntimeError(f"SFINCS failed (exit {proc.returncode}). See {log_path}.")
-    map_path = run_root / "sfincs_map.nc"
-    if require_map and not map_path.exists():
-        raise RuntimeError(f"SFINCS completed without producing {map_path.name}.")
-    return SfincsRunResult(
-        run_root=run_root,
-        log_path=log_path,
-        map_path=map_path,
-        returncode=int(proc.returncode),
+    result = run_sfincs_process(
+        run_root,
+        command=runner,
+        env=_sfincs_subprocess_env(config),
+        require_map=require_map,
     )
+    return SfincsRunResult(**result)
 
 
 def _sfincs_subprocess_env(config=None):

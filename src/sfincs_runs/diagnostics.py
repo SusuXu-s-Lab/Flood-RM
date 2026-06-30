@@ -13,18 +13,13 @@ import pandas as pd
 import xarray as xr
 
 M_TO_FT = 3.28084
-DEFAULT_PROBABILITY_DEPTHS_FT = (0.5, 1.0, 2.0)
 SLR_BENCHMARK_RETURN_PERIODS = (10, 100, 500)
 
 _PLOTTING_EXPORTS = {
     'plot_flood_response_diagnostics',
-    'plot_depth_probability_panels',
     'plot_driver_response_matrix',
-    'plot_depth_probability',
     'plot_driver_outcome_matrix',
     'plot_forcing',
-    'plot_diagnostics',
-    'plot_standard_forcing',
     'plot_wave_forcing',
     'plot_standard_animation',
     'plot_animation',
@@ -36,20 +31,11 @@ _PLOTTING_EXPORTS = {
 
 __all__ = [
     'FloodResponseDiagnostics',
-    'DepthProbabilityDiagnostics',
     'DriverResponseDiagnostics',
     'SlrDepthComparison',
     'flood_response_diagnostics',
-    'depth_probability_diagnostics',
     'driver_response_diagnostics',
-    'completed_sfincs_runs',
-    'annual_rate_table',
-    'poisson_exceedance_probability',
-    'event_outcome_table',
-    'outcome_coverage',
     'masked_sfincs_depth',
-    'event_depth_metrics',
-    'catalog_depth_probability',
     'weighted_standardized_associations',
     'slr_scenario_storage_roots',
     'common_completed_events',
@@ -70,17 +56,6 @@ class FloodResponseDiagnostics:
     rp_band_stats: pd.DataFrame
     storm_type_stats: pd.DataFrame
     top_flood_events: pd.DataFrame
-
-
-@dataclass(frozen=True)
-class DepthProbabilityDiagnostics:
-    """Catalog-weighted probability rasters and their supporting tables."""
-
-    outcomes: pd.DataFrame
-    coverage: pd.Series
-    depth_probability: xr.Dataset
-    depth_probability_path: Path
-    thresholds_ft: tuple[float, ...]
 
 
 @dataclass(frozen=True)
@@ -179,36 +154,6 @@ def flood_response_diagnostics(catalogue_csv) -> FloodResponseDiagnostics:
     return FloodResponseDiagnostics(flood, scope, rp_band_stats, storm_type_stats, top_flood_events)
 
 
-def depth_probability_diagnostics(
-    *,
-    storage_root,
-    catalog_path,
-    risk_metadata_path,
-    flood_catalogue_path,
-    outdir,
-    thresholds_ft=DEFAULT_PROBABILITY_DEPTHS_FT,
-) -> DepthProbabilityDiagnostics:
-    """Build catalog-weighted annual flood-depth probability rasters."""
-    catalog_path = Path(catalog_path)
-    metadata = json.loads(Path(risk_metadata_path).read_text(encoding="utf-8"))
-    total_rate = float(metadata["total_rate_per_year"])
-    weights = pd.read_csv(catalog_path)
-    if "event_origin" in weights:
-        weights = weights[weights["event_origin"].isin(["synthetic_body", "synthetic_tail"])].copy()
-    weights["probability_weight"] = pd.to_numeric(weights["probability_weight"], errors="coerce")
-    weights = weights[weights["probability_weight"].notna()].reset_index(drop=True)
-
-    runs = completed_sfincs_runs(storage_root)
-    flood_catalogue = pd.read_csv(flood_catalogue_path)
-    outcomes = event_outcome_table(runs, catalog_path, weights, total_rate, outcomes=flood_catalogue)
-    coverage = outcome_coverage(outcomes, weights)
-    depth_probability = catalog_depth_probability(runs, outcomes, thresholds_ft=thresholds_ft)
-    out_path = Path(outdir) / "flood_depth_probability.nc"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    depth_probability.to_netcdf(out_path)
-    return DepthProbabilityDiagnostics(outcomes, coverage, depth_probability, out_path, tuple(float(t) for t in thresholds_ft))
-
-
 def driver_response_diagnostics(
     outcomes: pd.DataFrame,
     *,
@@ -245,89 +190,6 @@ def _usable_numeric_columns(data: pd.DataFrame, columns: list[str], *, min_uniqu
     return usable
 
 
-def completed_sfincs_runs(storage_root) -> pd.DataFrame:
-    """Discover completed SFINCS event outputs."""
-    rows = []
-    for event_dir in sorted(Path(storage_root).glob("*")):
-        map_path = event_dir / "sfincs_map.nc"
-        if not map_path.exists():
-            continue
-        scenario = "base"
-        manifest = event_dir / "forcing_manifest.json"
-        if manifest.exists():
-            try:
-                scenario = json.loads(manifest.read_text(encoding="utf-8")).get("design_scenario", "base")
-            except Exception:
-                scenario = "base"
-        rows.append({"event_id": event_dir.name, "design_scenario": scenario, "map_path": str(map_path)})
-    return pd.DataFrame(rows)
-
-
-def annual_rate_table(weights: pd.DataFrame, total_rate: float) -> pd.DataFrame:
-    """Event weights with annual occurrence rates from the copula mixture rate."""
-    table = weights.copy()
-    table["probability_weight"] = pd.to_numeric(table["probability_weight"], errors="coerce")
-    table["annual_rate"] = float(total_rate) * table["probability_weight"]
-    return table
-
-
-def poisson_exceedance_probability(annual_rate) -> np.ndarray:
-    """At-least-one annual exceedance probability for a Poisson event process."""
-    return 1.0 - np.exp(-np.asarray(annual_rate, dtype=float))
-
-
-def event_outcome_table(
-    runs: pd.DataFrame,
-    catalog_csv,
-    weights: pd.DataFrame,
-    total_rate: float,
-    outcomes: pd.DataFrame | None = None,
-) -> pd.DataFrame:
-    """Join completed SFINCS outcomes to catalog driver values and annual rates."""
-    catalog = pd.read_csv(catalog_csv)
-    stress_catalog = Path(catalog_csv).with_name("resilience_stress_training_catalog.csv")
-    if stress_catalog.exists():
-        stress = pd.read_csv(stress_catalog)
-        extra_cols = [c for c in stress.columns if c != "event_id" and c not in catalog.columns]
-        if extra_cols:
-            catalog = catalog.merge(stress[["event_id", *extra_cols]], on="event_id", how="left")
-
-    rate = annual_rate_table(weights, total_rate)
-    out = runs[["event_id", "design_scenario", "map_path"]].merge(catalog, on="event_id", how="left")
-    out = out.merge(
-        rate[["event_id", "probability_weight", "annual_rate"]],
-        on="event_id",
-        how="left",
-        suffixes=("", "_weight"),
-    )
-    if "probability_weight_weight" in out:
-        out["probability_weight"] = out["probability_weight_weight"].combine_first(out.get("probability_weight"))
-        out = out.drop(columns=["probability_weight_weight"])
-    if outcomes is not None and not outcomes.empty:
-        outcome_cols = [c for c in outcomes.columns if c not in out.columns or c in ("event_id", "design_scenario")]
-        out = out.merge(outcomes[outcome_cols], on=["event_id", "design_scenario"], how="left")
-    out["probability_weight"] = pd.to_numeric(out["probability_weight"], errors="coerce")
-    out["annual_rate"] = pd.to_numeric(out["annual_rate"], errors="coerce")
-    return out
-
-
-def outcome_coverage(outcomes: pd.DataFrame, weights: pd.DataFrame) -> pd.Series:
-    """Coverage receipt for partial/full Event Catalog probability integration."""
-    covered = outcomes[pd.to_numeric(outcomes.get("probability_weight"), errors="coerce").notna()].copy()
-    total_weight = float(pd.to_numeric(weights["probability_weight"], errors="coerce").sum())
-    covered_weight = float(pd.to_numeric(covered["probability_weight"], errors="coerce").sum())
-    return pd.Series(
-        {
-            "completed_outcome_events": int(len(covered)),
-            "catalog_weighted_events": int(len(weights)),
-            "covered_probability_weight": covered_weight,
-            "catalog_probability_weight": total_weight,
-            "weight_coverage": covered_weight / total_weight if total_weight else np.nan,
-        },
-        name="catalog_probability_coverage",
-    )
-
-
 def masked_sfincs_depth(
     map_path,
     *,
@@ -362,82 +224,6 @@ def masked_sfincs_depth(
             "y": np.asarray(ds["y"].values, dtype=float),
             "depth_ft": np.asarray((value.where(flooded) * M_TO_FT).values, dtype=float),
         }
-
-
-def event_depth_metrics(runs: pd.DataFrame, *, huthresh_m: float = 0.1, land_min_elev_m: float | None = -0.5) -> pd.DataFrame:
-    """Per-event flood-depth response metrics from completed SFINCS maps."""
-    rows = []
-    for row in runs.itertuples(index=False):
-        data = masked_sfincs_depth(row.map_path, huthresh_m=huthresh_m, land_min_elev_m=land_min_elev_m)
-        depth = np.asarray(data["depth_ft"], dtype=float)
-        wet = np.isfinite(depth) & (depth > 0)
-        rows.append(
-            {
-                "event_id": row.event_id,
-                "design_scenario": row.design_scenario,
-                "max_depth_ft": float(np.nanmax(depth)) if wet.any() else 0.0,
-                "mean_wet_depth_ft": float(np.nanmean(depth[wet])) if wet.any() else 0.0,
-                "flooded_cell_count": int(wet.sum()),
-            }
-        )
-    return pd.DataFrame(rows)
-
-
-def catalog_depth_probability(
-    runs: pd.DataFrame,
-    outcomes: pd.DataFrame,
-    *,
-    thresholds_ft=DEFAULT_PROBABILITY_DEPTHS_FT,
-    huthresh_m: float = 0.1,
-    land_min_elev_m: float | None = -0.5,
-) -> xr.Dataset:
-    """Catalog-weighted flood-depth annual exceedance probability rasters."""
-    if runs.empty:
-        raise ValueError("runs is empty")
-    threshold_values = tuple(float(t) for t in thresholds_ft)
-    lookup = outcomes.drop_duplicates(["event_id", "design_scenario"]).set_index(["event_id", "design_scenario"])
-    first = masked_sfincs_depth(runs.iloc[0]["map_path"], huthresh_m=huthresh_m, land_min_elev_m=land_min_elev_m)
-    shape = np.asarray(first["depth_ft"]).shape
-    exceedance_rate = {t: np.zeros(shape, dtype=float) for t in threshold_values}
-    used_weight = 0.0
-    used_events = 0
-
-    for row in runs.itertuples(index=False):
-        key = (row.event_id, row.design_scenario)
-        if key not in lookup.index:
-            continue
-        rec = lookup.loc[key]
-        annual_rate = float(pd.to_numeric(rec.get("annual_rate"), errors="coerce"))
-        weight = float(pd.to_numeric(rec.get("probability_weight"), errors="coerce"))
-        if not np.isfinite(annual_rate) or annual_rate <= 0:
-            continue
-        data = masked_sfincs_depth(row.map_path, huthresh_m=huthresh_m, land_min_elev_m=land_min_elev_m)
-        depth = np.asarray(data["depth_ft"], dtype=float)
-        for threshold in threshold_values:
-            exceedance_rate[threshold] += np.where(np.isfinite(depth) & (depth > threshold), annual_rate, 0.0)
-        used_weight += weight if np.isfinite(weight) else 0.0
-        used_events += 1
-
-    ds = xr.Dataset(coords={"n": np.arange(shape[0]), "m": np.arange(shape[1])})
-    ds = ds.assign_coords(
-        x=(("n", "m"), np.asarray(first["x"], dtype=float)),
-        y=(("n", "m"), np.asarray(first["y"], dtype=float)),
-    )
-    for threshold in threshold_values:
-        token = str(threshold).replace(".", "p")
-        rate_name = f"depth_gt_{token}ft_annual_rate"
-        prob_name = f"depth_gt_{token}ft_aep"
-        ds[rate_name] = (("n", "m"), exceedance_rate[threshold])
-        ds[prob_name] = (("n", "m"), poisson_exceedance_probability(exceedance_rate[threshold]))
-        ds[rate_name].attrs.update(long_name=f"Annual exceedance rate for depth > {threshold:g} ft", units="1/year")
-        ds[prob_name].attrs.update(long_name=f"P(annual max flood depth > {threshold:g} ft)", units="1")
-    ds.attrs.update(
-        completed_event_count=int(used_events),
-        covered_probability_weight=float(used_weight),
-        thresholds_ft=list(threshold_values),
-        probability_method="1 - exp(-sum(total_rate_per_year * probability_weight for exceeding events))",
-    )
-    return ds
 
 
 def weighted_standardized_associations(

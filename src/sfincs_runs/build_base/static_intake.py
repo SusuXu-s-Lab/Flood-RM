@@ -20,6 +20,7 @@ from collect_sources.ssurgo import (
     normalize_ssurgo_axis_order,
     ssurgo_attribute_columns,
 )
+from location_runtime import DEFAULT_STATIC_SOURCES, static_sources_with_defaults
 from sfincs_runs.hydrology import write_ssurgo_infiltration_rasters
 from study_location import study_area_bbox
 
@@ -39,37 +40,6 @@ class RegionSetup:
     ssurgo_attributes_output: Path
     ssurgo_hsg_output: Path
     ssurgo_ksat_output: Path
-
-
-DEFAULT_STATIC_SOURCES = {
-    "bbox": {"output": "data/static/aoi/bbox.geojson"},
-    "terrain": {
-        "raw": "data/static/raw/topo/dem.tif",
-        "output": "data/static/processed/dem_region_setup.tif",
-    },
-    "landcover": {
-        "raw": "data/static/raw/landcover/landcover.tif",
-        "output": "data/static/processed/landcover_region_setup.tif",
-    },
-    "ssurgo": {
-        "output": "data/static/soils/ssurgo_mapunitpoly.gpkg",
-        "attributes_output": "data/static/soils/ssurgo_mapunit_attributes.csv",
-        "hsg_output": "data/static/soils/hsg.tif",
-        "ksat_output": "data/static/soils/ksat_mmhr.tif",
-    },
-    "wflow_collection_extent": {
-        "watersheds": "data/static/aoi/wflow_nhdplus_watersheds.geojson",
-        "boundary": "data/static/aoi/wflow_collection_region.geojson",
-        "terrain_raw": "data/wflow/static/raw/topo/dem_wflow.tif",
-        "terrain_output": "data/wflow/static/processed/dem_wflow_coarse.tif",
-        "landcover_raw": "data/wflow/static/raw/landcover/landcover_wflow.tif",
-        "landcover_output": "data/wflow/static/processed/landcover_wflow_coarse.tif",
-        "ssurgo_output": "data/wflow/static/soils/ssurgo_mapunitpoly_wflow.gpkg",
-        "ssurgo_attributes_output": "data/wflow/static/soils/ssurgo_mapunit_attributes_wflow.csv",
-        "hsg_output": "data/wflow/static/soils/hsg_wflow.tif",
-        "ksat_output": "data/wflow/static/soils/ksat_mmhr_wflow.tif",
-    },
-}
 
 
 def build_region_setup(config, paths, *, buffer_degrees=0.01) -> RegionSetup:
@@ -100,16 +70,6 @@ def build_region_setup(config, paths, *, buffer_degrees=0.01) -> RegionSetup:
         ssurgo_hsg_output=_static_path(paths, sources, "ssurgo", "hsg_output"),
         ssurgo_ksat_output=_static_path(paths, sources, "ssurgo", "ksat_output"),
     )
-
-
-def static_sources_with_defaults(config) -> dict:
-    configured = config.get("static_sources", {})
-    sources = {
-        name: {**defaults, **configured.get(name, {})}
-        for name, defaults in DEFAULT_STATIC_SOURCES.items()
-    }
-    sources.update({name: values for name, values in configured.items() if name not in DEFAULT_STATIC_SOURCES})
-    return sources
 
 
 def _study_area_path(config, paths) -> Path:
