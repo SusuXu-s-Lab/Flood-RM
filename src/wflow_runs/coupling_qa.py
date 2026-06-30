@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 from pathlib import Path
 
 import numpy as np
@@ -9,7 +8,10 @@ import pandas as pd
 import xarray as xr
 
 from wflow_runs.notebook import resolve_location_path
-from wflow_v2.qa import read_acceptance as read_dynamic_handoff_acceptance
+from wflow_v2.qa import (
+    read_acceptance as read_dynamic_handoff_acceptance,
+    write_dynamic_handoff_acceptance,
+)
 from wflow_v2.qa import validate_event_boundary as _validate_event_boundary
 from wflow_v2.qa import validate_handoff_gauge_locations
 
@@ -541,19 +543,3 @@ def validate_dynamic_handoff(
         details = "; ".join(f"{row.check}: {row.message}" for row in failed.itertuples())
         raise RuntimeError(f"Dynamic Wflow handoff QA failed: {details}")
     return report
-
-
-def write_dynamic_handoff_acceptance(path, *, event_id: str, discharge_nc, qa_report: pd.DataFrame, metadata: dict | None = None) -> Path:
-    path = Path(path)
-    accepted = bool(not qa_report["status"].isin(["failed", "review_required"]).any())
-    payload = {
-        "event_id": str(event_id),
-        "status": "accepted" if accepted else "failed",
-        "discharge_source": "wflow_dynamic",
-        "discharge_nc": str(discharge_nc),
-        "checks": qa_report.to_dict(orient="records"),
-        "metadata": metadata or {},
-    }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    return path

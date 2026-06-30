@@ -15,8 +15,10 @@ from sfincs_runs.build_base import (
 )
 from sfincs_runs.scenarios.inland_initial_conditions import init_hydrographs
 from sfincs_v2.forcing import (
+    audit_inland_staged_scenario_files,
     build_inland_scenario_manifest,
     index_inland_handoff_events,
+    missing_wflow_discharge_forcing,
     read_wflow_discharge,
     select_inland_scenario_rows,
     stage_gridded_precipitation,
@@ -79,7 +81,12 @@ def stage_scenarios(
 
     handoff = _read_handoff(config, location_root)
     handoff_by_event = index_inland_handoff_events(handoff, catalog["event_id"])
-    missing_discharge = _missing_wflow_discharge_forcing(location_root, handoff_by_event, catalog["event_id"])
+    missing_discharge = missing_wflow_discharge_forcing(
+        location_root,
+        handoff_by_event,
+        catalog["event_id"],
+        resolve_path=lambda value: _location_path(location_root, value),
+    )
     if missing_discharge:
         raise FileNotFoundError(
             "Wflow discharge forcing is missing; run Wflow replay before staging SFINCS: "
@@ -286,68 +293,16 @@ def audit_inland_coupled_batch_readiness(
         staged_df = pd.read_csv(scenario_catalog)
         catalog_source = str(scenario_catalog)
 
-    for column in ["event_id", "run_root"]:
-        if column not in staged_df:
-            raise ValueError(f"Scenario catalog is missing {column!r}: {catalog_source}")
-    staged_df["event_id"] = staged_df["event_id"].astype(str)
-    selected = staged_df[staged_df["event_id"].isin(accepted_ids)].copy()
-    missing_from_catalog = sorted(set(accepted_ids) - set(selected["event_id"]))
-    for event_id in missing_from_catalog:
-        rows.append(
-            {
-                "event_id": event_id,
-                "sfincs_domain_id": "",
-                "check": "scenario_catalog_entry",
-                "status": "failed",
-                "path": catalog_source,
-                "message": "Accepted dynamic handoff is not staged in scenario_catalog.csv.",
-            }
-        )
-
-    direct_rainfall = bool(((config.get("inland_coupling", {}) or {}).get("direct_rainfall", {}) or {}).get("enabled", False))
-    initial_conditions = bool(
-        ((config.get("inland_coupling", {}) or {}).get("initial_conditions", {}) or {}).get("enabled", True)
+    staged_file_report = audit_inland_staged_scenario_files(
+        staged_df,
+        scenarios_root,
+        config,
+        accepted_ids,
+        catalog_source=catalog_source,
     )
-    infiltration_required = bool(
-        set(config.get("event_drivers") or []) & {"rainfall", "soil_moisture"}
-    ) and bool(((config.get("inland_coupling", {}) or {}).get("infiltration", {}) or {}).get("enabled", True))
-    required_files = ["sfincs.inp", "sfincs.src", "sfincs.dis", "forcing_manifest.json", "sfincs_subgrid.nc"]
-    if direct_rainfall:
-        required_files.extend(["sfincs_netampr.nc", "aorc_precip_for_sfincs.nc"])
-    if initial_conditions:
-        required_files.append("sfincs.ini")
-    if infiltration_required:
-        required_files.extend(["sfincs.smax", "sfincs.seff", "sfincs.ks"])
-
-    for staged in selected.to_dict("records"):
-        event_id = str(staged["event_id"])
-        run_root = Path(str(staged["run_root"]))
-        if not run_root.is_absolute():
-            run_root = scenarios_root / run_root
-        domain_id = run_root.name if run_root.parent.name == event_id else ""
-        rows.append(
-            {
-                "event_id": event_id,
-                "sfincs_domain_id": domain_id,
-                "check": "run_root",
-                "status": "passed" if run_root.exists() else "failed",
-                "path": str(run_root),
-                "message": "",
-            }
-        )
-        for name in required_files:
-            path = run_root / name
-            rows.append(
-                {
-                    "event_id": event_id,
-                    "sfincs_domain_id": domain_id,
-                    "check": f"file:{name}",
-                    "status": "passed" if path.exists() and path.stat().st_size > 0 else "failed",
-                    "path": str(path),
-                    "message": "" if path.exists() else "missing required staged SFINCS input",
-                }
-            )
-    return pd.DataFrame(rows)
+    if staged_file_report.empty:
+        return pd.DataFrame(rows)
+    return pd.concat([pd.DataFrame(rows), staged_file_report], ignore_index=True)
 
 
 def stage_inland_coupled_scenario_forcing(
@@ -672,23 +627,6 @@ def _sfincs_domain_models(config: dict, location_root: Path) -> list[dict]:
             "handoff_source_ids": (),
         }
     ]
-
-
-def _missing_wflow_discharge_forcing(location_root: Path, handoff_by_event: dict, event_ids) -> list[str]:
-    missing = []
-    for event_id in event_ids:
-        handoff_event = handoff_by_event[str(event_id)]
-        value = handoff_event.get("discharge_forcing")
-        if value in (None, ""):
-            missing.append(f"{event_id}: <missing discharge_forcing>")
-            continue
-        text = str(value)
-        if "://" in text:
-            continue
-        path = _location_path(location_root, text)
-        if not path.exists():
-            missing.append(text)
-    return sorted(missing)
 
 
 def _missing_dynamic_wflow_acceptance(config: dict, location_root: Path, event_ids) -> list[str]:

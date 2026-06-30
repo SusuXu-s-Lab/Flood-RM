@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
-import xarray as xr
 
 from wflow_runs.handoff_locations import read_stream_boundary_handoff_location_artifacts
 from wflow_runs.coupling_qa import (
@@ -27,7 +26,11 @@ from wflow_runs.build_plan import validate_wflow_reservoir_staticmaps, validate_
 from wflow_runs.states import plan_wflow_warmup_state, validate_warmup_forcing, validate_instates, write_cold_state_workflow
 from wflow_runs.streamflow_realization import validate_wflow_streamflow_realization
 from wflow_runs.notebook import resolve_location_path
-from wflow_v2.event import event_paths as v2_event_paths, require_event_boundary as require_v2_event_boundary
+from wflow_v2.event import (
+    event_paths as v2_event_paths,
+    require_discharge_window as require_v2_discharge_window,
+    require_event_boundary as require_v2_event_boundary,
+)
 
 
 @dataclass(frozen=True)
@@ -326,17 +329,7 @@ def _require_current_handoff_window(config: dict, location_root, event_id: str, 
         pre_event_hours=pre_event_hours,
         post_event_hours=post_event_hours,
     )
-    with xr.open_dataset(discharge_nc) as ds:
-        if "time" not in ds:
-            raise RuntimeError(f"Dynamic Wflow handoff discharge lacks a time coordinate: {discharge_nc}")
-        actual_end = pd.Timestamp(ds["time"].max().values)
-    if actual_end < expected_end:
-        raise RuntimeError(
-            f"Dynamic Wflow handoff for {event_id} is stale: {discharge_nc} ends at "
-            f"{actual_end.isoformat()}, but the current Wflow event window ends at {expected_end.isoformat()}. "
-            "Rerun 04/b_prepare_wflow_dynamic_handoff.ipynb with rerun=True so meteo, Wflow discharge, "
-            "zero-rain QA, and SFINCS staging use the extended window."
-        )
+    require_v2_discharge_window(discharge_nc, expected_end=expected_end, event_id=event_id)
 
 
 def _configured_discharge_source(config: dict) -> str:
