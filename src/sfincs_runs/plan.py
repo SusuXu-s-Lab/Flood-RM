@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from paths import location_or_repo_path_from_paths
+
 
 @dataclass(frozen=True)
 class BaselineBuildPlan:
@@ -83,12 +85,7 @@ def build_baseline_build_plan(config, paths):
     )
 
 def _repo_path(paths, value):
-    path = Path(value)
-    if path.is_absolute():
-        return path
-    if path.parts and path.parts[0] in {"data", "02_flood", "01_grid"} and paths.get("location_root") is not None:
-        return Path(paths["location_root"]) / path
-    return _repo_root(paths) / path
+    return location_or_repo_path_from_paths(paths, value)
 
 def _grid_footprint_source(config, paths):
     value = config.get("grid_footprint", {}).get("source")

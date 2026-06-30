@@ -21,6 +21,7 @@ from collect_sources.ssurgo import (
     ssurgo_attribute_columns,
 )
 from location_runtime import DEFAULT_STATIC_SOURCES, static_sources_with_defaults
+from paths import location_or_repo_path_from_paths, resolve_location_path
 from sfincs_runs.hydrology import write_ssurgo_infiltration_rasters
 from study_location import study_area_bbox
 
@@ -124,12 +125,7 @@ def _optional_static_path(paths, sources, name, key, default) -> Path:
 def _runtime_path(paths, value) -> Path:
     if value is None:
         raise ValueError("path value is required")
-    path = Path(value)
-    if path.is_absolute():
-        return path
-    if path.parts and path.parts[0] in {"data", "02_flood", "01_grid"} and paths.get("location_root") is not None:
-        return Path(paths["location_root"]) / path
-    return _repo_root(paths) / path
+    return location_or_repo_path_from_paths(paths, value)
 
 
 def _repo_root(paths) -> Path:
@@ -588,8 +584,7 @@ def _bounds_cover(outer_bounds, inner_bounds, *, tolerance=1e-8) -> bool:
 
 
 def _location_path(location_root, value):
-    path = Path(value)
-    return path if path.is_absolute() else Path(location_root) / path
+    return resolve_location_path(location_root, value)
 
 
 def _ssurgo_attributes_cover_wflow_soils(path):

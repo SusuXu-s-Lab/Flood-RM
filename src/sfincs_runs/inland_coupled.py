@@ -25,7 +25,7 @@ from sfincs_runs.forcing import (
 )
 from sfincs_runs.io import copy_base_model, write_json
 from wflow_runs.dynamic_handoff import dynamic_handoff_paths, require_handoff
-from location_runtime import resolve_location_path
+from paths import location_root_from_paths, resolve_location_path
 from wflow_runs.streamflow_realization import wflow_streamflow_gage_overlap
 
 
@@ -641,20 +641,11 @@ def _missing_dynamic_wflow_acceptance(config: dict, location_root: Path, event_i
 
 
 def _location_root(paths) -> Path:
-    if paths.get("location_root") is not None:
-        return Path(paths["location_root"])
-    repo_root = Path(paths.get("repo_root", Path.cwd()))
-    location_name = paths.get("location_name")
-    if location_name is None:
-        raise ValueError("paths must include 'location_root' or 'location_name'")
-    return repo_root / "locations" / str(location_name)
+    return location_root_from_paths(paths)
 
 
 def _location_path(location_root: Path, value) -> Path:
-    path = resolve_location_path(location_root, value)
-    if path.parts[:2] == ("locations", location_root.name):
-        return location_root.parents[1] / path
-    return path
+    return resolve_location_path(location_root, value)
 
 
 def _clean(value):

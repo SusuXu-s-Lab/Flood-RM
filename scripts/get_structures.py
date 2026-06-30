@@ -15,7 +15,7 @@ SRC_ROOT = REPO_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from sfincs_runs.build_base.structures import derive_massgis_sfincs_structure_layers  # noqa: E402
+from sfincs_runs.structures import derive_massgis_sfincs_structure_layers  # noqa: E402
 from study_location import define_location, study_area_bbox  # noqa: E402
 
 # Rough degrees-per-km at mid latitudes; only used to pad the AOI envelope.

@@ -15,6 +15,7 @@ from pathlib import Path
 from design_events.catalog import attach_forcing_members, validate_event_catalog
 from design_events.probability import assign_severity_bands
 from design_events.coastal import hybrid_peak_sample_frame
+from paths import location_root_from_paths, resolve_location_path
 
 
 def build_inland_reference_bundle_inputs(config):
@@ -560,21 +561,8 @@ def _member_path(config, paths, forcing):
 
 
 def _location_root(paths):
-    if paths.get("location_root") is not None:
-        return Path(paths["location_root"])
-    repo_root = Path(paths.get("repo_root", Path.cwd()))
-    location_name = paths.get("location_name")
-    if location_name is None:
-        raise ValueError("paths must include 'location_root' or 'location_name'")
-    return repo_root / "locations" / str(location_name)
+    return location_root_from_paths(paths)
 
 
 def _location_path(location_root, value):
-    path = Path(value)
-    if path.is_absolute():
-        return path
-    if path.parts and path.parts[0] in {"data", "02_flood", "01_grid"}:
-        return Path(location_root) / path
-    if path.parts[:2] == ("locations", Path(location_root).name):
-        return Path(location_root).parents[1] / path
-    return Path(location_root) / path
+    return resolve_location_path(location_root, value)

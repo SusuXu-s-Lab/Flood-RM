@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from paths import location_or_repo_path_from_paths, resolve_location_path
+
 
 @dataclass(frozen=True)
 class StructureLayer:
@@ -280,19 +282,11 @@ def _kind_from_component(component: str) -> str:
 
 
 def _resolve_path(paths: dict[str, Any], value: str | Path) -> Path:
-    path = Path(value)
-    if path.is_absolute():
-        return path
-    if path.parts and path.parts[0] in {"data", "02_flood", "01_grid"}:
-        return Path(paths["location_root"]) / path
-    return Path(paths.get("repo_root", Path.cwd())) / path
+    return location_or_repo_path_from_paths(paths, value)
 
 
 def _resolve_location_path(paths: dict[str, Any], value: str | Path) -> Path:
-    path = Path(value)
-    if path.is_absolute():
-        return path
-    return Path(paths["location_root"]) / path
+    return resolve_location_path(paths["location_root"], value)
 
 
 def _study_location(config: dict[str, Any], paths: dict[str, Any]) -> str:

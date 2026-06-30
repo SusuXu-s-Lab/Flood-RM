@@ -72,8 +72,10 @@ only-include = [
     "src/power",
     "src/fiat_runs",
     "src/study_location.py",
+    "src/location_runtime.py",
     "src/paths.py",
     "src/aoi.py",
+    "src/source_artifacts.py",
 ]
 
 [tool.uv]

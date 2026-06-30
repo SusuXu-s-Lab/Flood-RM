@@ -25,7 +25,7 @@ from sfincs_runs.timing import plan_event_forcing_support_window
 from sfincs_runs.snapwave import legacy_era5_spectra_to_snapwave_timeseries
 from sfincs_runs.io import copy_base_model, remove_solver_outputs
 from sfincs_runs.solver import build_sfincs_command, run_sfincs_process, sfincs_subprocess_env
-from location_runtime import resolve_location_path
+from paths import resolve_location_path
 
 
 @dataclass(frozen=True)

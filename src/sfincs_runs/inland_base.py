@@ -14,6 +14,7 @@ from scipy import ndimage
 from shapely.geometry import GeometryCollection, LineString, MultiPoint, Point
 from shapely.ops import nearest_points, unary_union
 
+from paths import location_root_from_paths, resolve_location_path
 from sfincs_runs.infiltration import setup_hydromt_infiltration, validate_physics
 from wflow_runs.handoff_locations import (
     LEGACY_BOUNDARY_HANDOFF_MODES,
@@ -2331,19 +2332,8 @@ def _domain_geometry_with_handoffs(component, handoff: gpd.GeoDataFrame, buffer_
 
 
 def _location_root(paths):
-    if paths.get("location_root") is not None:
-        return Path(paths["location_root"])
-    repo_root = Path(paths.get("repo_root", Path.cwd()))
-    location_name = paths.get("location_name")
-    if location_name is None:
-        raise ValueError("paths must include 'location_root' or 'location_name'")
-    return repo_root / "locations" / str(location_name)
+    return location_root_from_paths(paths)
 
 
 def _location_path(location_root, value):
-    path = Path(value)
-    if path.is_absolute():
-        return path
-    if path.parts[:2] == ("locations", Path(location_root).name):
-        return Path(location_root).parents[1] / path
-    return Path(location_root) / path
+    return resolve_location_path(location_root, value)

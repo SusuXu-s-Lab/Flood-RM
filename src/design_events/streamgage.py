@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 from scipy.signal import find_peaks
 
+from paths import location_root_from_paths, resolve_location_path
+
 
 def build_usgs_streamflow_event_members(config, paths, *, streamflow_records=None):
     """Build streamflow event-member rows from reviewed USGS discharge records."""
@@ -191,24 +193,11 @@ def _streamflow_records_path(config, location_root):
 
 
 def _location_root(paths):
-    if paths.get("location_root") is not None:
-        return Path(paths["location_root"])
-    repo_root = Path(paths.get("repo_root", Path.cwd()))
-    location_name = paths.get("location_name")
-    if location_name is None:
-        raise ValueError("paths must include 'location_root' or 'location_name'")
-    return repo_root / "locations" / str(location_name)
+    return location_root_from_paths(paths)
 
 
 def _location_path(location_root, value):
-    path = Path(value)
-    if path.is_absolute():
-        return path
-    if path.parts and path.parts[0] in {"data", "02_flood", "01_grid"}:
-        return Path(location_root) / path
-    if path.parts[:2] == ("locations", Path(location_root).name):
-        return Path(location_root).parents[1] / path
-    return Path(location_root) / path
+    return resolve_location_path(location_root, value)
 
 
 __all__ = [

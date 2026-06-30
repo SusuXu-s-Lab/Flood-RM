@@ -16,7 +16,7 @@ import yaml
 from shapely.geometry import Point
 from shapely.ops import unary_union
 
-from location_runtime import resolve_location_path
+from paths import location_root_from_paths, relative_to_or_absolute, resolve_location_path
 from wflow_runs.handoff_locations import (
     STREAM_BOUNDARY_HANDOFF_MODES,
     read_stream_boundary_handoff_location_artifacts,
@@ -587,7 +587,7 @@ def plan_wflow_domain_set_from_stream_boundary_crossings(config, paths) -> Wflow
     build time from the DEM-derived LDD basemap, so the Wflow domain spans the true
     upstream watershed rather than only catchments overlapping the exposure footprint.
     """
-    from sfincs_runs.build_base.crossings import (
+    from sfincs_runs.crossings import (
         stream_boundary_inflow_crossings,
         subbasin_submodels_from_crossings,
     )
@@ -646,7 +646,7 @@ def plan_wflow_domain_set_from_boundary_handoff_watersheds(config, paths) -> Wfl
     coverage box. The HydroMT build region is a documented ``subbasin`` region whose
     outlets are the stream/coverage-boundary inflow points that feed the SFINCS domain.
     """
-    from sfincs_runs.build_base.crossings import coverage_box_crossings
+    from sfincs_runs.crossings import coverage_box_crossings
 
     location_root = _location_root(paths)
     domain_set = config.get("wflow", {}).get("domain_set", {})
@@ -1163,7 +1163,7 @@ def plan_wflow_domain_set_from_encompassing_huc(config, paths) -> WflowDomainSet
     whatever NHDPlus extent happened to be fetched. A combined union of all per-box HUCs is
     also written for the region-setup watershed/envelope plot.
     """
-    from sfincs_runs.build_base.crossings import coverage_box_crossings, coverage_domain_id, select_encompassing_huc
+    from sfincs_runs.crossings import coverage_box_crossings, coverage_domain_id, select_encompassing_huc
 
     location_root = _location_root(paths)
     domain_set = config.get("wflow", {}).get("domain_set", {})
@@ -3662,13 +3662,7 @@ def _domain_status(region_kind: str, domain_set: dict) -> str:
 
 
 def _location_root(paths):
-    if paths.get("location_root") is not None:
-        return Path(paths["location_root"])
-    repo_root = Path(paths.get("repo_root", Path.cwd()))
-    location_name = paths.get("location_name")
-    if location_name is None:
-        raise ValueError("paths must include 'location_root' or 'location_name'")
-    return repo_root / "locations" / str(location_name)
+    return location_root_from_paths(paths)
 
 
 def _location_path(location_root: Path, value) -> Path:
@@ -3676,17 +3670,11 @@ def _location_path(location_root: Path, value) -> Path:
 
 
 def _relative_to_location(path: Path, location_root: Path) -> str:
-    try:
-        return path.relative_to(location_root).as_posix()
-    except ValueError:
-        return path.as_posix()
+    return relative_to_or_absolute(path, location_root)
 
 
 def _absolute_location_path(location_root: Path, value) -> str:
-    path = Path(value)
-    if path.is_absolute():
-        return path.as_posix()
-    return (location_root / path).resolve().as_posix()
+    return resolve_location_path(location_root, value).resolve().as_posix()
 
 
 def _merged_source_strategy(overrides: dict) -> dict:

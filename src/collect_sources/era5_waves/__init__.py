@@ -8,6 +8,7 @@ import xarray as xr
 
 from collect_sources import cds as cds
 from collect_sources import earthdatahub as earthdatahub
+from paths import location_or_repo_path_from_paths
 from collect_sources.cds import (
     era5_wave_variables,
     fetch_era5_waves,
@@ -34,12 +35,7 @@ era5_wave_short_variables = ["swh", "pp1d", "mwd", "wdw"]
 def _repo_path(paths, value):
     if value is None:
         return None
-    path = Path(value)
-    if path.is_absolute():
-        return path
-    if path.parts and path.parts[0] in {"data", "02_flood", "01_grid"} and paths.get("location_root") is not None:
-        return Path(paths["location_root"]) / path
-    return paths["repo_root"] / path
+    return location_or_repo_path_from_paths(paths, value)
 
 
 def _wave_output_path(paths, spec):

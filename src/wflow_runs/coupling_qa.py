@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from location_runtime import resolve_location_path
+from paths import resolve_location_path
 from wflow_runs.qa import (
     read_acceptance as read_dynamic_handoff_acceptance,
     write_dynamic_handoff_acceptance,

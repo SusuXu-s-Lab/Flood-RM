@@ -8,6 +8,8 @@ from typing import Any
 import pandas as pd
 import xarray as xr
 
+from paths import configured_path
+
 
 @dataclass(frozen=True)
 class Artifact:
@@ -35,16 +37,7 @@ class Artifact:
 
 def resolve(paths: dict, value: Any, *, base: str = "location") -> Path | None:
     """Resolve a configured path without maintaining source-specific path helpers."""
-    if value in (None, ""):
-        return None
-    p = Path(value)
-    if p.is_absolute():
-        return p
-    location_root = Path(paths.get("location_root") or paths.get("repo_root") or Path.cwd())
-    repo_root = Path(paths.get("repo_root") or location_root)
-    if p.parts and p.parts[0] in {"data", "02_flood", "01_grid", "locations"}:
-        return location_root / p
-    return (repo_root if base == "repo" else location_root) / p
+    return configured_path(paths, value, base=base)
 
 
 def manifest_path(paths: dict, source: str, kind: str) -> Path:

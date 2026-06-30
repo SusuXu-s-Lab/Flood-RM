@@ -11,6 +11,8 @@ import numpy as np
 import pandas as pd
 import requests
 
+from paths import resolve_location_path
+
 FT_TO_M = 0.3048
 ACRE_TO_M2 = 4046.8564224
 ACRE_FT_TO_M3 = 1233.48183754752
@@ -336,8 +338,7 @@ def _normalize_name(value: str) -> str:
 
 
 def _location_path(location_root: Path, value) -> Path:
-    path = Path(value)
-    return path if path.is_absolute() else location_root / path
+    return resolve_location_path(location_root, value)
 
 
 def _to_float(value) -> float:

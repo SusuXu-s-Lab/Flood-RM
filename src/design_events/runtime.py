@@ -9,8 +9,8 @@ import csv
 import json
 from pathlib import Path
 
-from location_runtime import build_design_paths, location_or_repo_path
-from paths import find_repo_root, resolve_repo_path
+from location_runtime import build_design_paths
+from paths import find_repo_root, location_or_repo_path_from_paths, resolve_repo_path
 from study_location import deep_merge as _deep_merge, define_location, load_location_config, resolve_study_location
 
 repo_root = find_repo_root(Path(__file__).resolve())
@@ -484,8 +484,7 @@ def plan(config, paths):
 
 
 def _repo_path(paths, value):
-    location_root = paths.get("location_root") or paths["repo_root"]
-    return location_or_repo_path(location_root, value, repo_root=paths["repo_root"])
+    return location_or_repo_path_from_paths(paths, value)
 
 
 def _member_paths_from_collection(config):

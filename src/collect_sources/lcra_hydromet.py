@@ -6,6 +6,7 @@ import geopandas as gpd
 import pandas as pd
 import requests
 
+from paths import location_or_repo_path_from_paths
 from source_artifacts import write_source_artifact
 
 
@@ -263,10 +264,7 @@ def _endpoint_url(spec, path):
 
 
 def _location_path(paths, value):
-    path = Path(value)
-    if path.is_absolute():
-        return path
-    return Path(paths["location_root"]) / path
+    return location_or_repo_path_from_paths(paths, value)
 
 
 def _number(value):

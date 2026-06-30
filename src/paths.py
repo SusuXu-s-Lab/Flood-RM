@@ -32,9 +32,93 @@ def resolve_repo_path(path, repo_root=None):
     path = Path(path).expanduser()
     return path if path.is_absolute() else (Path(repo_root or find_repo_root()) / path).resolve()
 
-def resolve_location_path(location_root, value):
+def repo_root_for_location(root, location_name=None, *, fallback="root"):
+    root = Path(root)
+    if root.parent.name == "locations" and (location_name is None or root.name == location_name):
+        return root.parents[1]
+    if fallback == "parent":
+        return root.parent
+    return root
+
+def location_path(location_root, value, *, repo_root=None, location_name=None):
+    root = Path(location_root)
     path = Path(value).expanduser()
-    return path if path.is_absolute() else Path(location_root) / path
+    if path.is_absolute():
+        return path
+    name = location_name or root.name
+    if path.parts[:2] == ("locations", name):
+        repo = Path(repo_root) if repo_root is not None else repo_root_for_location(root, name)
+        return repo / path
+    return root / path
+
+def resolve_location_path(location_root, value, *, repo_root=None, location_name=None):
+    """Resolve a location path and re-home serialized paths from another checkout."""
+    root = Path(location_root)
+    path = Path(value).expanduser()
+    name = location_name or root.name
+    if not path.is_absolute():
+        return location_path(root, path, repo_root=repo_root, location_name=name)
+    relocated = relocate_absolute_location_path(root, path, location_name=name)
+    return relocated if relocated is not None else path
+
+def relocate_absolute_location_path(location_root, path, *, location_name=None):
+    """Map ``.../locations/<name>/...`` paths onto the active location root."""
+    root = Path(location_root)
+    path = Path(path)
+    name = location_name or root.name
+    parts = path.parts
+    marker = ("locations", name)
+    for index in range(len(parts) - 1):
+        if parts[index : index + 2] == marker:
+            suffix = Path(*parts[index + 2 :])
+            return root / suffix
+    return None
+
+def location_or_repo_path(location_root, value, *, repo_root=None, location_name=None):
+    path = Path(value).expanduser()
+    if path.parts and path.parts[0] in {"data", "02_flood", "01_grid"}:
+        return Path(location_root) / path
+    repo = Path(repo_root) if repo_root is not None else repo_root_for_location(location_root, location_name)
+    return repo / path
+
+def location_root_from_paths(paths):
+    """Return the Location Workspace root from a notebook/runtime ``paths`` dict."""
+    if paths.get("location_root") is not None:
+        return Path(paths["location_root"])
+    repo_root = Path(paths.get("repo_root", Path.cwd()))
+    location_name = paths.get("location_name")
+    if location_name is None:
+        raise ValueError("paths must include 'location_root' or 'location_name'")
+    return repo_root / "locations" / str(location_name)
+
+def location_or_repo_path_from_paths(paths, value):
+    """Resolve a collection/static path from a notebook/runtime ``paths`` dict."""
+    root = (
+        paths["location_root"]
+        if paths.get("location_root") is not None
+        else location_root_from_paths(paths)
+        if paths.get("location_name") is not None
+        else paths.get("repo_root", Path.cwd())
+    )
+    return location_or_repo_path(
+        root,
+        value,
+        repo_root=paths.get("repo_root", root),
+        location_name=paths.get("location_name"),
+    )
+
+def configured_path(paths, value, *, base="location"):
+    """Resolve a path from a notebook/runtime ``paths`` dict."""
+    if value in (None, ""):
+        return None
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return path
+    location_root = Path(paths.get("location_root") or paths.get("repo_root") or Path.cwd())
+    repo_root = Path(paths.get("repo_root") or location_root)
+    if path.parts and path.parts[0] in {"data", "02_flood", "01_grid", "locations"}:
+        return location_root / path
+    return (repo_root if base == "repo" else location_root) / path
 
 def relative_to_or_absolute(path, root):
     path = Path(path)

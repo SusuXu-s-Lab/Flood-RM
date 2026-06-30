@@ -1,5 +1,3 @@
-import sys
-
 from sfincs_runs import audit as audit
 from sfincs_runs import create_events as create_events
 from sfincs_runs import event_forcing as event_forcing
@@ -40,27 +38,6 @@ from sfincs_runs.outcome_catalogue import (
     build_flood_event_outcome_catalogue,
 )
 
-__path__ = []
-if __spec__ is not None:
-    __spec__.submodule_search_locations = __path__
-
-for _name, _module in {
-    "audit": audit,
-    "create_events": create_events,
-    "event_forcing": event_forcing,
-    "inland_coupled": inland_coupled,
-    "inland_initial_conditions": inland_initial_conditions,
-    "joint_handoff": joint_handoff,
-    "outcome_catalogue": outcome_catalogue,
-    "run_events": run_events,
-    "run_inland_coupled_events": run_inland_coupled_events,
-    "scenario_stats": scenario_stats,
-    "scenarios": scenarios,
-    "timing": timing,
-}.items():
-    sys.modules[f"{__name__}.{_name}"] = _module
-
-
 def build_coastal_hydrograph_from_analog(
     components,
     peak_time,
@@ -92,19 +69,12 @@ __all__ = [
     "build_timeseries",
     "build_coastal_hydrograph_from_analog",
     "build_flood_event_outcome_catalogue",
-    "init_hydrographs",
     "derive_hydrograph_initial_depth",
     "handoff_readiness",
+    "init_hydrographs",
     "plan_example",
     "stage_inland_coupled_example_forcing",
     "stage_scenarios",
     "stage_inland_coupled_scenario_forcing",
-    "write_handoff",
-    "audit_forcing",
-    "build_timeseries",
-    "handoff_readiness",
-    "init_hydrographs",
-    "plan_example",
-    "stage_scenarios",
     "write_handoff",
 ]

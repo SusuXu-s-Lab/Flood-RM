@@ -20,6 +20,7 @@ from shapely.ops import split
 
 from collect_sources.ssurgo import ssurgo_attribute_columns
 from collect_sources.national_hydrography import WBD_MAPSERVER, fetch_nhdplus_hr_catchments, fetch_wbd_huc
+from paths import resolve_location_path
 from sfincs_runs.crossings import select_encompassing_huc
 from sfincs_runs.inland_base import (
     plan_inland_sfincs_domain_set,
@@ -2203,8 +2204,7 @@ def _series_or_frame(value):
 
 
 def _location_path(location_root, value) -> Path:
-    path = Path(value)
-    return path if path.is_absolute() else Path(location_root) / path
+    return resolve_location_path(location_root, value)
 
 
 def _fetch_worldcover_for_bbox_geometry(bbox_wgs84, output_path, *, bbox_gdf, year=2021, version="v200"):

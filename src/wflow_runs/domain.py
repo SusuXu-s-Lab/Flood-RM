@@ -11,8 +11,7 @@ from shapely.geometry import Point
 import yaml
 
 from .api import HandoffPoint
-from location_runtime import resolve_location_path
-from paths import relative_to_or_absolute
+from paths import relative_to_or_absolute, resolve_location_path
 
 STREAM_HANDOFF_MODES = {
     "stream_boundary_intersection",

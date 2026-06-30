@@ -12,7 +12,7 @@ import xarray as xr
 import yaml
 
 from collect_sources.usgs_streamgages import fetch_nwis_discharge_records
-from location_runtime import resolve_location_path
+from paths import resolve_location_path
 from wflow_runs.usgs import usgs_instantaneous_streamflow_spec
 
 

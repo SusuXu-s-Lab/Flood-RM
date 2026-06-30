@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from design_events import (
+    audit_metrics,
     catalog,
     coastal,
-    diagnostics,
     inland,
     notebook,
     probability,
@@ -16,9 +16,9 @@ from design_events import (
 )
 
 __all__ = [
+    "audit_metrics",
     "catalog",
     "coastal",
-    "diagnostics",
     "inland",
     "notebook",
     "probability",

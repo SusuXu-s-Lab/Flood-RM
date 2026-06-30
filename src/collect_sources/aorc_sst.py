@@ -11,6 +11,7 @@ from scipy.signal import fftconvolve
 import xarray as xr
 
 from collect_sources.aorc_event_meteo import aorc_wflow_temp_pet_variables, prepare_aorc_temp_pet_for_wflow
+from paths import location_or_repo_path_from_paths
 from source_artifacts import (
     read_source_artifact,
     source_artifact_path,
@@ -29,12 +30,7 @@ _PLAN_UNSET = object()
 def _repo_path(paths, value):
     if value is None:
         return None
-    path = Path(value)
-    if path.is_absolute():
-        return path
-    if path.parts and path.parts[0] in {"data", "02_flood", "01_grid"}:
-        return paths["location_root"] / path
-    return paths["repo_root"] / path
+    return location_or_repo_path_from_paths(paths, value)
 
 
 def _open_aorc_year(year, spec):

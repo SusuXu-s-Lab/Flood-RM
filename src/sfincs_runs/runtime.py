@@ -10,10 +10,9 @@ from typing import Any
 from location_runtime import (
     apply_inland_runtime_defaults,
     build_sfincs_paths,
-    location_path,
-    repo_root_for_location,
     static_sources_with_defaults,
 )
+from paths import location_path, repo_root_for_location
 from study_location import LocationDefinition
 
 

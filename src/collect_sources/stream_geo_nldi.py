@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 import requests
 
+from paths import resolve_location_path
 from collect_sources.national_hydrography import (
     STREAM_GEO_FIGSHARE_ARTICLE_ID,
     fetch_nldi_comid,
@@ -155,5 +156,4 @@ def _table_rows(path: Path) -> int:
 
 
 def _location_path(location_root: Path, value) -> Path:
-    path = Path(value)
-    return path if path.is_absolute() else Path(location_root) / path
+    return resolve_location_path(location_root, value)

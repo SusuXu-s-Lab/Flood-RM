@@ -11,6 +11,7 @@ import pandas as pd
 import requests
 from shapely.ops import transform
 
+from paths import location_or_repo_path_from_paths
 
 soil_wfs_url = "https://sdmdataaccess.nrcs.usda.gov/Spatial/SDMWGS84Geographic.wfs"
 soil_tabular_url = "https://sdmdataaccess.nrcs.usda.gov/tabular/post.rest"
@@ -294,13 +295,7 @@ _REVIEW_NOTES = (
 
 
 def _location_path(paths, value):
-    path = Path(value)
-    if path.is_absolute():
-        return path
-    root = paths.get("location_root") or paths.get("repo_root") or Path.cwd()
-    if path.parts and path.parts[0] in {"data", "02_flood", "01_grid"}:
-        return Path(root) / path
-    return Path(paths.get("repo_root", root)) / path
+    return location_or_repo_path_from_paths(paths, value)
 
 
 def _footprint_path(spec, paths):

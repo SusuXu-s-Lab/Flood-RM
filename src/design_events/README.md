@@ -76,8 +76,8 @@ Use these files when preparing catalog outputs for notebooks, models, reviewers,
 - `audit.py`  
   Builds a compact audit summary from a wide Event Catalog, including formulas, sampling mass, realization reuse, and probability-weight checks.
 
-- `diagnostics.py`  
-  Creates table-only diagnostics from `events`, `drivers`, and `audit`, including severity distribution, probability-weight checks, reuse, scale factors, and timing coverage.
+- `audit_metrics.py`  
+  Creates table-only audit metrics from `events`, `drivers`, and `audit`, including severity distribution, probability-weight checks, reuse, scale factors, and timing coverage.
 
 - `plotting.py`  
   Contains notebook plots and visual diagnostics for records, fits, event distributions, timing, catalog coverage, copula fits, streamflow, and coastal/inland pairing checks.

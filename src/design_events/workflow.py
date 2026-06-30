@@ -12,7 +12,7 @@ import pyvinecopulib as pv
 
 from design_events.coastal import coastal_realization_metadata
 from design_events.catalog import ReferenceBundle, write_reference_bundle
-from design_events.diagnostics import audit_diagnostics
+from design_events.audit_metrics import build_audit_metrics
 from design_events.inland import build_inland_reference_bundle_inputs, inland_reference_metadata
 from design_events.mixture import fit_mixture_law, sample_mixture
 from design_events.probability import (
@@ -81,7 +81,7 @@ def build_reference_bundle(config, *, output_dir, seed=0) -> ReferenceBundle:
         audit["coastal"] = coastal_realization_metadata(events, drivers, None, cfg)
     if _is_inland_reference(cfg):
         audit["inland"] = inland_reference_metadata(events, drivers, cfg)
-    audit["diagnostics"] = audit_diagnostics(events, drivers, audit)
+    audit["diagnostics"] = build_audit_metrics(events, drivers, audit)
     return write_reference_bundle(events, drivers, audit, output_dir)
 
 

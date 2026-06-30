@@ -25,7 +25,7 @@ from wflow_runs.replay import (
 from wflow_runs.build_plan import validate_wflow_reservoir_staticmaps, validate_staticmaps, write_wflow_reservoir_readiness
 from wflow_runs.states import plan_wflow_warmup_state, validate_warmup_forcing, validate_instates, write_cold_state_workflow
 from wflow_runs.streamflow_realization import validate_wflow_streamflow_realization
-from location_runtime import resolve_location_path
+from paths import resolve_location_path
 from wflow_runs.event import (
     event_paths as v2_event_paths,
     legacy_dynamic_handoff_paths as v2_legacy_dynamic_handoff_paths,

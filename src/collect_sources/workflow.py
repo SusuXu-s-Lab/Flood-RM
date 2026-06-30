@@ -12,6 +12,7 @@ import json
 import pandas as pd
 
 from location_runtime import static_sources_with_defaults
+from paths import location_or_repo_path_from_paths
 
 COLLECTORS = {
     "aorc": "collect_sources.aorc:collect",
@@ -617,13 +618,7 @@ def _model_crs(config):
 
 
 def _location_path(paths, value):
-    path = Path(value)
-    if path.is_absolute():
-        return path
-    root = paths.get("location_root") or paths.get("repo_root") or Path.cwd()
-    if path.parts and path.parts[0] in {"data", "02_flood", "01_grid"}:
-        return Path(root) / path
-    return Path(paths.get("repo_root", root)) / path
+    return location_or_repo_path_from_paths(paths, value)
 
 
 # Notebook-facing helpers
@@ -2192,12 +2187,7 @@ def _will_reuse_source(step, paths: dict, *, rerun: bool) -> bool:
 
 
 def _source_location_path(paths: dict, value) -> Path:
-    path = Path(value)
-    if path.is_absolute():
-        return path
-    if path.parts and path.parts[0] in {"data", "02_flood", "01_grid"}:
-        return paths["location_root"] / path
-    return paths["repo_root"] / path
+    return location_or_repo_path_from_paths(paths, value)
 
 
 def _read_csv(path, **kwargs) -> pd.DataFrame:

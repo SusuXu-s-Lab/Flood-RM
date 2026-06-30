@@ -7,7 +7,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from paths import default_location_config_path, find_repo_root, resolve_repo_path
+from paths import (
+    default_location_config_path,
+    find_repo_root,
+    location_or_repo_path,
+    location_path,
+    repo_root_for_location,
+    resolve_location_path,
+    resolve_repo_path,
+)
 from study_location import LocationDefinition, define_location, resolve_study_location
 
 
@@ -256,83 +264,6 @@ def apply_inland_runtime_defaults(config: dict[str, Any]) -> dict[str, Any]:
         if isinstance(domain_set, dict):
             domain_set.setdefault("event_catalog_scope", "shared_across_domain_set")
     return config
-
-
-def repo_root_for_location(root: str | Path, location_name: str | None = None, *, fallback: str = "root") -> Path:
-    root = Path(root)
-    if root.parent.name == "locations" and (location_name is None or root.name == location_name):
-        return root.parents[1]
-    if fallback == "parent":
-        return root.parent
-    return root
-
-
-def location_path(
-    location_root: str | Path,
-    value: str | Path,
-    *,
-    repo_root: str | Path | None = None,
-    location_name: str | None = None,
-) -> Path:
-    root = Path(location_root)
-    path = Path(value)
-    if path.is_absolute():
-        return path
-    name = location_name or root.name
-    if path.parts[:2] == ("locations", name):
-        repo = Path(repo_root) if repo_root is not None else repo_root_for_location(root, name)
-        return repo / path
-    return root / path
-
-
-def resolve_location_path(
-    location_root: str | Path,
-    value: str | Path,
-    *,
-    repo_root: str | Path | None = None,
-    location_name: str | None = None,
-) -> Path:
-    """Resolve a location path and re-home serialized paths from another checkout."""
-    root = Path(location_root)
-    path = Path(value).expanduser()
-    name = location_name or root.name
-    if not path.is_absolute():
-        return location_path(root, path, repo_root=repo_root, location_name=name)
-    relocated = relocate_absolute_location_path(root, path, location_name=name)
-    return relocated if relocated is not None else path
-
-
-def relocate_absolute_location_path(
-    location_root: str | Path,
-    path: str | Path,
-    *,
-    location_name: str | None = None,
-) -> Path | None:
-    """Map ``.../locations/<name>/...`` paths onto the active location root."""
-    root = Path(location_root)
-    path = Path(path)
-    name = location_name or root.name
-    parts = path.parts
-    marker = ("locations", name)
-    for index in range(len(parts) - 1):
-        if parts[index : index + 2] == marker:
-            suffix = Path(*parts[index + 2 :])
-            return root / suffix
-    return None
-
-
-def location_or_repo_path(
-    location_root: str | Path,
-    value: str | Path,
-    *,
-    repo_root: str | Path | None = None,
-    location_name: str | None = None,
-) -> Path:
-    path = Path(value)
-    if path.parts and path.parts[0] in {"data", "02_flood", "01_grid"}:
-        return Path(location_root) / path
-    repo = Path(repo_root) if repo_root is not None else repo_root_for_location(location_root, location_name)
-    return repo / path
 
 
 def build_sfincs_paths(

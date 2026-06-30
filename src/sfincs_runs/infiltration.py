@@ -2,6 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 import numpy as np
 import xarray as xr
+from paths import resolve_location_path
 from sfincs_runs.hydrology import condition_ksat_raster
 
 def validate_infiltration_config(infiltration_cfg, *, event_drivers):
@@ -222,8 +223,7 @@ def _select_hydromt_infiltration_component(sf):
 def _resolve_location_path(paths, value):
     if value in (None, ""):
         return None
-    path = Path(str(value))
-    return path if path.is_absolute() else Path(paths["location_root"]) / path
+    return resolve_location_path(paths["location_root"], value)
 
 def _register_raster_source(sf, paths, name, value):
     path = _resolve_location_path(paths, value)

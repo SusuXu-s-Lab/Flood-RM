@@ -1,6 +1,6 @@
-"""Diagnostics for reference bundle tables.
+"""Audit metrics for reference bundle tables.
 
-Diagnostics consume ``events``, ``drivers``, and ``audit`` only. They do not rebuild
+Metrics consume ``events``, ``drivers``, and ``audit`` only. They do not rebuild
 catalogs, read source data, or stage hydrodynamic forcing.
 """
 
@@ -98,8 +98,8 @@ def timing_summary(events, drivers):
     return summary
 
 
-def audit_diagnostics(events, drivers, audit):
-    """Build audit-ready diagnostics from v2 bundle tables only."""
+def build_audit_metrics(events, drivers, audit):
+    """Build audit-ready metrics from v2 bundle tables only."""
 
     return {
         "severity_distribution": severity_distribution(events),
@@ -111,7 +111,7 @@ def audit_diagnostics(events, drivers, audit):
 
 
 __all__ = [
-    "audit_diagnostics",
+    "build_audit_metrics",
     "probability_weight_check",
     "realization_reuse",
     "scale_factor_quantiles",

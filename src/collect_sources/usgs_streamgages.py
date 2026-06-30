@@ -9,6 +9,7 @@ import geopandas as gpd
 import pandas as pd
 import requests
 
+from paths import location_or_repo_path_from_paths
 from source_artifacts import (
     read_source_artifact,
     source_artifact_covers,
@@ -778,13 +779,7 @@ def _candidate_output_path(spec, paths):
 
 
 def _location_path(paths, value):
-    path = Path(value)
-    if path.is_absolute():
-        return path
-    root = paths.get("location_root") or paths.get("repo_root") or Path.cwd()
-    if path.parts and path.parts[0] in {"data", "02_flood", "01_grid"}:
-        return Path(root) / path
-    return Path(paths.get("repo_root", root)) / path
+    return location_or_repo_path_from_paths(paths, value)
 
 
 def _streamflow_records_output_path(spec, paths):
@@ -1057,10 +1052,7 @@ def _discharge_column(frame):
 def _bbox_from_search_geometry(value, paths, *, buffer_km=None):
     if not value:
         return None
-    path = Path(value)
-    if not path.is_absolute():
-        root = paths.get("location_root") or paths.get("repo_root") or Path.cwd()
-        path = Path(root) / path
+    path = _location_path(paths, value)
     if not path.exists():
         return None
     import geopandas as gpd

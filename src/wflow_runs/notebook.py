@@ -13,7 +13,8 @@ import pandas as pd
 import yaml
 
 from study_location import define_location
-from location_runtime import WflowCalibrationRuntime, WflowRuntime, build_wflow_runtime, resolve_location_path
+from location_runtime import WflowCalibrationRuntime, WflowRuntime, build_wflow_runtime
+from paths import resolve_location_path
 from wflow_runs.build_plan import (
     build_wflow_build_plan,
     plan_wflow_domain_set,

@@ -13,6 +13,7 @@ import rioxarray as rxr
 from shapely.geometry import box
 import xarray as xr
 
+from paths import resolve_location_path
 from collect_sources.reservoir_conditions import (
     enrich_wflow_reservoirs_with_public_conditions,
 )
@@ -1931,8 +1932,7 @@ def _ensure_ssurgo_wflow_attributes(soil_polygons, soil_attributes):
 
 
 def _location_path(location_root, value):
-    path = Path(value)
-    return path if path.is_absolute() else Path(location_root) / path
+    return resolve_location_path(location_root, value)
 
 
 def _optional_location_path(location_root, value):

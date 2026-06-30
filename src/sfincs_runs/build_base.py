@@ -1,5 +1,4 @@
 import os
-import sys
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
@@ -67,23 +66,6 @@ from sfincs_runs.structures import (
     plot_structure_layers,
     prepare_structure_layers,
 )
-
-__path__ = []
-if __spec__ is not None:
-    __spec__.submodule_search_locations = __path__
-
-for _name, _module in {
-    "crossings": crossings,
-    "infiltration": infiltration,
-    "inland_base": inland_base,
-    "plan": plan,
-    "region_notebook": region_notebook,
-    "static_catalog": static_catalog,
-    "static_intake": static_intake,
-    "structures": structures,
-}.items():
-    sys.modules[f"{__name__}.{_name}"] = _module
-
 
 __all__ = [
     "BaselineBuildPlan",
