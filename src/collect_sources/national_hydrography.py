@@ -40,6 +40,7 @@ def collect_national_hydrography(settings, *, skip_existing=True, smoke=False):
     location_root = Path(paths["location_root"])
     collection = config.get("collection", {}).get("national_hydrography", {})
     static_sources = config.get("static_sources", {})
+    wflow_extent = static_sources.get("wflow_collection_extent", {})
 
     hydrography_nc = _location_path(location_root, collection.get("hydromt_basemap", "data/wflow/hydrography/us_hydrography_basemap.nc"))
     river_gpkg = _location_path(location_root, collection.get("river_geometry", "data/sources/national_hydrography/nhdplus_hr_river_geometry.gpkg"))
@@ -89,13 +90,7 @@ def collect_national_hydrography(settings, *, skip_existing=True, smoke=False):
             hydrography_nc,
             target_resolution_degrees,
             expected_outlets=str(collection.get("dem_outlets", "edge")),
-            expected_mask_geometry=str(
-                _optional_location_path(
-                    location_root,
-                    collection.get("dem_mask_geometry", static_sources.get("wflow_collection_extent", {}).get("watersheds")),
-                )
-                or ""
-            ),
+            expected_mask_geometry=_expected_mask_geometry(location_root, collection, wflow_extent),
         )
     ):
         reservoir_summary = write_wflow_reservoir_waterbodies(
@@ -132,13 +127,7 @@ def collect_national_hydrography(settings, *, skip_existing=True, smoke=False):
             hydrography_nc,
             target_resolution_degrees,
             expected_outlets=str(collection.get("dem_outlets", "edge")),
-            expected_mask_geometry=str(
-                _optional_location_path(
-                    location_root,
-                    collection.get("dem_mask_geometry", static_sources.get("wflow_collection_extent", {}).get("watersheds")),
-                )
-                or ""
-            ),
+            expected_mask_geometry=_expected_mask_geometry(location_root, collection, wflow_extent),
         )
     ):
         result = _result(
@@ -162,7 +151,6 @@ def collect_national_hydrography(settings, *, skip_existing=True, smoke=False):
             )
         return result
 
-    wflow_extent = static_sources.get("wflow_collection_extent", {})
     dem_path = _location_path(
         location_root,
         collection.get(
@@ -352,6 +340,7 @@ def refresh_wflow_hydrography_basemap(settings, *, skip_existing=False):
     location_root = Path(paths["location_root"])
     collection = config.get("collection", {}).get("national_hydrography", {})
     static_sources = config.get("static_sources", {})
+    wflow_extent = static_sources.get("wflow_collection_extent", {})
 
     hydrography_nc = _location_path(location_root, collection.get("hydromt_basemap", "data/wflow/hydrography/us_hydrography_basemap.nc"))
     river_gpkg = _location_path(location_root, collection.get("river_geometry", "data/sources/national_hydrography/nhdplus_hr_river_geometry.gpkg"))
@@ -365,13 +354,7 @@ def refresh_wflow_hydrography_basemap(settings, *, skip_existing=False):
             hydrography_nc,
             target_resolution_degrees,
             expected_outlets=str(collection.get("dem_outlets", "edge")),
-            expected_mask_geometry=str(
-                _optional_location_path(
-                    location_root,
-                    collection.get("dem_mask_geometry", wflow_extent.get("watersheds")),
-                )
-                or ""
-            ),
+            expected_mask_geometry=_expected_mask_geometry(location_root, collection, wflow_extent),
         )
     ):
         return {
@@ -383,7 +366,6 @@ def refresh_wflow_hydrography_basemap(settings, *, skip_existing=False):
             "artifact_count": 1,
         }
 
-    wflow_extent = static_sources.get("wflow_collection_extent", {})
     dem_path = _location_path(
         location_root,
         collection.get(
@@ -1957,6 +1939,16 @@ def _optional_location_path(location_root, value):
     if value in (None, ""):
         return None
     return _location_path(location_root, value)
+
+
+def _expected_mask_geometry(location_root, collection, wflow_extent):
+    return str(
+        _optional_location_path(
+            location_root,
+            collection.get("dem_mask_geometry", wflow_extent.get("watersheds")),
+        )
+        or ""
+    )
 
 
 def _result(

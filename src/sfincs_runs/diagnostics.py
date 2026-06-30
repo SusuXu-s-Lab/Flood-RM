@@ -15,20 +15,6 @@ import xarray as xr
 M_TO_FT = 3.28084
 SLR_BENCHMARK_RETURN_PERIODS = (10, 100, 500)
 
-_PLOTTING_EXPORTS = {
-    'plot_flood_response_diagnostics',
-    'plot_driver_response_matrix',
-    'plot_driver_outcome_matrix',
-    'plot_forcing',
-    'plot_wave_forcing',
-    'plot_standard_animation',
-    'plot_animation',
-    'plot_standard_diagnostics',
-    'plot_precip_animation',
-    'plot_runup',
-    'plot_slr_depth_comparison',
-}
-
 __all__ = [
     'FloodResponseDiagnostics',
     'DriverResponseDiagnostics',
@@ -44,7 +30,6 @@ __all__ = [
     'health_check_table',
     'select_benchmark_events',
     'slr_event_depth_comparison',
-    *_PLOTTING_EXPORTS,
 ]
 
 @dataclass(frozen=True)
@@ -555,10 +540,3 @@ def slr_event_depth_comparison(
         depth_ft=depth,
         delta_ft=delta,
     )
-
-def __getattr__(name):
-    if name in _PLOTTING_EXPORTS:
-        from sfincs_runs import plotting
-
-        return getattr(plotting, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

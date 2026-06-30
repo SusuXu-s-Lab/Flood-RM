@@ -45,28 +45,3 @@ soil = pd.read_csv(paths["nwm_soil_moisture_csv"])
 members = event_members(rainfall, waterlevel=waterlevel, soil=soil, output_csv=paths["event_members_csv"])
 weights = empirical_measure(members)
 ```
-
-## Scientific contract
-
-\[
-R_d(t,c)=\frac{1}{|A|}\int_A\sum_{h=0}^{d-1}X_R(t-h,a+c)\,da,
-\quad
-\mathcal S=\operatorname{Decluster}_\tau\{R_d(t,c)\ge u\}.
-\]
-
-\[
-B_i=(P_i,\Theta_i,\eta_i,W_i,M_i,Q_i,G),
-\quad
-\widehat{\mathbb P}_n=\frac{1}{n}\sum_i\delta_{B_i}.
-\]
-
-## Design decisions
-
-* Source-specific I/O adapters and stochastic-boundary helpers live in the shallow package root.
-* Probability/stochastic logic remains explicit in the rainfall, meteo, hydrology, static, and members modules.
-* There is one audit object: `Artifact`.
-* There is one manifest format: source, kind, status, start/end, artifacts, metadata.
-* The package uses ordinary Python, NumPy, SciPy, pandas, xarray, GeoPandas, requests, and pyproj. Optional service clients such as `cdsapi` are imported only inside the source function that needs them.
-* Plotting, repair routines, readiness dashboards, and notebook-only review tables are intentionally not in the production package.
-
-The regenerated source tree is about 1,550 lines of Python, compared with roughly 9,900 lines in the uploaded collection files.

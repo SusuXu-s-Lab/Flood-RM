@@ -111,94 +111,6 @@ def event_peak_discharge_table(
     return frame.merge(pd.DataFrame(rows), on="event_id", how="left")
 
 
-def plot_event_precipitation_peak_discharge(
-    catalog,
-    *,
-    location_root,
-    events_root=None,
-    rainfall_column: str | None = None,
-    soil_moisture_column: str | None = None,
-    log_y: bool = True,
-    ax=None,
-):
-    """Plot Event Catalog rainfall against Wflow-generated peak discharge."""
-    import matplotlib.pyplot as plt
-
-    frame = event_peak_discharge_table(catalog, location_root=location_root, events_root=events_root)
-    rainfall_column = rainfall_column or _first_present(
-        frame,
-        ["rainfall_mm", "rainfall", "event_precipitation_mm", "mean_precip_mm"],
-    )
-    soil_moisture_column = soil_moisture_column or _first_present(
-        frame,
-        ["soil_moisture_metric", "SOILSAT_TOP", "antecedent_soil_moisture", "mean_soil_moisture"],
-    )
-    if rainfall_column is None:
-        raise ValueError("catalog has no recognizable rainfall column")
-
-    plot_frame = frame.copy()
-    plot_frame["event_precipitation_mm"] = pd.to_numeric(plot_frame[rainfall_column], errors="coerce")
-    plot_frame["peak_discharge_m3s"] = pd.to_numeric(plot_frame["peak_discharge_m3s"], errors="coerce")
-    plot_frame = plot_frame.dropna(subset=["event_precipitation_mm", "peak_discharge_m3s"])
-
-    if ax is None:
-        fig, ax = plt.subplots(figsize=(6.5, 5.2), constrained_layout=True)
-    else:
-        fig = ax.figure
-
-    if plot_frame.empty:
-        ax.text(0.5, 0.5, "No completed Wflow discharge artifacts found", ha="center", va="center")
-        ax.set_axis_off()
-        return fig, ax, frame
-
-    if soil_moisture_column and soil_moisture_column in plot_frame:
-        moisture = pd.to_numeric(plot_frame[soil_moisture_column], errors="coerce")
-    else:
-        moisture = pd.Series(np.nan, index=plot_frame.index)
-
-    if moisture.notna().any():
-        points = ax.scatter(
-            plot_frame["event_precipitation_mm"],
-            plot_frame["peak_discharge_m3s"],
-            c=moisture,
-            cmap="turbo_r",
-            s=18,
-            alpha=0.72,
-            edgecolors="none",
-        )
-        fig.colorbar(points, ax=ax, shrink=0.72, label="Antecedent soil moisture [-]")
-    else:
-        ax.scatter(
-            plot_frame["event_precipitation_mm"],
-            plot_frame["peak_discharge_m3s"],
-            color="#2b83ba",
-            s=22,
-            alpha=0.72,
-            edgecolors="white",
-            linewidths=0.25,
-        )
-        ax.text(
-            0.02,
-            0.98,
-            "antecedent soil moisture unavailable",
-            transform=ax.transAxes,
-            ha="left",
-            va="top",
-            fontsize=8,
-        )
-
-    ax.set_xlabel("Event precipitation [mm]")
-    ax.set_ylabel("Peak Wflow handoff discharge [m3 s$^{-1}$]")
-    if log_y:
-        ymin = max(float(plot_frame["peak_discharge_m3s"].min()) * 0.8, 1.0e-3)
-        ymax = float(plot_frame["peak_discharge_m3s"].max()) * 1.25
-        ax.set_yscale("log")
-        ax.set_ylim(ymin, ymax)
-    ax.grid(True, which="both", color="#d9d9d9", linewidth=0.7, alpha=0.8)
-    ax.set_title("Rainfall driver vs Wflow response")
-    return fig, ax, frame
-
-
 def _resolve_path(root: Path, value) -> Path:
     path = Path(value)
     return path if path.is_absolute() else root / path
@@ -209,13 +121,6 @@ def _is_missing_value(value) -> bool:
         return bool(pd.isna(value))
     except Exception:
         return False
-
-
-def _first_present(frame: pd.DataFrame, candidates: list[str]) -> str | None:
-    for column in candidates:
-        if column in frame.columns:
-            return column
-    return None
 
 
 def validate_event_boundary(

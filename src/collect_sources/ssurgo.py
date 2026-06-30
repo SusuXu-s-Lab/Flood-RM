@@ -277,31 +277,8 @@ def main(argv=None):
 if __name__ == "__main__":
     main()
 
-
-# NWM soil-moisture sampling points derived from local soil/footprint evidence
-"""Derive NWM soil-moisture sampling points from a location footprint.
-
-Representative NWM cells are never hand-typed in the location YAML. Instead they
-are *derived* from the location's footprint geometry the same way the AORC
-transposition region is (see ``prerequisites.prepare_aorc_transposition_region``):
-sample the footprint centroid, its bounding-box corners, and its edge midpoints,
-then let the collector snap each to the nearest NWM grid cell. The derived points
-are written to a stakeholder-facing, review-required GeoJSON so a reviewer can
-open them in any GIS and confirm them against the Wflow-SFINCS domain set.
-
-Both the collection prerequisite step and the collector itself call into here, so
-the derivation lives in exactly one place.
-"""
-
-from pathlib import Path
-
-# GeoJSON is WGS84 by the RFC 7946 default, so the artifact opens correctly in any
-# GIS while the collector reprojects to the NWM grid CRS for cell selection.
 GEOJSON_CRS = "EPSG:4326"
 
-# Footprint candidates, most specific first. Mirrors the AORC transposition-region
-# source resolution so soil-moisture sampling tracks the same evaluation AOI; the
-# coastal study area is the fallback for locations without an evaluation footprint.
 FOOTPRINT_CANDIDATES = (
     "data/static/aoi/evaluation_footprint.geojson",
     "data/static/aoi/study_area.geojson",
@@ -433,15 +410,6 @@ def ensure_points_geojson(spec, paths, *, overwrite=False):
 
 
 def load_points(spec, paths):
-    """Resolve the soil-moisture sampling points as ``[{id, x, y}, ...]``.
-
-    Explicit ``points`` in the spec win (back-compatible). Otherwise the points are
-    derived from the footprint, generating the review-required GeoJSON on demand so
-    the collector does not depend on a separate prerequisite step having run first.
-    Locations with neither explicit points nor a footprint resolve to ``[]``.
-    """
-    import geopandas as gpd
-
     explicit = spec.get("points") or []
     if explicit:
         return [dict(point) for point in explicit]

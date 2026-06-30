@@ -64,33 +64,3 @@ case.audit()
 | OpenDSS conversion | `ditto.readers.opendss.reader.Reader`, `ditto.writers.opendss.write.Writer` | normalized registry rows and provenance |
 | Model validation/serialization | GDM Pydantic/Infrasys models, `DistributionSystem.to_json/from_json` | stable artifact IDs and CSV/Parquet contracts |
 | Hazard and fragility | ERAD `FragilityCurve`, `ProbabilityFunction`, `AssetSystem.from_gdm`, `HazardSimulator` | mapping local asset labels to ERAD `AssetTypes`, Monte Carlo draw bookkeeping |
-
-## Scientific contracts
-
-Asset failure is represented as
-
-\[
-X_{a,t}^{(m)} \sim \mathrm{Bernoulli}\left(F_{\tau(a)}(d_{a,t})\right),
-\]
-
-where `d` is sampled flood depth and `F` is evaluated by ERAD's native fragility probability model.
-
-Sectionalizing-switch placement solves
-
-\[
-\min_{S\subseteq E, |S|\le K}\sum_{z\in\mathcal Z(S)} L_z R_z,
-\]
-
-where zones are connected components after opening selected switch edges, `L_z` is load/customer-weighted demand, and `R_z` is exposure.
-
-Load uncertainty uses
-
-\[
-s_{d,t}\in[(1-\rho)s^0_{d,t},(1+\rho)s^0_{d,t}],
-\]
-
-clustered by switch-bounded block unless a caller supplies another cluster.
-
-## Scope note
-
-This package builds an auditable synthetic grid dataset and restoration-study bundle. It is not a utility-certified feeder model and does not claim SMART-DS regional validation.

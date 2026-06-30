@@ -773,12 +773,8 @@ def _streamflow_service(spec):
 def _candidate_output_path(spec, paths):
     value = spec.get("candidate_output") or paths.get("usgs_streamgage_candidates_geojson")
     if value is None:
-        value = Path("data/sources/usgs_streamgages/streamgage_candidates.geojson")
-    path = Path(value)
-    if path.is_absolute():
-        return path
-    root = paths.get("location_root") or paths.get("repo_root") or Path.cwd()
-    return Path(root) / path
+        value = "data/sources/usgs_streamgages/streamgage_candidates.geojson"
+    return _location_path(paths, value)
 
 
 def _location_path(paths, value):
@@ -794,23 +790,15 @@ def _location_path(paths, value):
 def _streamflow_records_output_path(spec, paths):
     value = spec.get("streamflow_records", {}).get("output") or paths.get("usgs_streamflow_records_csv")
     if value is None:
-        value = Path("data/sources/usgs_streamgages/streamflow_records.csv")
-    path = Path(value)
-    if path.is_absolute():
-        return path
-    root = paths.get("location_root") or paths.get("repo_root") or Path.cwd()
-    return Path(root) / path
+        value = "data/sources/usgs_streamgages/streamflow_records.csv"
+    return _location_path(paths, value)
 
 
 def _reviewed_network_path(spec, paths):
     value = spec.get("reviewed_network") or paths.get("usgs_streamgage_network_geojson")
     if value is None:
-        value = Path("data/sources/usgs_streamgages/streamgage_network.geojson")
-    path = Path(value)
-    if path.is_absolute():
-        return path
-    root = paths.get("location_root") or paths.get("repo_root") or Path.cwd()
-    return Path(root) / path
+        value = "data/sources/usgs_streamgages/streamgage_network.geojson"
+    return _location_path(paths, value)
 
 
 def _candidate_frame(records, spec):

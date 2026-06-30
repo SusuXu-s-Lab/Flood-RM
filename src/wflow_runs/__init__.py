@@ -33,14 +33,7 @@ from wflow_runs.build_plan import (
     write_wflow_subbasin_fabric_from_nhdplus,
     write_wflow_domain_set_manifest,
 )
-from wflow_runs.visualize import (
-    animate_wflow_output,
-    event_peak_discharge_table,
-    plot_event_precipitation_peak_discharge,
-    plot_wflow_basemap,
-    plot_wflow_event_handoff,
-    plot_wflow_ldd_components,
-)
+from wflow_runs.qa import event_peak_discharge_table
 from wflow_runs.river_geometry import validate_geometry
 from wflow_runs.coupling_qa import (
     CoupledDomainReview,
@@ -127,12 +120,7 @@ __all__ = [
     "write_wflow_observation_gauge_locations",
     "write_wflow_subbasin_fabric_from_nhdplus",
     "write_wflow_domain_set_manifest",
-    "plot_wflow_basemap",
-    "plot_wflow_ldd_components",
-    "plot_event_precipitation_peak_discharge",
-    "plot_wflow_event_handoff",
     "event_peak_discharge_table",
-    "animate_wflow_output",
     "resolve_event_window",
     "resolve_event_rainfall_source_nc",
     "build_meteo",
