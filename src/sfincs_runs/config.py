@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 import sys
 
@@ -11,9 +10,12 @@ if (_SOURCE_ROOT / "study_location.py").exists():
 
 from paths import default_location_config_path, find_repo_root, resolve_repo_path
 from study_location import (
+    define_location,
     load_location_config,
     resolve_study_location,
 )
+from location_runtime import build_grid_paths as _shared_build_grid_paths
+from sfincs_v2.runtime import SfincsRuntime, build_sfincs_runtime
 
 repo_root = find_repo_root(Path(__file__).resolve())
 
@@ -141,85 +143,13 @@ def load_runtime(path=None):
     config = _apply_inland_runtime_defaults(load_config(path))
     return config, build_paths(config)
 
-@dataclass(frozen=True)
-class SfincsRuntime:
-    location_root: Path
-    location_name: str
-    repo_root: Path
-    config: dict
-    paths: dict
-    static_dir: Path
-    sfincs_root: Path
-    base_model: Path
-    design_outputs: Path
-    events_dir: Path
-    dep_dir: Path
-    catalog_dir: Path
-    raw_root: Path
-    scenarios_root: Path
-    storage_root: Path
-    run_root: Path
-    stats_root: Path
-    wave_cfg: dict
-    quadtree_cfg: dict
-    snapwave_cfg: dict
-    runup_cfg: dict
-    hydrology_cfg: dict
-    precip_cfg: dict
-    infiltration_cfg: dict
-    soil_cfg: dict
-
-
 def load_sfincs_runtime(location_root, *, wave: bool = False, create_base_model_dir: bool = True) -> SfincsRuntime:
     """Load derived paths for SFINCS Location Workspace notebooks."""
     location_root = Path(location_root).resolve()
-    config, paths = load_runtime(location_root / "config.yaml")
-
-    wave_cfg = config.get("coastal_wave_coupling") or {}
-    quadtree_cfg = wave_cfg.get("quadtree") or {}
-    snapwave_cfg = wave_cfg.get("snapwave") or {}
-    runup_cfg = wave_cfg.get("runup_gauges") or {}
-    hydrology_cfg = wave_cfg.get("hydrology") or {}
-    precip_cfg = hydrology_cfg.get("precipitation") or {}
-    infiltration_cfg = hydrology_cfg.get("infiltration") or {}
-    soil_cfg = hydrology_cfg.get("soil_moisture") or {}
-
-    base_model = paths["base_model_root"]
-    if wave:
-        base_model = _location_or_absolute_path(
-            resolve_study_location(config, repo_root),
-            quadtree_cfg.get("base_model_root", "data/sfincs/base_quadtree_snapwave"),
-        )
-    if create_base_model_dir:
-        base_model.mkdir(parents=True, exist_ok=True)
-
-    design_outputs = paths["design_outputs_root"]
-    return SfincsRuntime(
-        location_root=location_root,
-        location_name=location_root.name,
-        repo_root=location_root.parents[1],
-        config=config,
-        paths=paths,
-        static_dir=paths["static_root"],
-        sfincs_root=paths["outputs_root"],
-        base_model=base_model,
-        design_outputs=design_outputs,
-        events_dir=design_outputs / "events",
-        dep_dir=design_outputs / "dependence",
-        catalog_dir=design_outputs / "catalog",
-        raw_root=paths["raw_root"],
-        scenarios_root=paths["scenarios_root"],
-        storage_root=paths["storage_root"],
-        run_root=paths["run_root"],
-        stats_root=paths["stats_root"],
-        wave_cfg=wave_cfg,
-        quadtree_cfg=quadtree_cfg,
-        snapwave_cfg=snapwave_cfg,
-        runup_cfg=runup_cfg,
-        hydrology_cfg=hydrology_cfg,
-        precip_cfg=precip_cfg,
-        infiltration_cfg=infiltration_cfg,
-        soil_cfg=soil_cfg,
+    return build_sfincs_runtime(
+        define_location(location_root / "config.yaml"),
+        wave=wave,
+        create_base_model_dir=create_base_model_dir,
     )
 
 
@@ -230,26 +160,7 @@ def build_grid_paths(config):
     shift_cache, opendss_root, asset_registry, augmented_artifacts,
     onm_export, figures).
     """
-    location = resolve_study_location(config, repo_root)
-    grid_cfg = config.get("grid", {})
-
-    def _resolve(key, default):
-        raw = grid_cfg.get(key, default)
-        path = Path(raw)
-        if path.is_absolute():
-            return path
-        # paths relative to the location root
-        return (location.root / path).resolve()
-
-    return {
-        "power_extent": _resolve("power_extent", "data/power_grid/power_extent.geojson"),
-        "shift_cache": _resolve("shift_cache", "data/power_grid/shift_cache"),
-        "opendss_root": _resolve("opendss_root", "data/power_grid/derived_opendss"),
-        "asset_registry": _resolve("asset_registry", "data/power_grid/asset_registry"),
-        "augmented_artifacts": _resolve("augmented_artifacts", "data/power_grid/augmented"),
-        "onm_export": _resolve("onm_export", "data/power_grid/onm_export"),
-        "figures": _resolve("figures", "data/power_grid/figures"),
-    }
+    return _shared_build_grid_paths(config, repo_root=repo_root)
 
 
 def parse_sfincs_inp(path):

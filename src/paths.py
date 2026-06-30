@@ -32,15 +32,23 @@ def resolve_repo_path(path, repo_root=None):
     path = Path(path).expanduser()
     return path if path.is_absolute() else (Path(repo_root or find_repo_root()) / path).resolve()
 
-def resolve_under_location(repo_root, location_name, value):
-    path = Path(value)
-    return path if path.is_absolute() else Path(repo_root) / "locations" / location_name / path
-
-def resolve_optional_under_root(repo_root, location_root, value):
-    if value is None:
-        return None
-    path = Path(value)
+def resolve_location_path(location_root, value):
+    path = Path(value).expanduser()
     return path if path.is_absolute() else Path(location_root) / path
+
+def relative_to_or_absolute(path, root):
+    path = Path(path)
+    root = Path(root)
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+def write_json(path, payload):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    return path
 
 def read_geojson_geometry(path):
     data = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -60,7 +68,3 @@ def write_geojson_features(path, features):
 
 def write_geojson(path, geometry, properties):
     write_geojson_features(path, [(geometry, properties)])
-
-def resolve_location_config_path(config_path):
-    path = Path(config_path).expanduser()
-    return path if path.is_absolute() else resolve_repo_path(path)

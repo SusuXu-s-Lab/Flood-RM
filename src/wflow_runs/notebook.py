@@ -13,7 +13,7 @@ import pandas as pd
 import yaml
 
 from study_location import define_location
-from wflow_v2.runtime import build_wflow_runtime
+from location_runtime import build_wflow_runtime
 from wflow_runs.build_plan import (
     build_wflow_build_plan,
     plan_wflow_domain_set,

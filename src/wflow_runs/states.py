@@ -5,37 +5,21 @@ from pathlib import Path
 import shutil
 import tomllib
 
-import numpy as np
 import pandas as pd
 import tomli_w
 import xarray as xr
 import yaml
 
+from wflow_v2.states import (
+    validate_reservoir_states as _v2_validate_reservoir_states,
+    warmup_settings as shared_baseline_warmup_settings,
+    warmup_window,
+)
+
 _GENERATED_NOTICE = (
     "# GENERATED FILE — do not edit. Overwritten when {source} runs.\n"
     "# Source of truth is the location config and the code that produces this file.\n"
 )
-
-
-def warmup_window(reference_time, *, warmup_days: float = 90.0, timestep_seconds: int = 3600):
-    ref = pd.Timestamp(reference_time)
-    step = pd.Timedelta(seconds=int(timestep_seconds))
-    start = (ref - pd.Timedelta(days=float(warmup_days))).floor(step)
-    end = (ref - step).floor(step)
-    return start, end
-
-
-def shared_baseline_warmup_settings(config: dict) -> dict:
-    """Return the shared antecedent-state settings for dynamic Wflow handoff."""
-    settings = ((config.get("wflow", {}) or {}).get("dynamic_handoff", {}) or {}).copy()
-    warmup_days = float(settings.get("warmup_days", 90))
-    return {
-        "state_policy": str(settings.get("state_policy", "shared_baseline")),
-        "baseline_id": str(settings.get("baseline_id", f"baseline_{int(warmup_days)}d")),
-        "baseline_reference_time": settings.get("baseline_reference_time"),
-        "baseline_root": settings.get("baseline_root"),
-        "warmup_days": warmup_days,
-    }
 
 
 def write_cold_state_workflow(out_path, *, timestamp=None) -> Path:
@@ -294,40 +278,11 @@ def validate_instates(config: dict, location_root, *, raise_on_error: bool = Tru
 
 def validate_wflow_reservoir_states(model_root, *, required: bool = True, raise_on_error: bool = True) -> pd.DataFrame:
     """Check native Wflow instates for reservoir water levels."""
-    model_root = Path(model_root)
-    instate = model_root / "instate" / "instates.nc"
-    if not instate.exists():
-        raise FileNotFoundError(instate)
-    rows: list[dict] = []
     try:
-        with xr.open_dataset(instate, mask_and_scale=False) as ds:
-            if "reservoir_water_level" not in ds:
-                status = "failed" if required else "not_available"
-                rows.append({"check": "reservoir_water_level", "status": status, "message": "missing reservoir_water_level"})
-            else:
-                values = np.asarray(ds["reservoir_water_level"].values, dtype=float)
-                finite = values[np.isfinite(values)]
-                positive = finite[finite > 0]
-                status = "passed" if positive.size else "failed"
-                rows.append(
-                    {
-                        "check": "reservoir_water_level",
-                        "status": status,
-                        "message": (
-                            f"valid_cells={int(positive.size)}; "
-                            f"min={float(np.nanmin(positive)) if positive.size else np.nan:g}; "
-                            f"max={float(np.nanmax(positive)) if positive.size else np.nan:g}"
-                        ),
-                    }
-                )
-    except Exception as exc:
-        rows.append({"check": "reservoir_water_level", "status": "failed", "message": f"unreadable instate: {exc}"})
-    report = pd.DataFrame(rows)
-    failed = report[report["status"].isin(["failed", "review_required"])] if not report.empty else report
-    if raise_on_error and not failed.empty:
-        details = "; ".join(f"{row.check}: {row.message}" for row in failed.itertuples())
-        raise RuntimeError(f"Wflow reservoir state QA failed for {instate}: {details}")
-    return report
+        return _v2_validate_reservoir_states(model_root, required=required, raise_on_error=raise_on_error)
+    except RuntimeError as exc:
+        instate = Path(model_root) / "instate" / "instates.nc"
+        raise RuntimeError(f"Wflow reservoir state QA failed for {instate}: {exc}") from exc
 
 
 

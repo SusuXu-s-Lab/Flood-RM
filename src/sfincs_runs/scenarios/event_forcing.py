@@ -3,8 +3,6 @@ import json
 import os
 from pathlib import Path
 import re
-import shlex
-import shutil
 import subprocess
 
 import geopandas as gpd
@@ -24,6 +22,8 @@ from sfincs_runs.scenarios.scenarios import (
 )
 from sfincs_runs.scenarios.timing import plan_event_forcing_support_window
 from sfincs_runs.snapwave_setup import era5_spectra_to_snapwave_timeseries
+from sfincs_v2.io import copy_base_model, remove_solver_outputs
+from sfincs_v2.solver import build_sfincs_command, sfincs_subprocess_env
 from wflow_runs.notebook import resolve_location_path
 
 
@@ -109,34 +109,7 @@ stale_run_files = (
     "forcing_manifest.json",
 )
 
-mutable_staged_files = frozenset(
-    {
-        "sfincs.inp",
-        "sfincs.bzs",
-        "sfincs.seff",
-        "sfincs.precip",
-        "sfincs_netampr.nc",
-        "aorc_precip_for_sfincs.nc",
-        "forcing_manifest.json",
-        "snapwave.bhs",
-        "snapwave.btp",
-        "snapwave.bwd",
-        "snapwave.bds",
-    }
-)
-
-
 _missing_config_value = object()
-
-
-def _link_static_or_copy_mutable(src, dst):
-    if Path(src).name in mutable_staged_files:
-        shutil.copy2(src, dst)
-        return
-    try:
-        os.link(src, dst)
-    except OSError:
-        shutil.copy2(src, dst)
 
 
 def _snapshot_sfincs_config(config_component, keys) -> dict:
@@ -408,16 +381,8 @@ def stage_run(
 ):
     base_model_root = Path(base_model_root)
     event_root = Path(run_stage_root) / forcing.event_id
-    if event_root.exists():
-        if not force:
-            raise FileExistsError(f"{event_root} exists. Use force=True to replace it.")
-        shutil.rmtree(event_root)
-    event_root.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(base_model_root, event_root, copy_function=_link_static_or_copy_mutable)
-    for name in stale_run_files:
-        path = event_root / name
-        if path.exists():
-            path.unlink()
+    copy_base_model(base_model_root, event_root, force=force)
+    remove_solver_outputs(event_root, extra=stale_run_files)
 
     n_bnd = _count_nonempty_lines(base_model_root / "sfincs.bnd")
     if n_bnd <= 0:
@@ -812,29 +777,15 @@ def build_sfincs_runner(
         if allow_native is None
         else bool(allow_native)
     )
-    if str(sfincs_bin).strip():
-        default_bin = Path(str(sfincs_bin))
-        if default_bin.exists():
-            return [str(default_bin)]
-        return shlex.split(str(sfincs_bin))
-    if allow_native:
-        native = shutil.which("sfincs")
-        if native:
-            return [native]
-    docker = shutil.which("docker")
-    if docker:
-        return [
-            docker,
-            "run",
-            "--rm",
-            "-v",
-            f"{Path(model_root)}:/data",
-            "-w",
-            "/data",
-            sfincs_image,
-            "sfincs",
-        ]
-    raise RuntimeError(f"No SFINCS runner found. Set {sfincs_bin_env} or install docker/sfincs.")
+    try:
+        return build_sfincs_command(
+            sfincs_bin=str(sfincs_bin).strip() or None,
+            sfincs_image=sfincs_image,
+            allow_native=allow_native,
+            model_root=Path(model_root),
+        )
+    except RuntimeError as exc:
+        raise RuntimeError(f"No SFINCS runner found. Set {sfincs_bin_env} or install docker/sfincs.") from exc
 
 
 def run_model(run_root, *, runner=None, require_map=True, config=None):
@@ -867,18 +818,14 @@ def run_model(run_root, *, runner=None, require_map=True, config=None):
 
 def _sfincs_subprocess_env(config=None):
     """Return the subprocess environment for one SFINCS solver process."""
-    env = os.environ.copy()
-    debug_value = env.get("DEBUG")
-    if debug_value is not None and not str(debug_value).lstrip("-").isdigit():
-        env["DEBUG"] = "0"
     run_cfg = (config or {}).get("scenario_run", {}) or {}
     threads = run_cfg.get("threads", os.environ.get("SFINCS_THREADS"))
-    if threads not in (None, ""):
-        threads = int(threads)
-        if threads < 1:
-            raise ValueError("scenario_run.threads must be at least 1")
-        env["OMP_NUM_THREADS"] = str(threads)
-    return env
+    if threads in (None, ""):
+        return sfincs_subprocess_env()
+    try:
+        return sfincs_subprocess_env(threads=int(threads))
+    except ValueError as exc:
+        raise ValueError("scenario_run.threads must be at least 1") from exc
 
 
 def _event_manifest(base_model_root, forcing, *, n_bnd, include_precip, include_waves, support_window):

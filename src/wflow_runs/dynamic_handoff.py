@@ -27,6 +27,7 @@ from wflow_runs.build_plan import validate_wflow_reservoir_staticmaps, validate_
 from wflow_runs.states import plan_wflow_warmup_state, validate_warmup_forcing, validate_instates, write_cold_state_workflow
 from wflow_runs.streamflow_realization import validate_wflow_streamflow_realization
 from wflow_runs.notebook import resolve_location_path
+from wflow_v2.event import event_paths as v2_event_paths, require_event_boundary as require_v2_event_boundary
 
 
 @dataclass(frozen=True)
@@ -63,9 +64,14 @@ def plan_handoff(config: dict, location_root, event_id: str, *, catalog_path=Non
     )
     state_plan = plan_wflow_warmup_state(config, location_root, event_id, reference_time=reference_time)
     paths = dynamic_handoff_paths(config, location_root, event_id)
+    v2_paths = v2_event_paths(config, location_root, event_id)
+    acceptance_path = paths["acceptance"]
     acceptance_status = "missing"
     if paths["acceptance"].exists():
         acceptance_status = read_dynamic_handoff_acceptance(paths["acceptance"]).get("status", "unknown")
+    elif v2_paths["acceptance"].exists():
+        acceptance_path = v2_paths["acceptance"]
+        acceptance_status = read_dynamic_handoff_acceptance(v2_paths["acceptance"]).get("status", "unknown")
     return pd.Series(
         {
             "event_id": str(event_id),
@@ -77,7 +83,7 @@ def plan_handoff(config: dict, location_root, event_id: str, *, catalog_path=Non
             "warmup_days": state_plan["warmup_days"],
             "warmup_baseline_root": state_plan.get("warmup_baseline_root", ""),
             "sfincs_discharge_forcing": str(paths["discharge"]),
-            "dynamic_handoff_acceptance": str(paths["acceptance"]),
+            "dynamic_handoff_acceptance": str(acceptance_path),
             "acceptance_status": acceptance_status,
         },
         name="dynamic_wflow_handoff_plan",
@@ -96,28 +102,29 @@ def ensure_dynamic_handoff(
     """Reuse a current accepted handoff, or build/accept it for this event."""
     location_root = Path(location_root)
     catalog_path = _resolve_catalog_path(location_root, catalog_path)
-    paths = dynamic_handoff_paths(config, location_root, event_id)
     instates = _instate_paths(config, location_root)
-    missing_instates = [str(path) for path in instates if not path.exists()]
-    if missing_instates:
-        raise FileNotFoundError(
-            "Missing prepared Wflow instate(s): "
-            + "; ".join(missing_instates)
-            + ". Run b_prepare_wflow_dynamic_handoff.ipynb first."
-        )
 
     handoff_issue = ""
     try:
-        require_handoff(config, location_root, event_id, catalog_path=catalog_path)
+        accepted = require_handoff(config, location_root, event_id, catalog_path=catalog_path)
         needs_dynamic_wflow = bool(rerun)
     except Exception as exc:
+        accepted = None
         handoff_issue = str(exc)
         needs_dynamic_wflow = True
 
     meteo_report = None
     handoff_report = None
     if needs_dynamic_wflow:
+        missing_instates = [str(path) for path in instates if not path.exists()]
+        if missing_instates:
+            raise FileNotFoundError(
+                "Missing prepared Wflow instate(s): "
+                + "; ".join(missing_instates)
+                + ". Run b_prepare_wflow_dynamic_handoff.ipynb first."
+            )
         if not run:
+            paths = dynamic_handoff_paths(config, location_root, event_id)
             raise FileNotFoundError(
                 f"Missing accepted Wflow handoff for {event_id}: {paths['acceptance']}. "
                 "Set run_dynamic_wflow_handoff=True or run b_prepare_wflow_dynamic_handoff.ipynb first."
@@ -140,15 +147,15 @@ def ensure_dynamic_handoff(
             execute=True,
         )
 
-    acceptance = require_handoff(config, location_root, event_id, catalog_path=catalog_path)
+    acceptance = accepted if accepted is not None and not needs_dynamic_wflow else require_handoff(config, location_root, event_id, catalog_path=catalog_path)
     summary = pd.Series(
         {
             "event_id": str(event_id),
             "dynamic_wflow_handoff": "run" if needs_dynamic_wflow and run else "reuse accepted",
             "rerun": bool(rerun),
             "wflow_instate_count": len(instates),
-            "acceptance_json": str(paths["acceptance"]),
-            "sfincs_discharge": str(paths["discharge"]),
+            "acceptance_json": str(acceptance["dynamic_handoff_acceptance"]),
+            "sfincs_discharge": str(acceptance["sfincs_discharge_forcing"]),
             "handoff_issue": handoff_issue,
         },
         name="dynamic_wflow_handoff_run",
@@ -256,6 +263,19 @@ def prepare_handoff(
 def require_handoff(config: dict, location_root, event_id: str, *, catalog_path=None) -> pd.Series:
     paths = dynamic_handoff_paths(config, location_root, event_id)
     if not paths["acceptance"].exists():
+        v2_paths = v2_event_paths(config, location_root, event_id)
+        if v2_paths["acceptance"].exists():
+            accepted = require_v2_event_boundary(config, location_root, event_id)
+            return pd.Series(
+                {
+                    "event_id": str(event_id),
+                    "status": accepted["status"],
+                    "discharge_source": "wflow_dynamic",
+                    "sfincs_discharge_forcing": str(accepted["sfincs_discharge"]),
+                    "dynamic_handoff_acceptance": str(accepted["acceptance_json"]),
+                },
+                name="dynamic_wflow_handoff_acceptance",
+            )
         discharge_note = (
             " An sfincs_discharge.nc file exists, but it has not been accepted by dynamic handoff QA."
             if paths["discharge"].exists()

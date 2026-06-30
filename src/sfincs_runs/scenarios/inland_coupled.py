@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 import os
 from pathlib import Path
 import shutil
 
 import pandas as pd
-import xarray as xr
 import yaml
 
 from sfincs_runs.build_base import (
@@ -16,18 +14,20 @@ from sfincs_runs.build_base import (
     validate_physics,
 )
 from sfincs_runs.scenarios.inland_initial_conditions import init_hydrographs
+from sfincs_v2.forcing import (
+    build_inland_scenario_manifest,
+    index_inland_handoff_events,
+    read_wflow_discharge,
+    select_inland_scenario_rows,
+    stage_gridded_precipitation,
+    stage_wflow_discharge_points,
+    update_inland_forcing_manifest,
+    write_inland_scenario_reports,
+)
+from sfincs_v2.io import copy_base_model, write_json
 from wflow_runs.dynamic_handoff import dynamic_handoff_paths, require_handoff
 from wflow_runs.notebook import resolve_location_path
 from wflow_runs.streamflow_realization import wflow_streamflow_gage_overlap
-
-
-stale_sfincs_outputs = {
-    "sfincs_map.nc",
-    "sfincs_his.nc",
-    "sfincs_rst.nc",
-    "sfincs.log",
-    "sfincs_log.txt",
-}
 
 
 @dataclass(frozen=True)
@@ -75,13 +75,10 @@ def stage_scenarios(
     if "event_id" not in catalog:
         raise ValueError(f"Event Catalog is missing event_id: {catalog_path}")
     catalog["event_id"] = catalog["event_id"].astype(str)
-    catalog = _select_rows(catalog, event_ids=event_ids, limit=limit)
+    catalog = select_inland_scenario_rows(catalog, event_ids=event_ids, limit=limit)
 
     handoff = _read_handoff(config, location_root)
-    handoff_by_event = {str(row["event_id"]): row for row in handoff.get("events", [])}
-    missing = sorted(set(catalog["event_id"]) - set(handoff_by_event))
-    if missing:
-        raise ValueError("Event Catalog has missing Wflow handoff events: " + ", ".join(missing))
+    handoff_by_event = index_inland_handoff_events(handoff, catalog["event_id"])
     missing_discharge = _missing_wflow_discharge_forcing(location_root, handoff_by_event, catalog["event_id"])
     if missing_discharge:
         raise FileNotFoundError(
@@ -119,26 +116,15 @@ def stage_scenarios(
             scenario_root = scenarios_root / event_id
             if domain["sfincs_domain_id"] is not None:
                 scenario_root = scenario_root / domain["sfincs_domain_id"]
-            if scenario_root.exists():
-                if not force:
-                    raise FileExistsError(f"{scenario_root} exists. Use force=True to replace it.")
-                shutil.rmtree(scenario_root)
-            shutil.copytree(domain["base_model_root"], scenario_root)
-            for name in stale_sfincs_outputs:
-                stale = scenario_root / name
-                if stale.exists():
-                    stale.unlink()
-            manifest = _forcing_manifest(
+            copy_base_model(domain["base_model_root"], scenario_root, force=force)
+            manifest = build_inland_scenario_manifest(
                 event.to_dict(),
                 handoff,
                 handoff_by_event[event_id],
                 config,
                 domain=domain,
             )
-            (scenario_root / "forcing_manifest.json").write_text(
-                json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
+            write_json(scenario_root / "forcing_manifest.json", manifest)
             rows.append(
                 {
                     "event_id": event_id,
@@ -152,13 +138,7 @@ def stage_scenarios(
 
     report = pd.DataFrame(rows)
     if write_reports:
-        report.to_csv(scenarios_root / "scenario_build_report.csv", index=False)
-        # The cluster array job consumes scenario_catalog.csv under a different PROJECT_ROOT,
-        # so store run_root relative to scenarios_root (<event_id>/<sfincs_domain_id>); the
-        # run_events --scenario-catalog reader rejoins it onto the cluster's scenarios dir.
-        catalog = report[["event_id", "run_root"]].copy()
-        catalog["run_root"] = [Path(value).relative_to(scenarios_root).as_posix() for value in catalog["run_root"]]
-        catalog.to_csv(scenarios_root / "scenario_catalog.csv", index=False)
+        write_inland_scenario_reports(report, scenarios_root)
     return report
 
 
@@ -181,7 +161,7 @@ def handoff_readiness(
         if "event_id" not in catalog:
             raise ValueError(f"Event Catalog is missing event_id: {catalog_path}")
         catalog["event_id"] = catalog["event_id"].astype(str)
-        event_ids = _select_rows(catalog, limit=limit)["event_id"].tolist()
+        event_ids = select_inland_scenario_rows(catalog, limit=limit)["event_id"].tolist()
     elif limit is not None:
         event_ids = list(event_ids)[: int(limit)]
 
@@ -425,12 +405,9 @@ def stage_inland_coupled_scenario_forcing(
         if not discharge_nc.exists():
             raise FileNotFoundError(discharge_nc)
 
-        with xr.open_dataset(discharge_nc) as opened:
-            discharge_ds = opened.load()
-        t_start = pd.Timestamp(discharge_ds["time"].min().values)
-        t_stop = pd.Timestamp(discharge_ds["time"].max().values)
-        discharge_by_name = discharge_ds["discharge"].transpose("time", "index").to_pandas()
-        discharge_by_name.columns = discharge_ds["name"].values.astype(str)
+        discharge_by_name = read_wflow_discharge(discharge_nc)
+        t_start = pd.Timestamp(discharge_by_name.index.min())
+        t_stop = pd.Timestamp(discharge_by_name.index.max())
 
         sf = SfincsModel(root=str(run_dir), mode="r+")
         sf.read()
@@ -453,42 +430,22 @@ def stage_inland_coupled_scenario_forcing(
                 )
             prepared_precip = run_dir / "aorc_precip_for_sfincs.nc"
             shutil.copy2(event_precip_nc, prepared_precip)
-            sf.data_catalog.from_dict(
-                {
-                    "event_precip": {
-                        "uri": str(prepared_precip),
-                        "data_type": "RasterDataset",
-                        "driver": {"name": "raster_xarray"},
-                        "metadata": {"crs": 4326},
-                    }
-                }
-            )
-            sf.config.set("precipfile", None)
-            sf.config.set("netamprfile", None)
-            sf.precipitation.create(
-                precip="event_precip",
+            netamprfile = stage_gridded_precipitation(
+                sf,
+                prepared_precip,
+                source_name="event_precip",
                 buffer=float(direct_rainfall_cfg.get("buffer_m", 30000.0)),
                 cumulative_input=bool(direct_rainfall_cfg.get("cumulative_input", True)),
                 time_label=str(direct_rainfall_cfg.get("time_label", "right")),
-                aggregate=False,
             )
             sf.precipitation.write()
-            netamprfile = "sfincs_netampr.nc"
 
-        if sf.discharge_points.nr_points == 0:
-            raise RuntimeError(
-                f"{run_dir} has no native SFINCS src points. "
-                "Rebuild the coupled base so HydroMT-SFINCS rivers.create_river_inflow writes discharge source locations."
-            )
-        src = sf.discharge_points.gdf
-        src_names = src["name"].astype(str).tolist()
-        missing_src = sorted(set(src_names) - set(discharge_by_name.columns))
-        if missing_src:
-            raise RuntimeError(f"Wflow discharge forcing lacks SFINCS src IDs for {event_id}: {missing_src}")
-
-        discharge_df = discharge_by_name[src_names].copy()
-        discharge_df.columns = src.index.astype(int)
-        sf.discharge_points.create(timeseries=discharge_df, merge=False)
+        src_names, discharge_df = stage_wflow_discharge_points(
+            sf,
+            discharge_by_name,
+            event_id=event_id,
+            model_root=run_dir,
+        )
         initial_condition = init_hydrographs(
             sf,
             discharge_by_name[src_names],
@@ -497,30 +454,20 @@ def stage_inland_coupled_scenario_forcing(
         )
         sf.write()
 
-        manifest_path = run_dir / "forcing_manifest.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        manifest.update(
-            {
-                "example_notebook": scenario_staging if "c_run_example" in str(scenario_staging) else "",
-                "scenario_staging": scenario_staging,
-                "run_start": t_start.strftime("%Y-%m-%d %H:%M:%S"),
-                "run_stop": t_stop.strftime("%Y-%m-%d %H:%M:%S"),
-                "sfincs_run_executed": False,
-                "wflow_discharge_forcing": str(discharge_nc),
-                "wflow_source_variable": config["wflow"].get("handoff", {}).get("source_variable", "river_q"),
-                "direct_rainfall_enabled": bool(stage_direct_rainfall),
-                "direct_rainfall_source": str(event_precip_nc) if stage_direct_rainfall else "",
-                "prepared_precip": str(prepared_precip) if prepared_precip else "",
-                "netamprfile": netamprfile,
-                "sfincs_initial_condition": initial_condition,
-                "dynamic_handoff_acceptance": str(acceptance["dynamic_handoff_acceptance"]),
-                "direct_rainfall_note": (
-                    "SFINCS netampr rainfall staged from the same event precipitation used by Wflow."
-                    if stage_direct_rainfall else "Direct SFINCS rainfall disabled by config."
-                ),
-            }
+        update_inland_forcing_manifest(
+            run_dir / "forcing_manifest.json",
+            scenario_staging=scenario_staging,
+            run_start=t_start,
+            run_stop=t_stop,
+            discharge_nc=discharge_nc,
+            source_variable=config["wflow"].get("handoff", {}).get("source_variable", "river_q"),
+            direct_rainfall_enabled=stage_direct_rainfall,
+            event_precip_nc=event_precip_nc,
+            prepared_precip=prepared_precip,
+            netamprfile=netamprfile,
+            initial_condition=initial_condition,
+            dynamic_handoff_acceptance=acceptance["dynamic_handoff_acceptance"],
         )
-        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
         rows.append(
             {
@@ -625,7 +572,7 @@ def plan_example(
         if "event_id" not in catalog:
             raise ValueError(f"Event Catalog is missing event_id: {catalog_path}")
         catalog["event_id"] = catalog["event_id"].astype(str)
-        selected = _select_rows(catalog, event_ids=[event_id] if event_id else None, limit=1).iloc[0].to_dict()
+        selected = select_inland_scenario_rows(catalog, event_ids=[event_id] if event_id else None, limit=1).iloc[0].to_dict()
         selected_event_id = str(selected["event_id"])
 
     missing = [
@@ -657,7 +604,7 @@ def plan_example(
         )
 
     handoff = yaml.safe_load(handoff_path.read_text(encoding="utf-8")) or {}
-    handoff_by_event = {str(row["event_id"]): row for row in handoff.get("events", [])}
+    handoff_by_event = index_inland_handoff_events(handoff)
     handoff_event = handoff_by_event.get(selected_event_id)
     selected_domain = sfincs_domains[0] if sfincs_domains else {"sfincs_domain_id": None}
     scenario_dir = scenarios_root / selected_event_id
@@ -690,62 +637,6 @@ def plan_example(
     )
 
 
-def _forcing_manifest(event: dict, handoff: dict, handoff_event: dict, config: dict, *, domain: dict | None = None) -> dict:
-    coupling = config.get("inland_coupling", {})
-    manifest = {
-        "event_id": str(event["event_id"]),
-        "forcing_mode": coupling.get("forcing_mode", handoff.get("forcing_mode", "dual_fluvial_pluvial")),
-        "event_reference_time": _clean(event.get("event_reference_time")),
-        "event_origin": _clean(event.get("event_origin")),
-        "catalog_role": _clean(event.get("catalog_role")),
-        "sampling_scheme": _clean(event.get("sampling_scheme")),
-        "event_set": _clean(event.get("event_set")),
-        "selection_role": _clean(event.get("selection_role")),
-        "selection_reason": _clean(event.get("selection_reason")),
-        "severity_band": _clean(event.get("severity_band")),
-        "sample_rp_years": _clean(event.get("sample_rp_years")),
-        "streamflow_reference_time": coupling.get("streamflow_reference_time", "dominant_streamgage_network_peak"),
-        "streamflow_member_id": _clean(event.get("streamflow_member_id")),
-        "rainfall_member_id": _clean(event.get("rainfall_member_id")),
-        "soil_moisture_member_id": _clean(event.get("soil_moisture_member_id")),
-        "probability_weight": _clean(event.get("probability_weight")),
-        "wflow_event_dir": _clean(handoff_event.get("wflow_event_dir")),
-        "wflow_discharge_forcing": _clean(handoff_event.get("discharge_forcing")),
-        "wflow_precip_provenance": _event_artifact(handoff_event, "precip_provenance.json"),
-        "wflow_temp_pet_provenance": _event_artifact(handoff_event, "temp_pet_provenance.json"),
-        "wflow_source_variable": handoff.get("source_variable", "river_q"),
-        "wflow_source_standard_name": handoff.get(
-            "source_standard_name",
-            "river_water__volume_flow_rate",
-        ),
-        "direct_rainfall_enabled": bool(
-            coupling.get("direct_rainfall", {}).get(
-                "enabled",
-                handoff.get("direct_rainfall_enabled", True),
-            )
-        ),
-        "rainfall_member_file": config.get("event_catalog", {}).get("forcing_members", {}).get("rainfall"),
-        "streamflow_member_file": config.get("event_catalog", {}).get("forcing_members", {}).get("streamflow"),
-        "soil_moisture_member_file": config.get("event_catalog", {}).get("forcing_members", {}).get("soil_moisture"),
-    }
-    if domain is not None and domain["sfincs_domain_id"] is not None:
-        manifest.update(
-            {
-                "sfincs_domain_id": domain["sfincs_domain_id"],
-                "sfincs_domain_base_model_root": domain["base_model_root"].as_posix(),
-                "sfincs_handoff_source_ids": list(domain.get("handoff_source_ids", [])),
-            }
-        )
-    return manifest
-
-
-def _event_artifact(handoff_event: dict, filename: str):
-    event_dir = handoff_event.get("wflow_event_dir")
-    if event_dir in (None, ""):
-        return None
-    return str(Path(str(event_dir)) / filename)
-
-
 def _read_handoff(config, location_root: Path) -> dict:
     handoff_path = _location_path(
         location_root,
@@ -754,25 +645,6 @@ def _read_handoff(config, location_root: Path) -> dict:
     if not handoff_path.exists():
         raise FileNotFoundError(handoff_path)
     return yaml.safe_load(handoff_path.read_text(encoding="utf-8")) or {}
-
-
-def _select_rows(catalog: pd.DataFrame, *, event_ids=None, limit=None) -> pd.DataFrame:
-    out = catalog
-    if event_ids:
-        wanted = {str(event_id) for event_id in event_ids}
-        out = out[out["event_id"].isin(wanted)].copy()
-        missing = wanted - set(out["event_id"])
-        if missing:
-            raise ValueError("Missing Event Catalog rows: " + ", ".join(sorted(missing)))
-    elif limit is not None and "sample_rp_years" in out:
-        out = out.copy()
-        out["_rp_sort"] = pd.to_numeric(out["sample_rp_years"], errors="coerce").fillna(-1.0)
-        out = out.sort_values(["_rp_sort", "event_id"], ascending=[False, True]).drop(columns=["_rp_sort"])
-    if limit is not None:
-        out = out.head(int(limit)).copy()
-    if out.empty:
-        raise ValueError("No inland coupled scenarios selected")
-    return out.reset_index(drop=True)
 
 
 def _sfincs_domain_models(config: dict, location_root: Path) -> list[dict]:

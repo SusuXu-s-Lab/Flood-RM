@@ -9,43 +9,18 @@ can label each historical compound event TC vs non-TC by proximity to a passing 
 
 from __future__ import annotations
 
-import re
-
 import pandas as pd
 import requests
 
-default_hurdat2_url = "https://www.nhc.noaa.gov/data/hurdat/hurdat2-1851-2023-051124.txt"
-_header = re.compile(r"^[A-Z]{2}\d{6}$")
+from source_collection_v2.hurdat2 import URL as _V2_HURDAT2_URL
+from source_collection_v2.hurdat2 import parse as _parse_hurdat2
 
-
-def _signed(value):
-    # "19.1N"/"81.3W" -> signed decimal degrees (S/W negative).
-    value = value.strip()
-    sign = -1.0 if value[-1] in "SW" else 1.0
-    return sign * float(value[:-1])
+default_hurdat2_url = _V2_HURDAT2_URL
 
 
 def parse_hurdat2(text):
     """Parse raw HURDAT2 text into a track-point DataFrame."""
-    storm_id = name = None
-    rows = []
-    for line in text.splitlines():
-        fields = [f.strip() for f in line.split(",")]
-        if len(fields) >= 3 and _header.match(fields[0]):
-            storm_id, name = fields[0], fields[1]
-            continue
-        if storm_id is None or len(fields) < 7:
-            continue
-        rows.append({
-            "storm_id": storm_id,
-            "name": name,
-            "time": pd.to_datetime(fields[0] + fields[1], format="%Y%m%d%H%M", errors="coerce"),
-            "status": fields[3],
-            "lat": _signed(fields[4]),
-            "lon": _signed(fields[5]),
-            "wind_kt": pd.to_numeric(fields[6], errors="coerce"),
-        })
-    return pd.DataFrame(rows).dropna(subset=["time"]).reset_index(drop=True)
+    return _parse_hurdat2(text)
 
 
 def collect_hurdat2(settings, *, skip_existing=False, smoke=False):

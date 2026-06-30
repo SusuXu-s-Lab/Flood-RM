@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 import json
-import shutil
-import zipfile
 from pathlib import Path
-from urllib.parse import urlparse
 
 import pandas as pd
 import requests
@@ -14,6 +11,9 @@ from collect_sources.national_hydrography import (
     fetch_nldi_comid,
 )
 from collect_sources.source_artifacts import write_source_artifact
+from source_collection_v2.stream_geo import download as _download_stream_geo_file
+from source_collection_v2.stream_geo import read_table as _read_stream_geo_download
+from source_collection_v2.stream_geo import select_file as _select_stream_geo_file
 
 FIGSHARE_ARTICLE_API = "https://api.figshare.com/v2/articles/{article_id}"
 
@@ -90,65 +90,15 @@ def fetch_figshare_article_metadata(article_id: int, *, timeout_seconds=120, ses
 
 
 def select_stream_geo_file(metadata: dict, *, preferred_name: str | None = None) -> dict:
-    files = list(metadata.get("files") or [])
-    if not files:
-        raise ValueError("Figshare article metadata did not include downloadable files")
-    if preferred_name:
-        for info in files:
-            if str(info.get("name", "")).lower() == preferred_name.lower():
-                return info
-        raise ValueError(f"STREAM-geo Figshare file not found: {preferred_name}")
-    preferred_suffixes = (".parquet", ".csv", ".zip")
-    candidates = [
-        info
-        for info in files
-        if str(info.get("name", "")).lower().endswith(preferred_suffixes)
-        and "stream" in str(info.get("name", "")).lower()
-    ]
-    return candidates[0] if candidates else files[0]
+    return _select_stream_geo_file(metadata, preferred_name=preferred_name)
 
 
 def download_figshare_file(file_info: dict, raw_dir: Path, *, timeout_seconds=120, session_get=None) -> Path:
-    url = file_info.get("download_url") or file_info.get("downloadUrl") or file_info.get("url")
-    if not url:
-        raise ValueError(f"Figshare file metadata is missing a download URL: {file_info}")
-    name = file_info.get("name") or Path(urlparse(str(url)).path).name or "stream_geo_download"
-    raw_dir = Path(raw_dir)
-    raw_dir.mkdir(parents=True, exist_ok=True)
-    output_path = raw_dir / Path(name).name
-    tmp_path = output_path.with_suffix(output_path.suffix + ".tmp")
-    get = session_get or requests.get
-    with get(url, stream=True, timeout=timeout_seconds) as response:
-        response.raise_for_status()
-        with tmp_path.open("wb") as stream:
-            for chunk in response.iter_content(chunk_size=1024 * 1024):
-                if chunk:
-                    stream.write(chunk)
-    tmp_path.replace(output_path)
-    return output_path
+    return _download_stream_geo_file(file_info, Path(raw_dir), timeout=timeout_seconds, session_get=session_get)
 
 
 def read_stream_geo_download(path: Path) -> pd.DataFrame:
-    path = Path(path)
-    suffix = path.suffix.lower()
-    if suffix == ".parquet":
-        return pd.read_parquet(path)
-    if suffix in {".csv", ".txt"}:
-        return pd.read_csv(path)
-    if suffix == ".zip":
-        with zipfile.ZipFile(path) as archive:
-            members = [name for name in archive.namelist() if not name.endswith("/")]
-            for member in members:
-                member_suffix = Path(member).suffix.lower()
-                with archive.open(member) as stream:
-                    if member_suffix == ".parquet":
-                        extracted = path.parent / Path(member).name
-                        with extracted.open("wb") as output:
-                            shutil.copyfileobj(stream, output)
-                        return pd.read_parquet(extracted)
-                    if member_suffix in {".csv", ".txt"}:
-                        return pd.read_csv(stream)
-    raise ValueError(f"Unsupported STREAM-geo download format: {path}")
+    return _read_stream_geo_download(Path(path))
 
 
 def _write_manifest(paths, table_path, raw_dir, manifest, status, rows, spec, *, raw_file, smoke):

@@ -21,6 +21,7 @@ from wflow_runs.handoff_locations import (
     read_stream_boundary_handoff_location_artifacts,
     read_stream_boundary_handoff_locations,
 )
+from wflow_v2.domain import render_hydromt_build_steps
 
 _GENERATED_NOTICE = (
     "# GENERATED FILE — do not edit. Overwritten when {source} runs.\n"
@@ -2125,42 +2126,22 @@ def build_wflow_steps_for_submodel(
     (basename ``usgs``) so Wflow reports discharge at every reviewed gage without making
     them SFINCS sources.
     """
-    workflow = _read_workflow(Path(build_config))
-    steps = deepcopy(workflow.get("steps", []))
-    region = submodel.get("region")
-    if not region:
-        raise ValueError(f"Wflow Submodel {submodel.get('wflow_submodel_id')} has no HydroMT region")
-    replaced_region = False
-    for step in steps:
-        if isinstance(step, dict) and isinstance(step.get("setup_basemaps"), dict):
-            step["setup_basemaps"]["region"] = deepcopy(region)
-            replaced_region = True
-            break
-    if not replaced_region:
-        raise ValueError("HydroMT-Wflow build config is missing setup_basemaps")
-    toml_param = (handoff_config or {}).get("source_standard_name", "river_water__volume_flow_rate")
+    submodel = dict(submodel)
     if gauges_fn is not None:
-        _set_setup_gauges(
-            steps,
-            gauges_fn,
-            basename="sfincs",
-            gauge_toml_param=toml_param,
-            snap_to_river=bool(sfincs_snap_to_river),
-            snap_uparea=bool(sfincs_snap_uparea),
-            derive_subcatch=True,
-            replace_existing_unnamed=True,
-        )
+        submodel["gauges_fn"] = gauges_fn
     if obs_gauges_fn is not None:
-        _set_setup_gauges(
-            steps,
-            obs_gauges_fn,
-            basename="usgs",
-            gauge_toml_param=toml_param,
-            snap_to_river=bool(obs_snap_to_river),
-            snap_uparea=bool(obs_snap_uparea),
-            derive_subcatch=False,
-        )
-    return steps
+        submodel["observation_gauges_fn"] = obs_gauges_fn
+    config = {"wflow": {"handoff": dict(handoff_config or {})}}
+    return render_hydromt_build_steps(
+        config,
+        Path(),
+        build_config,
+        submodel,
+        sfincs_snap_to_river=sfincs_snap_to_river,
+        sfincs_snap_uparea=sfincs_snap_uparea,
+        obs_snap_to_river=obs_snap_to_river,
+        obs_snap_uparea=obs_snap_uparea,
+    )
 
 
 def build_wflow_submodel(
@@ -2336,45 +2317,6 @@ def _qa_status(report: pd.DataFrame) -> str:
     if (report["status"] == "review_required").any():
         return "review_required"
     return "passed"
-
-
-def _set_setup_gauges(
-    steps: list[dict],
-    gauges_fn,
-    *,
-    basename: str,
-    gauge_toml_param: str,
-    snap_to_river: bool = True,
-    snap_uparea: bool = True,
-    derive_subcatch: bool = True,
-    replace_existing_unnamed: bool = False,
-) -> None:
-    """Insert (or replace) a ``setup_gauges`` step for one gauge layer.
-
-    Steps are keyed by ``basename`` so distinct gauge layers (e.g. ``sfincs`` sources and
-    ``usgs`` observations) coexist. When ``replace_existing_unnamed`` is set, an unnamed
-    template ``setup_gauges`` from the build config is replaced rather than duplicated.
-    """
-    gauge_step = {
-        "setup_gauges": {
-            "gauges_fn": str(gauges_fn),
-            "index_col": "index",
-            "snap_to_river": bool(snap_to_river),
-            "snap_uparea": bool(snap_uparea),
-            "basename": basename,
-            "gauge_toml_header": ["Q"],
-            "gauge_toml_param": [gauge_toml_param],
-            "derive_subcatch": bool(derive_subcatch),
-        }
-    }
-    for index, step in enumerate(steps):
-        if not (isinstance(step, dict) and isinstance(step.get("setup_gauges"), dict)):
-            continue
-        existing = step["setup_gauges"].get("basename")
-        if existing == basename or (replace_existing_unnamed and existing in (None, "", "gauges")):
-            steps[index] = gauge_step
-            return
-    steps.append(gauge_step)
 
 
 def _open_wflow_model(model_root: Path, catalog_path: Path, *, model_cls=None, mode: str):

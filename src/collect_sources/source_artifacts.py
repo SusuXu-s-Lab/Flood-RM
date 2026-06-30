@@ -9,7 +9,7 @@ import pandas as pd
 
 
 def source_artifact_path(paths, source, kind):
-    return paths["source_artifacts_root"] / f"{source}_{kind}.json"
+    return _source_artifacts_root(paths) / f"{source}_{kind}.json"
 
 
 def read_source_artifact(paths, source, kind):
@@ -59,3 +59,10 @@ def _relative_path(path, root):
         return path.resolve().relative_to(root.resolve()).as_posix()
     except ValueError:
         return path.as_posix()
+
+
+def _source_artifacts_root(paths):
+    if paths.get("source_artifacts_root") is not None:
+        return Path(paths["source_artifacts_root"])
+    root = Path(paths.get("location_root") or paths.get("repo_root") or Path.cwd())
+    return root / "data/sources/source_artifacts"

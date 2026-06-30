@@ -1,6 +1,7 @@
 """Cross-compatibility for Flood-RM workflows."""
 
 from __future__ import annotations
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 import yaml
@@ -8,8 +9,7 @@ from aoi import build_study_area, study_area_bbox
 from paths import (
     default_location_config_path,
     find_repo_root,
-    resolve_optional_under_root,
-    resolve_location_config_path as _resolve_location_config_path,
+    resolve_location_path,
     resolve_repo_path,
 )
 
@@ -59,7 +59,7 @@ def bootstrap(location=None, *, repo_root=None):
     if location is None:
         config_path = default_location_config_path(root)
     elif Path(location).suffix in {".yaml", ".yml"} or Path(location).exists():
-        config_path = _resolve_location_config_path(location)
+        config_path = resolve_repo_path(location)
     else:
         config_path = root / "locations" / str(location) / "config.yaml"
     definition = define_location(config_path)
@@ -93,10 +93,9 @@ def resolve_study_location(config, repo_root):
     root = Path(repo_root) / "locations" / name
     flood_setting = str(config.get("flood_setting", "coastal")).strip() or "coastal"
     drivers = tuple(config.get("event_drivers") or ())
-    grid_footprint_source = resolve_optional_under_root(
-        repo_root,
-        root,
-        config.get("grid_footprint", {}).get("source"),
+    grid_footprint = config.get("grid_footprint", {}).get("source")
+    grid_footprint_source = (
+        resolve_location_path(root, grid_footprint) if grid_footprint is not None else None
     )
     return StudyLocation(
         name=name,
@@ -126,7 +125,7 @@ class LocationDefinition:
     model_recipes: dict
 
 def define_location(config_path) -> LocationDefinition:
-    config_path = _resolve_location_config_path(config_path)
+    config_path = resolve_repo_path(config_path)
     base = _load_yaml_file(config_path)
     name = str(base.get("project", {}).get("name", "")).strip()
     if not name:
@@ -144,14 +143,14 @@ def define_location(config_path) -> LocationDefinition:
     # Legacy `extends:` remains supported as an explicit location-owned include.
     extends = base.get("extends")
     if extends is not None:
-        config = _deep_merge(config, _load_extends_base(root, extends))
-    config = _deep_merge(config, base)
-    config = _deep_merge(config, data_sources)
-    config = _deep_merge(config, smartds)
-    config = _deep_merge(config, grid)
-    config = _deep_merge(config, sfincs)
-    config = _deep_merge(config, wflow)
-    config = _deep_merge(config, snapwave)
+        config = deep_merge(config, _load_extends_base(root, extends))
+    config = deep_merge(config, base)
+    config = deep_merge(config, data_sources)
+    config = deep_merge(config, smartds)
+    config = deep_merge(config, grid)
+    config = deep_merge(config, sfincs)
+    config = deep_merge(config, wflow)
+    config = deep_merge(config, snapwave)
     config.pop("notebooks", None)
     config.pop("extends", None)  # loader directive, not domain config
     config["_model_recipes"] = model_recipes
@@ -230,11 +229,16 @@ def _hydromt_recipes_from_model_config(model_name: str, config: dict) -> dict:
         if isinstance(recipe, dict)
     }
 
-def _deep_merge(left: dict, right: dict) -> dict:
-    merged = dict(left)
-    for key, value in right.items():
+def deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge ``override`` onto a deep copy of ``base``.
+
+    Shared by the config loader, the design-events runtime, and the notebook
+    runtime so location-config merge semantics live in one place.
+    """
+    merged = deepcopy(base)
+    for key, value in override.items():
         if isinstance(merged.get(key), dict) and isinstance(value, dict):
-            merged[key] = _deep_merge(merged[key], value)
+            merged[key] = deep_merge(merged[key], value)
         else:
-            merged[key] = value
+            merged[key] = deepcopy(value)
     return merged

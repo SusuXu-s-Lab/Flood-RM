@@ -11,7 +11,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from sfincs_runs.config import load_runtime
-stale_run_files = {"sfincs_map.nc", "sfincs_his.nc", "sfincs_rst.nc", "sfincs.log", "sfincs_log.txt"}
+from sfincs_v2.io import copy_retained_outputs, write_json
+from sfincs_v2.solver import stage_prepared_event
+
 retained_output_files = {
     "sfincs_map.nc",
     "sfincs_his.nc",
@@ -101,43 +103,23 @@ def units_from_catalog(catalog_path, scenarios_dir, ids=None, limit=None):
     return units
 
 
-def link_or_copy(src, dst):
-    src = Path(src)
-    dst = Path(dst)
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.link(src, dst)
-    except OSError:
-        shutil.copy2(src, dst)
-
-
 def stage_event(src_dir, stage_dir):
-    shutil.rmtree(stage_dir, ignore_errors=True)
-    stage_dir.mkdir(parents=True, exist_ok=True)
-    for src in sorted(src_dir.iterdir()):
-        if src.is_file() and src.name not in stale_run_files:
-            link_or_copy(src, stage_dir / src.name)
-        elif src.is_dir():
-            shutil.copytree(src, stage_dir / src.name, copy_function=link_or_copy)
+    stage_prepared_event(Path(src_dir), Path(stage_dir), force=True)
 
 
 def copy_retained_output_files(source_dir, storage_dir, *, overwrite=True):
-    copied = []
-    storage_dir.mkdir(parents=True, exist_ok=True)
-    for name in retained_output_files:
-        src = source_dir / name
-        dst = storage_dir / name
-        if not src.exists() or (dst.exists() and not overwrite):
-            continue
-        shutil.copy2(src, dst)
-        copied.append(name)
-    return copied
+    return copy_retained_outputs(
+        Path(source_dir),
+        Path(storage_dir),
+        overwrite=overwrite,
+        retained_files=retained_output_files,
+    )
 
 
 def save_outputs(stage_dir, storage_dir, metadata):
     storage_dir.mkdir(parents=True, exist_ok=True)
     copy_retained_output_files(stage_dir, storage_dir)
-    (storage_dir / "run_metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+    write_json(storage_dir / "run_metadata.json", metadata)
 
 
 def parse_args(argv=None):

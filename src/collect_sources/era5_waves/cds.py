@@ -18,32 +18,15 @@ import pandas as pd
 
 from tqdm.auto import tqdm as progress_bar
 
+from source_collection_v2.era5 import CDS_WAVE_VARIABLES, cds_payload as _v2_cds_payload
+
 
 # canonical ERA5 single-levels variable long names for ocean waves
-era5_wave_variables = [
-    "significant_height_of_combined_wind_waves_and_swell",
-    "peak_wave_period",
-    "mean_wave_direction",
-    "wave_spectral_directional_width",
-]
+era5_wave_variables = CDS_WAVE_VARIABLES
 
 
 def build_cds_request_payload(bbox_wgs84, time_window, variables=None) -> dict:
-    # bbox_wgs84 is (W, S, E, N); CDS expects area = [N, W, S, E].
-    west, south, east, north = bbox_wgs84
-    start, stop = pd.Timestamp(time_window[0]), pd.Timestamp(time_window[1])
-    times_in_window = pd.date_range(start.floor("D"), stop.ceil("D"), freq="h", inclusive="left")
-    return {
-        "product_type": "reanalysis",
-        "data_format": "netcdf",
-        "download_format": "unarchived",
-        "variable": list(variables or era5_wave_variables),
-        "year": sorted({f"{t.year}" for t in times_in_window}),
-        "month": sorted({f"{t.month:02d}" for t in times_in_window}),
-        "day": sorted({f"{t.day:02d}" for t in times_in_window}),
-        "time": sorted({f"{t.hour:02d}:00" for t in times_in_window}),
-        "area": [north, west, south, east],
-    }
+    return _v2_cds_payload(bbox_wgs84, time_window[0], time_window[1], variables)
 
 
 def fetch_era5_waves(bbox_wgs84, time_window, output_path, variables=None, force=False) -> Path:

@@ -10,7 +10,7 @@ import pandas as pd
 
 from design_events.audit import audit_from_catalog as _audit_from_catalog
 from design_events.runtime import build_paths
-from study_location import define_location
+from study_location import deep_merge as _deep_merge_dict, define_location
 
 
 @dataclass(frozen=True)
@@ -460,14 +460,6 @@ def _location_relative_path(value, location_root: Path):
         return path.as_posix()
 
 
-def _deep_merge_dict(base: dict, override: dict) -> dict:
-    merged = dict(base)
-    for key, value in override.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _deep_merge_dict(merged[key], value)
-        else:
-            merged[key] = value
-    return merged
 
 
 __all__ = [

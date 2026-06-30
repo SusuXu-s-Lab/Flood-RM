@@ -1,10 +1,9 @@
-# OpenDSS and PowerModelsONM switch rendering
 """OpenDSS and PowerModelsONM export helpers for synthesized switches."""
 
 from __future__ import annotations
+
 import pandas as pd
 
-onm_settings_schema_version = "stage_b_onm_settings.v0.1"
 
 def render_switches_dss(controllable_switches: pd.DataFrame) -> str:
     """Render synthesized Controllable Switches as OpenDSS switch lines."""
@@ -48,29 +47,6 @@ def render_switches_dss(controllable_switches: pd.DataFrame) -> str:
             ]
         )
     return "\n".join(lines_out) + "\n"
-
-
-def render_onm_settings(controllable_switches: pd.DataFrame) -> dict:
-    """Emit PowerModelsONM switch settings sidecar fields not expressible in DSS."""
-
-    switch_section: dict[str, dict] = {}
-    for row in controllable_switches.itertuples(index=False):
-        switch_key = row.opendss_element.split(".", 1)[1]
-        switch_section[switch_key] = {
-            "dispatchable": "YES" if bool(row.dispatchable) else "NO",
-            "status": "ENABLED" if str(row.status) == "enabled" else "DISABLED",
-            "state": "OPEN" if str(row.normal_state) == "open" else "CLOSED",
-            "switch_role": str(row.switch_role),
-            "switch_id": str(row.switch_id),
-        }
-    return {
-        "schema_version": onm_settings_schema_version,
-        "infrastructure_step": "controllable_switch_synthesis",
-        "settings": {
-            "switch": switch_section,
-        },
-    }
-
 
 def connected_component_count(
     edge_frame: pd.DataFrame,
@@ -204,17 +180,24 @@ from typing import Any
 # clean core; this module keeps the Marshfield export/materializer adapters.
 from power_v2.onm import AssetStateRow
 from power_v2.onm import EventWindow
+from power_v2.onm import JuliaToolchainResult
 from power_v2.onm import OnmEventsResult
 from power_v2.onm import OnmRunBundle
+from power_v2.onm import PowerModelsOnmExport
 from power_v2.onm import _coerce_utc
 from power_v2.onm import build_event_window_bundle
 from power_v2.onm import build_load_uncertainty_bounds
+from power_v2.onm import build_asset_to_dss_element_map
 from power_v2.onm import build_onm_events
 from power_v2.onm import default_fema_lifelines_horizon_hours
 from power_v2.onm import default_load_uncertainty_band_fraction
 from power_v2.onm import hour_of_year
 from power_v2.onm import load_uncertainty_schema_version
+from power_v2.onm import onm_settings_schema_version
 from power_v2.onm import onm_events_schema_version
+from power_v2.onm import render_onm_settings
+from power_v2.onm import run_dynagrid_smoke as _run_v2_dynagrid_smoke
+from power_v2.onm import run_powermodels_onm_smoke as _run_v2_powermodels_onm_smoke
 from power_v2.onm import slice_annual_profile_to_event_window
 
 
@@ -226,31 +209,11 @@ from power_v2.onm import slice_annual_profile_to_event_window
 import json
 import re
 import shutil
-from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
 
 from power.resilience import build_archetype_load_profile
-
-
-@dataclass(frozen=True)
-class PowerModelsOnmExport:
-    """Paths emitted by the PowerModelsONM export adapter."""
-
-    output_dir: Path
-    network_dss_path: Path
-    settings_path: Path
-    linecodes_path: Path
-    transformers_path: Path
-    lines_path: Path
-    loads_path: Path
-    loadshapes_path: Path
-    ders_path: Path
-    switches_path: Path
-    buscoords_path: Path
-    stage_b_metadata_path: Path
-    manifest_path: Path
 
 
 _bus_fields = ("Bus1", "Bus2", "Bus")
@@ -865,44 +828,6 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-def build_asset_to_dss_element_map(
-    *,
-    assets: pd.DataFrame,
-    controllable_switches: pd.DataFrame | None = None,
-) -> dict[str, str]:
-    """Map Marshfield asset ids to DSS element names visible to PowerModelsONM."""
-
-    class_by_table = {
-        "lines": "line",
-        "line": "line",
-        "switches": "line",
-        "transformers": "transformer",
-        "loads": "load",
-        "load_buses": "load",
-        "generators": "generator",
-        "storage": "storage",
-        "solar": "pvsystem",
-    }
-    mapping: dict[str, str] = {}
-    if not assets.empty:
-        for row in assets.itertuples(index=False):
-            source_table = str(getattr(row, "source_asset_table", "") or "")
-            source_name = str(getattr(row, "source_asset_name", "") or "")
-            asset_id = str(getattr(row, "asset_id", "") or "")
-            dss_class = class_by_table.get(source_table)
-            if asset_id and dss_class and source_name and source_name != "nan":
-                mapping[asset_id] = f"{dss_class}.{source_name}"
-
-    if controllable_switches is not None and not controllable_switches.empty:
-        for row in controllable_switches.itertuples(index=False):
-            switch_id = str(getattr(row, "switch_id", "") or "")
-            opendss_element = str(getattr(row, "opendss_element", "") or "")
-            if switch_id and "." in opendss_element:
-                dss_class, name = opendss_element.split(".", 1)
-                mapping[switch_id] = f"{dss_class.lower()}.{name}"
-    return mapping
-
-
 def _asset_state_rows_from_frame(asset_states: pd.DataFrame) -> list[AssetStateRow]:
     rows: list[AssetStateRow] = []
     for row in asset_states.itertuples(index=False):
@@ -1067,23 +992,7 @@ def materialize_onm_run_bundle(
 """Artifact-first Python adapters for repo-local Julia toolchains."""
 
 
-import json
-import os
-import subprocess
-from dataclasses import dataclass
-from pathlib import Path
 from os import PathLike
-
-
-@dataclass(frozen=True)
-class JuliaToolchainResult:
-    """Result emitted by a Julia toolchain adapter."""
-
-    output_json: Path
-    command: list[str]
-    stdout: str
-    stderr: str
-    summary: dict
 
 
 def _repo_root() -> Path:
@@ -1105,35 +1014,17 @@ def run_powermodels_onm_smoke(
 ) -> JuliaToolchainResult:
     """Run the PowerModelsONM parser smoke gate through the Julia project."""
 
-    root = Path(repo_root) if repo_root is not None else _repo_root()
-    output_path = Path(output_json)
-    command = [
-        str(julia_executable),
-        f"+{julia_channel}",
-        f"--project={project_dir}",
-        str(script_path),
-        str(network_dss),
-        str(settings_json),
-        str(output_path),
-    ]
-    if events_json is not None:
-        command.extend(["--events", str(events_json)])
-    if solve_mld:
-        command.append("--mld")
-    completed = subprocess.run(
-        command,
-        cwd=root,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    summary = json.loads(output_path.read_text(encoding="utf-8"))
-    return JuliaToolchainResult(
-        output_json=output_path,
-        command=command,
-        stdout=completed.stdout,
-        stderr=completed.stderr,
-        summary=summary,
+    return _run_v2_powermodels_onm_smoke(
+        network_dss=network_dss,
+        settings_json=settings_json,
+        output_json=output_json,
+        events_json=events_json,
+        solve_mld=solve_mld,
+        julia_executable=julia_executable,
+        julia_channel=julia_channel,
+        repo_root=Path(repo_root) if repo_root is not None else _repo_root(),
+        project_dir=project_dir,
+        script_path=script_path,
     )
 
 
@@ -1152,36 +1043,15 @@ def run_dynagrid_smoke(
 ) -> JuliaToolchainResult:
     """Run the NRELDynaGrid online-control smoke gate through Julia."""
 
-    root = Path(repo_root) if repo_root is not None else _repo_root()
-    output_path = Path(output_json)
-    command = [
-        str(julia_executable),
-        f"+{julia_channel}",
-        f"--project={project_dir}",
-        str(script_path),
-        str(network_dss),
-        str(settings_json),
-        str(output_path),
-    ]
-    if events_json is not None:
-        command.extend(["--events", str(events_json)])
-    env = None
-    if nrel_dynagrid_path is not None:
-        env = dict(os.environ)
-        env["NRELDYNAGRID_PATH"] = str(nrel_dynagrid_path)
-    completed = subprocess.run(
-        command,
-        cwd=root,
-        env=env,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    summary = json.loads(output_path.read_text(encoding="utf-8"))
-    return JuliaToolchainResult(
-        output_json=output_path,
-        command=command,
-        stdout=completed.stdout,
-        stderr=completed.stderr,
-        summary=summary,
+    return _run_v2_dynagrid_smoke(
+        network_dss=network_dss,
+        settings_json=settings_json,
+        output_json=output_json,
+        events_json=events_json,
+        nrel_dynagrid_path=nrel_dynagrid_path,
+        julia_executable=julia_executable,
+        julia_channel=julia_channel,
+        repo_root=Path(repo_root) if repo_root is not None else _repo_root(),
+        project_dir=project_dir,
+        script_path=script_path,
     )

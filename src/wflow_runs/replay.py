@@ -33,12 +33,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import json
-import os
 import re
 import shlex
 import shutil
 import subprocess
-import tomllib
 
 import numpy as np
 import pandas as pd
@@ -71,6 +69,18 @@ from wflow_runs.streamflow_realization import (
     _streamflow_records_path,
     apply_same_frequency_amplification,
 )
+from wflow_v2.event import (
+    build_discharge_dataset as _v2_build_discharge_dataset,
+    configured_event_window_hours as _v2_configured_event_window_hours,
+    event_window as _v2_event_window,
+    gauge_discharge as _v2_gauge_discharge,
+    match_gauge_column as _v2_match_gauge_column,
+    merge_submodel_discharge as _v2_merge_submodel_discharge,
+    _output_csv as _v2_output_csv,
+)
+from wflow_v2.runner import clean_output_dir as _v2_clean_output_dir
+from wflow_v2.runner import wflow_run_command as _v2_wflow_run_command
+from wflow_v2.runner import zero_event_forcing as _zero_event_forcing
 
 CFS_TO_CMS = 0.028316846592
 _GENERATED_NOTICE = (
@@ -95,13 +105,12 @@ def resolve_event_window(
     hydrograph recede. Both ends are snapped to the forcing timestep so the window is
     an exact number of steps.
     """
-    ref = pd.Timestamp(reference_time)
-    if pd.isna(ref):
-        raise ValueError(f"event_reference_time is not a valid timestamp: {reference_time!r}")
-    step = pd.Timedelta(seconds=int(timestep_seconds))
-    start = (ref - pd.Timedelta(hours=float(pre_event_hours))).floor(step)
-    end = (ref + pd.Timedelta(hours=float(post_event_hours))).ceil(step)
-    return start, end
+    return _v2_event_window(
+        reference_time,
+        pre_event_hours=pre_event_hours,
+        post_event_hours=post_event_hours,
+        timestep_seconds=timestep_seconds,
+    )
 
 
 def configured_event_window_hours(
@@ -118,21 +127,11 @@ def configured_event_window_hours(
     post-event forcing window and add the Location's SFINCS drain-down buffer.
     """
 
-    wflow_window = ((config.get("wflow", {}) or {}).get("event_window", {}) or {})
-    timing = ((config.get("scenario_build", {}) or {}).get("timing", {}) or {})
-    pre = _positive_float(
-        wflow_window.get("pre_event_hours"),
-        default=default_pre_event_hours,
+    return _v2_configured_event_window_hours(
+        config,
+        default_pre_event_hours=default_pre_event_hours,
+        default_post_event_hours=default_post_event_hours,
     )
-    if "post_event_hours" in wflow_window:
-        post = _positive_float(
-            wflow_window.get("post_event_hours"),
-            default=default_post_event_hours,
-        )
-    else:
-        drain_down = max(float(timing.get("drain_down_hours", 0.0) or 0.0), 0.0)
-        post = float(default_post_event_hours) + drain_down
-    return pre, post
 
 
 def build_meteo(
@@ -279,51 +278,14 @@ def build_discharge_geodataset(
     crs,
     variable: str = "discharge",
 ):
-    """Assemble per-handoff discharge series into a HydroMT GeoDataset.
-
-    ``series_by_handoff`` maps ``sfincs_handoff_id`` → a discharge ``pd.Series`` on a
-    DatetimeIndex; ``points_by_handoff`` maps the same id → ``(x, y)`` in ``crs``. The
-    result has dims ``(index, time)`` with a *unique integer* ``index`` (required by
-    ``SfincsModel.discharge_points``), the ``sfincs_handoff_id`` carried as a ``name``
-    coordinate, and ``x``/``y`` point coordinates — the GeoDataset shape that
-    ``discharge_points.create`` reads (pass the opened ``xr.Dataset``, not the path, so
-    HydroMT uses the xarray driver rather than the vector fallback).
-    """
-    import xarray as xr
-
-    handoff_ids = [hid for hid in series_by_handoff if hid in points_by_handoff]
-    if not handoff_ids:
-        raise ValueError("no handoff points with both a discharge series and a location")
-
-    frame = pd.concat(
-        {hid: pd.Series(series_by_handoff[hid]).astype(float) for hid in handoff_ids},
-        axis=1,
-    ).sort_index()
-    frame.index = pd.DatetimeIndex(frame.index)
-    frame = frame[handoff_ids]  # stable column order matching handoff_ids
-
-    xs = np.array([float(points_by_handoff[hid][0]) for hid in handoff_ids], dtype=float)
-    ys = np.array([float(points_by_handoff[hid][1]) for hid in handoff_ids], dtype=float)
-
-    ds = xr.Dataset(
-        {variable: (("index", "time"), frame.to_numpy(dtype=float).T)},
-        coords={
-            "index": np.arange(1, len(handoff_ids) + 1, dtype=int),
-            "time": frame.index.values,
-            "name": ("index", np.array(handoff_ids, dtype=object)),
-            "x": ("index", xs),
-            "y": ("index", ys),
-        },
-    )
-    ds[variable].attrs.update(units="m3 s-1", standard_name="river_water__volume_flow_rate")
+    """Assemble per-handoff discharge series into a HydroMT GeoDataset."""
+    ds = _v2_build_discharge_dataset(series_by_handoff, points_by_handoff, crs=crs)
+    if variable != "discharge":
+        ds = ds.rename({"discharge": variable})
+        ds[variable].attrs.update(units="m3 s-1", standard_name="river_water__volume_flow_rate")
     epsg = _epsg(crs)
     if epsg is not None:
         ds.attrs["crs"] = epsg
-        try:  # hydromt's GeoDataset vector accessor stamps a spatial_ref the reader honours
-            # set_crs mutates ds in place and returns the CRS — don't reassign ds
-            ds.vector.set_crs(epsg)
-        except Exception:
-            pass
     return ds
 
 
@@ -347,32 +309,29 @@ def read_submodel_gauge_discharge(
     *,
     csv_name: str | None = None,
 ):
-    """Read one submodel's Wflow gauge discharge + handoff locations.
+    """Read one submodel's Wflow gauge discharge + handoff locations."""
+    if csv_name is None:
+        series, points, _crs = _v2_gauge_discharge(
+            Path(run_output_dir).parent,
+            gauges_geojson,
+            run_output_dir=run_output_dir,
+        )
+        return series, points
 
-    Returns ``(series_by_handoff, points_by_handoff)`` in the gauges' native CRS. Wflow
-    writes per-gauge columns ``Q_<index>`` (one per ``gauges_sfincs`` row) to its output
-    CSV; each gauge row carries the ``sfincs_handoff_id`` and geometry we key on.
-    """
     import geopandas as gpd
 
     gauges = gpd.read_file(gauges_geojson)
-    if "sfincs_handoff_id" not in gauges or "index" not in gauges:
-        raise ValueError(f"{gauges_geojson} lacks sfincs_handoff_id/index columns")
-
-    csv_path = _resolve_wflow_output_csv(Path(run_output_dir), csv_name)
-    table = pd.read_csv(csv_path, index_col=0, parse_dates=True)
-
+    table = pd.read_csv(_resolve_wflow_output_csv(Path(run_output_dir), csv_name), index_col=0, parse_dates=True)
     series_by_handoff: dict[str, pd.Series] = {}
     points_by_handoff: dict[str, tuple[float, float]] = {}
     for _, gauge in gauges.iterrows():
         handoff_id = str(gauge["sfincs_handoff_id"])
         column = _match_gauge_column(table.columns, gauge["index"])
-        if column is None:
-            continue
-        series_by_handoff[handoff_id] = table[column]
-        points_by_handoff[handoff_id] = (float(gauge.geometry.x), float(gauge.geometry.y))
+        if column is not None:
+            series_by_handoff[handoff_id] = pd.to_numeric(table[column], errors="coerce").astype(float)
+            points_by_handoff[handoff_id] = (float(gauge.geometry.x), float(gauge.geometry.y))
     if not series_by_handoff:
-        raise ValueError(f"no Q_<index> gauge columns matched in {csv_path}")
+        raise ValueError(f"no Q_<index> gauge columns matched in {_resolve_wflow_output_csv(Path(run_output_dir), csv_name)}")
     return series_by_handoff, points_by_handoff
 
 
@@ -381,26 +340,11 @@ def _resolve_wflow_output_csv(run_output_dir: Path, csv_name: str | None) -> Pat
         candidate = run_output_dir / csv_name
         if candidate.exists():
             return candidate
-    candidates = sorted(run_output_dir.rglob("*.csv"))
-    if not candidates:
-        raise FileNotFoundError(f"no Wflow output CSV under {run_output_dir}")
-    named = [c for c in candidates if c.name in {"output.csv", "output_scalar.csv"}]
-    return named[0] if named else candidates[0]
+    return _v2_output_csv(run_output_dir)
 
 
 def _match_gauge_column(columns, index_value) -> str | None:
-    try:
-        index_text = str(int(float(index_value)))
-    except (TypeError, ValueError):
-        index_text = str(index_value)
-    exact = {f"Q_{index_text}", f"Q_gauges_sfincs_{index_text}", f"Q_{index_value}"}
-    for column in columns:
-        if column in exact:
-            return column
-    for column in columns:  # fall back to a suffix match (Q_*_<index>)
-        if str(column).startswith("Q") and str(column).endswith(f"_{index_text}"):
-            return column
-    return None
+    return _v2_match_gauge_column(columns, index_value)
 
 
 def merge_submodel_discharge(
@@ -410,38 +354,20 @@ def merge_submodel_discharge(
     out_path: Path,
     handoff_points: dict[str, tuple[float, float]] | None = None,
 ):
-    """Merge per-submodel gauge discharge into one ``sfincs_discharge.nc`` GeoDataset.
-
-    Each entry in ``submodel_outputs`` is ``{"run_output_dir", "gauges_geojson"}``. The
-    merged series are reprojected to ``model_crs`` (the SFINCS grid CRS) so the handoff
-    points land on the SFINCS ``src`` locations.
-    """
-    import geopandas as gpd
-
-    series_by_handoff: dict[str, pd.Series] = {}
-    native_points: dict[str, tuple[float, float]] = {}
-    native_crs = None
-    for entry in submodel_outputs:
-        gauges_path = Path(entry["gauges_geojson"])
-        native_crs = native_crs or gpd.read_file(gauges_path).crs
-        series, points = read_submodel_gauge_discharge(entry["run_output_dir"], gauges_path)
-        series_by_handoff.update(series)
-        native_points.update(points)
-
-    points_by_handoff = _reproject_points(native_points, native_crs, model_crs)
-    if handoff_points:
-        points_by_handoff.update(
-            {
-                handoff_id: point
-                for handoff_id, point in handoff_points.items()
-                if handoff_id in series_by_handoff
-            }
-        )
-    ds = build_discharge_geodataset(series_by_handoff, points_by_handoff, crs=model_crs)
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    ds.to_netcdf(out_path)
-    return out_path
+    """Merge per-submodel gauge discharge into one ``sfincs_discharge.nc`` GeoDataset."""
+    normalized = [
+        {
+            **entry,
+            "run_model_root": entry.get("run_model_root") or Path(entry["run_output_dir"]).parent,
+        }
+        for entry in submodel_outputs
+    ]
+    return _v2_merge_submodel_discharge(
+        normalized,
+        model_crs=model_crs,
+        out_path=out_path,
+        handoff_points=handoff_points,
+    )
 
 
 def write_event_streamflow_handoff_discharge(
@@ -950,27 +876,6 @@ def run_zero_rain_control(
     return report
 
 
-def _zero_event_forcing(forcing_path: Path) -> None:
-    if not forcing_path.exists():
-        raise FileNotFoundError(forcing_path)
-    import xarray as xr
-
-    with xr.open_dataset(forcing_path) as src:
-        ds = src.load()
-    zeroed = []
-    # The zero-rain control isolates baseflow/startup by zeroing precip (river_inflow is
-    # still zeroed if a legacy event model carries it).
-    for name in ("precip", "river_inflow"):
-        if name in ds:
-            ds[name] = ds[name] * 0
-            zeroed.append(name)
-    if "precip" not in zeroed:
-        raise ValueError(f"{forcing_path} lacks precip variable for zero-rain control")
-    tmp = forcing_path.with_suffix(".zero.tmp.nc")
-    ds.to_netcdf(tmp)
-    tmp.replace(forcing_path)
-
-
 # ─── orchestration helpers ────────────────────────────────────────────────────
 
 
@@ -1155,44 +1060,12 @@ def _prepare_replay_submodel_output_dir(event_dir: Path, out_dir: Path) -> None:
 
 def _prepare_wflow_run_output_dir(run_config: Path) -> None:
     """Remove the generated Wflow run-output directory before solver execution."""
-    run_config = Path(run_config).resolve()
-    if not run_config.exists():
-        return
-    with run_config.open("rb") as src:
-        cfg = tomllib.load(src)
-    dir_output = str(cfg.get("dir_output", "")).strip()
-    if not dir_output:
-        return
-    model_root = run_config.parent
-    out_dir = Path(dir_output)
-    if not out_dir.is_absolute():
-        out_dir = model_root / out_dir
-    out_dir = out_dir.resolve()
-    if out_dir == model_root or model_root not in out_dir.parents:
-        raise ValueError(f"refusing to clean Wflow output outside model dir: {out_dir}")
-    if out_dir.exists():
-        if out_dir.is_dir():
-            shutil.rmtree(out_dir)
-        else:
-            out_dir.unlink()
+    _v2_clean_output_dir(run_config)
 
 
 def _wflow_run_command(config: dict) -> str:
-    """Resolve the Wflow engine command template (``{run_config}`` placeholder).
-
-    The ``bin_env`` environment variable (default ``WFLOW_BIN``) takes precedence over
-    a configured ``command`` so a deployment can point at an absolute engine path
-    (e.g. a cluster ``wflow_cli`` build) without editing the portable config — config
-    always carries the ``wflow_cli {run_config}`` default, so checking it first would
-    otherwise mask the env override entirely.
-    """
-    run_cfg = config.get("wflow", {}).get("run", {}) or {}
-    bin_env = run_cfg.get("bin_env") or "WFLOW_BIN"
-    command = os.environ.get(bin_env, "") or run_cfg.get("command")
-    if command:
-        return command if "{run_config}" in command else f"{command} {{run_config}}"
-    # Default to the Wflow.jl CLI convention used by the reference coupling workflow.
-    return "wflow_cli {run_config}"
+    """Resolve the Wflow engine command template (``{run_config}`` placeholder)."""
+    return _v2_wflow_run_command(config)
 
 
 def _wflow_replay_repairs_enabled(config: dict) -> bool:

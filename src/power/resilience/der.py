@@ -11,6 +11,9 @@ from typing import Any
 
 import pandas as pd
 
+from power_v2.der import build_reopt_request_payload
+from power_v2.der import parse_reopt_results
+
 der_version = "stage_b_der_inventory.v0.1"
 placement_rule_layer_1 = "evidence_anchored_mhmp"
 placement_rule_layer_2 = "reopt_resilience_sizing"
@@ -356,68 +359,9 @@ def write_der_inventory(rows: Iterable[Mapping[str, Any]], output_path: Path) ->
     pq.write_table(pa.table(columns, schema=schema), output_path)
 
 
-def build_reopt_request_payload(
-    facility: Mapping[str, Any],
-    *,
-    load_profile_kw: list[float],
-    critical_load_fraction: float,
-    outage_duration_hours: int,
-    outage_start_hour: int,
-    electric_tariff: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Assemble a REopt v3 request payload for one facility.
-
-    Network transport is the caller's responsibility; this builder is pure.
-    """
-
-    outage_end_time_step = outage_start_hour + outage_duration_hours - 1
-    return {
-        "Site": {
-            "latitude": facility["lat"],
-            "longitude": facility["lon"],
-        },
-        "ElectricLoad": {
-            "loads_kw": list(load_profile_kw),
-            "critical_load_fraction": critical_load_fraction,
-            "year": default_reopt_load_year,
-        },
-        "ElectricTariff": dict(electric_tariff or default_electric_tariff),
-        "ElectricUtility": {
-            "outage_start_time_step": outage_start_hour,
-            "outage_end_time_step": outage_end_time_step,
-        },
-        "PV": {},
-        "ElectricStorage": {},
-        "Generator": {},
-    }
-
-
 def _stable_json_digest(payload: Mapping[str, Any]) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
-
-
-def parse_reopt_results(results: Mapping[str, Any]) -> dict[str, Any]:
-    """Extract Layer 2 capacities and feasibility from a REopt results envelope.
-
-    Returns a dict with `pv_kw`, `bess_kw`, `bess_kwh`, `genset_kw`, and
-    `reopt_feasible`. Missing technology blocks default to zero; missing
-    outage feasibility defaults to `False`.
-    """
-
-    outputs = results.get("outputs", {}) or {}
-    pv = outputs.get("PV", {}) or {}
-    bess = outputs.get("ElectricStorage", {}) or {}
-    genset = outputs.get("Generator", {}) or {}
-    outages = outputs.get("Outages", {}) or {}
-
-    return {
-        "pv_kw": float(pv.get("size_kw", 0.0)),
-        "bess_kw": float(bess.get("size_kw", 0.0)),
-        "bess_kwh": float(bess.get("size_kwh", 0.0)),
-        "genset_kw": float(genset.get("size_kw", 0.0)),
-        "reopt_feasible": bool(outages.get("critical_loads_met", False)),
-    }
 
 
 def apply_layer_2_reopt_sizing(
