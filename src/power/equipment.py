@@ -1,4 +1,4 @@
-"""SHIFT equipment helpers for the Marshfield Baseline Network."""
+"""SHIFT/GDM equipment helpers for baseline network construction."""
 
 from __future__ import annotations
 import math

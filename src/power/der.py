@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,6 +30,9 @@ default_electric_tariff = {"blended_annual_energy_rate": 0.20, "blended_annual_d
 default_reopt_load_year = 2024
 fema_community_lifelines_outage_hours = 72
 hours_per_year = 8760
+reopt_base_url = "https://developer.nlr.gov/api/reopt/stable"
+terminal_statuses = frozenset({"optimal", "Infeasible", "error", "Error"})
+default_nlr_api_key_file = Path("artifacts/credentials/nlr_api.txt")
 
 
 class DERAssignmentViolation(ValueError):
@@ -124,6 +128,182 @@ def parse_reopt_results(results: Mapping[str, Any]) -> dict[str, Any]:
 
 def _digest(payload: Mapping[str, Any]) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def build_job_submit_request(payload: Mapping[str, Any], *, api_key: str) -> tuple[str, dict[str, Any]]:
+    return f"{reopt_base_url}/job/?api_key={api_key}", dict(payload)
+
+
+def build_results_poll_request(run_uuid: str, *, api_key: str) -> str:
+    return f"{reopt_base_url}/job/{run_uuid}/results/?api_key={api_key}"
+
+
+def is_terminal_status(status: str) -> bool:
+    return status in terminal_statuses
+
+
+def load_nlr_api_key(*, env_var: str = "NLR_API_KEY", fallback_path: Path | None = None) -> str:
+    value = os.environ.get(env_var)
+    if value:
+        return value.strip()
+    if fallback_path is not None and fallback_path.exists():
+        return fallback_path.read_text(encoding="utf-8").strip()
+    raise ReoptError(
+        f"NLR API key not found: set {env_var} env var or provide a fallback file at {fallback_path}"
+    )
+
+
+class ReoptClient:
+    def __init__(
+        self,
+        http_post: Callable[[str, dict[str, Any]], dict[str, Any]],
+        http_get: Callable[[str], dict[str, Any]],
+        *,
+        api_key: str,
+        cache_dir: Path | None = None,
+        poll_interval_s: float = 5.0,
+        max_poll_attempts: int = 240,
+        sleep: Callable[[float], None] | None = None,
+    ) -> None:
+        self._http_post = http_post
+        self._http_get = http_get
+        self._api_key = api_key
+        self._cache_dir = cache_dir
+        self._poll_interval_s = poll_interval_s
+        self._max_poll_attempts = max_poll_attempts
+        self._sleep = sleep if sleep is not None else _default_sleep
+
+    def __call__(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        cached = self._cache_load(payload)
+        if cached is not None:
+            return cached
+        submit_url, body = build_job_submit_request(payload, api_key=self._api_key)
+        submit_response = self._http_post(submit_url, body)
+        run_uuid = submit_response.get("run_uuid")
+        if not run_uuid:
+            raise ReoptError(f"REopt submit did not return a run_uuid: {submit_response!r}")
+        poll_url = build_results_poll_request(str(run_uuid), api_key=self._api_key)
+        for _ in range(self._max_poll_attempts):
+            results = self._http_get(poll_url)
+            status = str(results.get("status", ""))
+            if is_terminal_status(status):
+                if status in {"error", "Error"}:
+                    raise ReoptError(f"REopt job {run_uuid} returned error: {results.get('messages') or results}")
+                self._cache_store(payload, results)
+                return results
+            self._sleep(self._poll_interval_s)
+        raise ReoptError(
+            f"REopt job {run_uuid} did not reach a terminal status after {self._max_poll_attempts} polls"
+        )
+
+    def _cache_path(self, payload: Mapping[str, Any]) -> Path | None:
+        return None if self._cache_dir is None else self._cache_dir / f"{_digest(payload)}.json"
+
+    def _cache_load(self, payload: Mapping[str, Any]) -> dict[str, Any] | None:
+        path = self._cache_path(payload)
+        if path is None or not path.exists():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def _cache_store(self, payload: Mapping[str, Any], results: dict[str, Any]) -> None:
+        path = self._cache_path(payload)
+        if path is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(_redact_reopt_secrets(results), sort_keys=True), encoding="utf-8")
+
+
+class CachedReoptResultsClient:
+    def __init__(self, cache_dir: Path) -> None:
+        self.cache_dir = Path(cache_dir)
+
+    def __call__(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+        digest = _digest(payload)
+        path = self.cache_dir / f"{digest}.json"
+        if not path.exists():
+            raise FileNotFoundError(f"REopt cache miss for payload digest {digest}: {path}")
+        return json.loads(path.read_text(encoding="utf-8"))
+
+
+def default_reopt_client(
+    *,
+    api_key: str | None = None,
+    cache_dir: Path | None = None,
+    poll_interval_s: float = 5.0,
+    max_poll_attempts: int = 240,
+    fallback_key_path: Path = default_nlr_api_key_file,
+) -> ReoptClient:
+    return ReoptClient(
+        _urllib_post,
+        _urllib_get,
+        api_key=api_key or load_nlr_api_key(fallback_path=fallback_key_path),
+        cache_dir=cache_dir,
+        poll_interval_s=poll_interval_s,
+        max_poll_attempts=max_poll_attempts,
+    )
+
+
+def _redact_reopt_secrets(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: "<redacted>" if key == "api_key" else _redact_reopt_secrets(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_reopt_secrets(item) for item in value]
+    return value
+
+
+def _default_sleep(seconds: float) -> None:
+    import time
+
+    time.sleep(seconds)
+
+
+def _urllib_post(url: str, body: dict[str, Any]) -> dict[str, Any]:
+    from urllib import request
+    from urllib.error import HTTPError
+
+    req = request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with request.urlopen(req) as resp:  # noqa: S310 -- trusted REopt API endpoint
+            return json.loads(resp.read().decode("utf-8"))
+    except HTTPError as exc:
+        raise ReoptError(_http_error_message(exc)) from exc
+
+
+def _urllib_get(url: str) -> dict[str, Any]:
+    from urllib import request
+    from urllib.error import HTTPError
+
+    req = request.Request(url, method="GET")
+    try:
+        with request.urlopen(req) as resp:  # noqa: S310 -- trusted REopt API endpoint
+            return json.loads(resp.read().decode("utf-8"))
+    except HTTPError as exc:
+        raise ReoptError(_http_error_message(exc)) from exc
+
+
+def _http_error_message(exc: Any) -> str:
+    body = ""
+    if exc.fp is not None:
+        try:
+            body = exc.fp.read().decode("utf-8")
+        except Exception:
+            body = ""
+    if body:
+        try:
+            decoded = json.loads(body)
+            if isinstance(decoded, dict):
+                decoded = _redact_reopt_secrets(decoded)
+                keys = ("status", "messages", "errors", "error", "run_uuid", "api_version")
+                decoded = {key: decoded[key] for key in keys if key in decoded} or decoded
+            body = json.dumps(decoded, sort_keys=True)
+        except json.JSONDecodeError:
+            body = body[:1000]
+    return f"REopt HTTP {exc.code} {exc.reason}: {body}".strip()
 
 
 def validate_reopt_sizing_inputs(rows: Iterable[Mapping[str, Any]], *, facility_lookup: Mapping[str, Mapping[str, Any]], load_profiles_kw: Mapping[str, list[float]], tier_clf_map: Mapping[str, float] | None = None, expected_hours: int = hours_per_year) -> dict[str, int]:

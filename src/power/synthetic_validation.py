@@ -1,4 +1,4 @@
-"""Notebook-facing synthetic validation audit helpers.
+"""Notebook-facing synthetic validation audit helpers in the shallow power namespace.
 
 Most validation logic lives in :mod:`power._audit_core`.  This module keeps the
 Marshfield notebook import path and report filenames stable while avoiding the

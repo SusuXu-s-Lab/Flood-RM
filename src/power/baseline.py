@@ -63,6 +63,9 @@ def source_area(config: dict[str, Any], *, geocode_place: Callable[[str], Any] |
     spec = grid.get("source_area") or {}
     if spec.get("source") != "osmnx_place":
         raise ValueError(f"unsupported grid.source_area.source: {spec.get('source')!r}")
+    for patch in spec.get("extra_areas") or []:
+        if "bbox" not in patch:
+            raise ValueError(f"source area patch needs bbox: {patch!r}")
     place_name = _resolve_config_reference(config, spec.get("place_name", "project.place_name"))
     boundary = geocode_place(place_name).geometry.union_all()
     patches = []
@@ -94,6 +97,30 @@ def source_anchors(
     if spec.get("accept_unreviewed_source_anchors"):
         return candidates
     raise SourceAnchorReviewRequired(candidate_path=candidate_path, reviewed_path=reviewed_path)
+
+
+def fetch_parcels(geometry: Any) -> list[Any]:
+    """Fetch OSM building parcels while preserving Shapely lon/lat order."""
+
+    import pandas as pd
+    import osmnx as ox
+    from geopandas import GeoDataFrame
+    from osmnx._errors import InsufficientResponseError
+    from shift.parcel import parcels_from_geodataframe
+
+    frames = []
+    for polygon in _polygon_parts(geometry):
+        try:
+            frame = ox.features_from_polygon(polygon, {"building": True})
+        except InsufficientResponseError:
+            continue
+        if len(frame) > 0:
+            frames.append(frame)
+
+    if not frames:
+        return []
+    combined = GeoDataFrame(pd.concat(frames, ignore_index=True), crs=frames[0].crs)
+    return parcels_from_geodataframe(combined)
 
 
 def fetch_parcels_native(location: str | Any, *, max_distance_m: float = 500.0) -> list[Any] | None:
@@ -224,6 +251,21 @@ def _with_matrix_impedance_branches(graph: Any, branch_base_type: type[Any], mat
             edge.edge_type = matrix_branch_type
         new_graph.add_edge(from_node, to_node, edge_data=edge)
     return new_graph
+
+
+def _polygon_parts(geometry: Any) -> list[Any]:
+    from shapely.geometry import MultiPolygon, Polygon
+
+    if isinstance(geometry, Polygon):
+        return [geometry]
+    if isinstance(geometry, MultiPolygon):
+        return list(geometry.geoms)
+    if hasattr(geometry, "convex_hull") and isinstance(geometry.convex_hull, Polygon):
+        return [geometry.convex_hull]
+    raise TypeError(
+        "parcel fetch geometry must be Polygon or MultiPolygon, "
+        f"got {getattr(geometry, 'geom_type', type(geometry).__name__)!r}"
+    )
 
 
 def _resolve_config_reference(config: dict[str, Any], value: str) -> str:

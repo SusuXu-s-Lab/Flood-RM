@@ -1,44 +1,73 @@
-"""Notebook skin for flood exposure and fragility-based asset impacts."""
+"""Notebook-facing flood fragility and asset-impact helpers."""
 
 from __future__ import annotations
 
 import csv
 import json
+from functools import lru_cache
 from pathlib import Path
+from types import SimpleNamespace
 
 from paths import default_location_config_path, find_repo_root
-from power.impact.fragility import (
-    failure_probability,
-    load_asset_type_mapping,
-    load_flood_depth_curves,
-)
 from power._impact_core import AssetPoint
-from power._impact_core import load_asset_points as _load_v2_asset_points
+from power._impact_core import FloodDepthFragilityCurve
+from power._impact_core import csv_failure_probability as _csv_failure_probability
+from power._impact_core import erad_asset_type as _erad_asset_type
+from power._impact_core import line_local_asset_type
+from power._impact_core import load_asset_points as _load_asset_points
+from power._impact_core import load_asset_type_mapping as _load_asset_type_mapping
+from power._impact_core import load_flood_depth_curves as _load_flood_depth_curves
 from power._impact_core import sample_sfincs_peak_depths
 from power._impact_core import summarize_impacts
 from study_location import define_location
 
+
 repo_root = find_repo_root(Path(__file__).resolve())
 
 
-def power_grid_root():
+def power_grid_root() -> Path:
     definition = define_location(default_location_config_path(repo_root))
     path = Path(definition.grid.get("power_grid_root", "data/power_grid"))
     return path if path.is_absolute() else definition.root / path
 
 
+shared_fragility_dir = repo_root / "artifacts" / "fragility"
+default_curves_csv = shared_fragility_dir / "erad_flood_depth_curves.csv"
 power_grid = power_grid_root()
 smart_ds_compat = power_grid / "augmented"
+fragility_dir = power_grid / "fragility"
+default_mapping_csv = fragility_dir / "asset_type_mapping.csv"
 impacts_dir = power_grid / "figures" / "impacts"
 default_event_dir = power_grid / "sfincs_truth" / "run_outputs" / "single_event_tests" / "riley_90m"
 default_probability_threshold = 0.50
 default_max_sample_distance_m = 150.0
 
 
-def load_asset_points(registry_dir=smart_ds_compat, *, include_lines=False):
-    """Flood-relevant point assets from the Grid Dataset artifacts."""
+@lru_cache(maxsize=None)
+def load_flood_depth_curves(path=default_curves_csv):
+    return _load_flood_depth_curves(path)
 
-    return _load_v2_asset_points(registry_dir, include_lines=include_lines)
+
+@lru_cache(maxsize=None)
+def load_asset_type_mapping(path=default_mapping_csv):
+    return _load_asset_type_mapping(path)
+
+
+def erad_asset_type(local_asset_type, mapping=None):
+    return _erad_asset_type(local_asset_type, mapping or load_asset_type_mapping())
+
+
+def failure_probability(local_asset_type, depth_m, *, curves=None, mapping=None):
+    return _csv_failure_probability(
+        local_asset_type,
+        depth_m,
+        curves=curves or load_flood_depth_curves(),
+        mapping=mapping or load_asset_type_mapping(),
+    )
+
+
+def load_asset_points(registry_dir=smart_ds_compat, *, include_lines=False):
+    return _load_asset_points(registry_dir, include_lines=include_lines)
 
 
 def compute_asset_impacts(
@@ -50,8 +79,6 @@ def compute_asset_impacts(
     include_lines=False,
     registry_dir=smart_ds_compat,
 ):
-    """Per-asset flood exposure and CSV-backed fragility impact rows."""
-
     assets = load_asset_points(registry_dir, include_lines=include_lines)
     depths, distances = sample_sfincs_peak_depths(
         event_dir,
@@ -112,8 +139,6 @@ def run_asset_impacts(
     max_sample_distance_m=default_max_sample_distance_m,
     include_lines=False,
 ):
-    """Fragility-based asset impacts, written as CSV/summary outputs."""
-
     event_path = Path(event_dir)
     event_id = event_id or event_path.name
     output_dir = output_dir or impacts_dir / event_id
@@ -126,3 +151,21 @@ def run_asset_impacts(
     )
     write_outputs(rows, summary, output_dir)
     return rows, summary
+
+
+fragility = SimpleNamespace(
+    FloodDepthFragilityCurve=FloodDepthFragilityCurve,
+    line_local_asset_type=line_local_asset_type,
+    load_flood_depth_curves=load_flood_depth_curves,
+    load_asset_type_mapping=load_asset_type_mapping,
+    erad_asset_type=erad_asset_type,
+    failure_probability=failure_probability,
+)
+
+analysis = SimpleNamespace(
+    AssetPoint=AssetPoint,
+    load_asset_points=load_asset_points,
+    compute_asset_impacts=compute_asset_impacts,
+    write_outputs=write_outputs,
+    run_asset_impacts=run_asset_impacts,
+)

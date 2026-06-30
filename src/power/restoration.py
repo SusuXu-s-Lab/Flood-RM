@@ -994,9 +994,11 @@ def materialize_onm_run_bundle(
 
 from os import PathLike
 
+from paths import find_repo_root
+
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+    return find_repo_root(Path(__file__).resolve())
 
 
 def run_powermodels_onm_smoke(
