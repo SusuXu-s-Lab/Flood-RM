@@ -1,3 +1,2 @@
-from power.mgr import bind_module
-
-bind_module(__name__, "power.mgr.resilience.switches", globals())
+from power.ssap import *  # noqa: F403
+from power.blocks import *  # noqa: F403

@@ -1,3 +1,1 @@
-from power.mgr import bind_module
-
-bind_module(__name__, "power.mgr.resilience.profiles", globals())
+from power.profiles import *  # noqa: F403

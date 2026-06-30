@@ -160,7 +160,7 @@ def prepare_event_instate(event_model_root: str | Path, base_model_root: str | P
     return _copy_instate(base_model_root, event_model_root, state_name=state_name, model_cls=model_cls)
 
 
-def validate_instates(config: dict[str, Any], location_root: str | Path, *, raise_on_error: bool = True) -> pd.DataFrame:
+def _validate_native_instates(config: dict[str, Any], location_root: str | Path, *, raise_on_error: bool = True) -> pd.DataFrame:
     root = Path(location_root)
     base_root = resolve_location_path(root, (config.get("wflow", {}) or {}).get("base_model_root", "data/wflow/base"))
     rows: list[dict[str, Any]] = []
@@ -220,6 +220,154 @@ def reservoirs_enabled(config: dict[str, Any]) -> bool:
     return bool((((config.get("collection", {}) or {}).get("national_hydrography", {}) or {}).get("reservoirs", {}) or {}).get("enabled", False))
 
 
+configure_wflow_state_paths = configure_state_paths
+shared_baseline_warmup_settings = warmup_settings
+
+
+def prepare_wflow_event_instate(event_model_root, base_model_root, *, state_name: str = "instates.nc") -> dict:
+    """Copy a prepared base-model Wflow instate into an event model and disable cold start."""
+    try:
+        return prepare_event_instate(event_model_root, base_model_root, state_name=state_name)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(
+            f"Wflow dynamic handoff requires a prepared warmup state: {exc.filename or exc.args[0]}. "
+            "Run the shared Wflow warmup and promote outstate/outstates.nc to instate/instates.nc before event replay."
+        ) from exc
+
+
+def prepare_instates(
+    config: dict,
+    location_root,
+    *,
+    force: bool = False,
+    model_cls=None,
+) -> pd.DataFrame:
+    """Create native Wflow ``instate/instates.nc`` files with the legacy notebook schema."""
+    report = prepare_states(
+        config,
+        location_root,
+        force=force,
+        model_cls=model_cls,
+        raise_on_error=False,
+    )
+    if report.empty:
+        return pd.DataFrame(columns=["submodel_id", "instate", "status", "message"])
+    legacy = report.rename(columns={"wflow_submodel_id": "submodel_id"}).copy()
+    legacy["message"] = (
+        legacy["message"]
+        .astype(str)
+        .str.replace("existing native Wflow state", "existing native Wflow instate", regex=False)
+        .str.replace("missing built Wflow model: ", "missing built Wflow model at ", regex=False)
+        .str.replace("setup_cold_states timestamp=", "native setup_cold_states timestamp=", regex=False)
+    )
+    return legacy[["submodel_id", "instate", "status", "message"]]
+
+
+def plan_wflow_warmup_state(config: dict, location_root, event_id: str, *, reference_time) -> pd.Series:
+    settings = shared_baseline_warmup_settings(config)
+    if settings["state_policy"] == "shared_baseline":
+        plan = plan_warmup(config, location_root, reference_time=settings["baseline_reference_time"] or reference_time)
+        plan["event_id"] = str(event_id)
+        plan.name = "wflow_warmup_state_plan"
+        return plan
+    wflow = config.get("wflow", {})
+    settings = wflow.get("dynamic_handoff", {}) or {}
+    warmup_days = float(settings.get("warmup_days", 90))
+    start, end = warmup_window(reference_time, warmup_days=warmup_days)
+    events_root = Path(wflow.get("events_root", "data/wflow/events"))
+    if not events_root.is_absolute():
+        events_root = Path(location_root) / events_root
+    event_root = events_root / str(event_id)
+    return pd.Series(
+        {
+            "event_id": str(event_id),
+            "warmup_days": warmup_days,
+            "warmup_start": start.isoformat(),
+            "warmup_end": end.isoformat(),
+            "cold_state_workflow": str(event_root / "_wflow_setup_cold_states.yml"),
+            "warmup_event_root": str(event_root / "_warmup"),
+            "warmup_precip": str(event_root / "_warmup" / "precip.nc"),
+            "warmup_temp_pet": str(event_root / "_warmup" / "temp_pet.nc"),
+            "state_input": "instate/instates.nc",
+            "state_output": "outstate/outstates.nc",
+        },
+        name="wflow_warmup_state_plan",
+    )
+
+
+def validate_warmup_forcing(
+    config: dict,
+    location_root,
+    event_id: str,
+    *,
+    reference_time,
+    raise_on_error: bool = True,
+) -> pd.DataFrame:
+    """Check that continuous warmup forcing exists for the configured warmup window."""
+    plan = plan_wflow_warmup_state(config, location_root, event_id, reference_time=reference_time)
+    start = pd.Timestamp(plan["warmup_start"])
+    end = pd.Timestamp(plan["warmup_end"])
+    rows = [
+        _forcing_file_row(Path(plan["warmup_precip"]), variable="precip", start=start, end=end),
+        _forcing_file_row(Path(plan["warmup_temp_pet"]), variable="temp", start=start, end=end),
+    ]
+    report = pd.DataFrame(rows)
+    failed = report[report["status"] == "failed"]
+    if raise_on_error and not failed.empty:
+        details = "; ".join(f"{row.file}: {row.message}" for row in failed.itertuples())
+        raise RuntimeError(f"Wflow warmup forcing is not ready: {details}")
+    return report
+
+
+def validate_instates(config: dict, location_root, *, raise_on_error: bool = True) -> pd.DataFrame:
+    """Require Wflow submodels to have native ``instate/instates.nc`` before dynamic replay."""
+    report = _validate_native_instates(config, location_root, raise_on_error=False)
+    legacy = report.rename(columns={"wflow_submodel_id": "submodel_id"}).copy()
+    if not legacy.empty:
+        legacy["message"] = legacy["message"].astype(str).str.replace(
+            "no Wflow submodels",
+            "no Wflow submodels found in config or domain_set manifest",
+            regex=False,
+        )
+    failed = legacy[legacy["status"] == "failed"] if not legacy.empty else legacy
+    if raise_on_error and not failed.empty:
+        details = "; ".join(f"{row.submodel_id}: {row.message}" for row in failed.itertuples())
+        raise RuntimeError(f"Wflow warmup states are not ready: {details}")
+    return legacy[["submodel_id", "instate", "status", "message"]]
+
+
+def validate_wflow_reservoir_states(model_root, *, required: bool = True, raise_on_error: bool = True) -> pd.DataFrame:
+    """Check native Wflow instates for reservoir water levels."""
+    try:
+        return validate_reservoir_states(model_root, required=required, raise_on_error=raise_on_error)
+    except RuntimeError as exc:
+        instate = Path(model_root) / "instate" / "instates.nc"
+        raise RuntimeError(f"Wflow reservoir state QA failed for {instate}: {exc}") from exc
+
+
+def _forcing_file_row(path: Path, *, variable: str, start: pd.Timestamp, end: pd.Timestamp) -> dict:
+    if not path.exists():
+        return {"file": str(path), "variable": variable, "status": "failed", "message": "missing"}
+    with xr.open_dataset(path) as ds:
+        if variable not in ds:
+            return {"file": str(path), "variable": variable, "status": "failed", "message": f"missing variable {variable}"}
+        if "time" not in ds[variable].dims:
+            return {"file": str(path), "variable": variable, "status": "failed", "message": "missing time dimension"}
+        tmin = pd.Timestamp(ds["time"].min().values)
+        tmax = pd.Timestamp(ds["time"].max().values)
+    covers = tmin <= start and tmax >= end
+    status = "passed" if covers else "failed"
+    return {
+        "file": str(path),
+        "variable": variable,
+        "status": status,
+        "message": (
+            f"time_min={tmin.isoformat()}; time_max={tmax.isoformat()}; "
+            f"required={start.isoformat()}..{end.isoformat()}"
+        ),
+    }
+
+
 def _read_model(root: str | Path, *, model_cls=None, mode: str = "r"):
     cls = _wflow_model_cls(model_cls)
     model = cls(root=str(root), mode=mode)
@@ -269,13 +417,3 @@ def _report(rows: list[dict[str, Any]], raise_on_error: bool) -> pd.DataFrame:
         raise RuntimeError(f"Wflow state QA failed: {details}")
     return report
 
-
-from wflow_runs.mgr.states import (  # noqa: E402
-    configure_wflow_state_paths,
-    plan_wflow_warmup_state,
-    prepare_instates,
-    prepare_wflow_event_instate,
-    shared_baseline_warmup_settings,
-    validate_warmup_forcing,
-    validate_wflow_reservoir_states,
-)

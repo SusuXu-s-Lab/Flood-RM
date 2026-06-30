@@ -1,3 +1,4 @@
-from power.mgr import bind_module
-
-bind_module(__name__, "power.mgr.resilience", globals())
+from power.resilience.facilities import *
+from power.resilience.profiles import *
+from power.resilience.der import *
+from power.resilience.switches import *

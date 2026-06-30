@@ -15,7 +15,7 @@ from typing import Any, Iterable, Mapping
 import pandas as pd
 
 from .core import file_sha256, manifest, parse_float, parse_int, slug, stable_seed, write_json, write_table
-from .impact import FragilityModel, failure_probability
+from ._impact_core import FragilityModel, failure_probability
 from .registry import build_feeders
 
 protocol_version = "v0.1"
