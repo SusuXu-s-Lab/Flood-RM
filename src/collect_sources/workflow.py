@@ -634,7 +634,7 @@ import collect_sources.era5_waves as era5_waves_module
 import collect_sources.lcra_hydromet as lcra_hydromet_module
 import collect_sources.usgs_streamgages as usgs_streamgages_module
 from collect_sources.nwm import soil_moisture_csv_has_variables
-from collect_sources.source_artifacts import source_artifact_covers
+from source_artifacts import source_artifact_covers
 from collect_sources.usgs_streamgages import (
     active_streamgage_candidate_artifact_ready,
     build_reviewed_streamgage_decisions,

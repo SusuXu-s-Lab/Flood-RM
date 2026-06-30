@@ -1,11 +1,25 @@
-from sfincs_runs.scenarios.audit import (
+import sys
+
+from sfincs_runs import audit as audit
+from sfincs_runs import create_events as create_events
+from sfincs_runs import event_forcing as event_forcing
+from sfincs_runs import inland_coupled as inland_coupled
+from sfincs_runs import inland_initial_conditions as inland_initial_conditions
+from sfincs_runs import joint_handoff as joint_handoff
+from sfincs_runs import outcome_catalogue as outcome_catalogue
+from sfincs_runs import run_events as run_events
+from sfincs_runs import run_inland_coupled_events as run_inland_coupled_events
+from sfincs_runs import scenario_events as scenarios
+from sfincs_runs import scenario_stats as scenario_stats
+from sfincs_runs import timing as timing
+from sfincs_runs.audit import (
     ForcingAuditIssue,
     ForcingManifestAudit,
     audit_forcing,
 )
 from sfincs_runs.coastal import build_coastal_hydrograph_from_analog as _v2_build_coastal_hydrograph_from_analog
 from sfincs_runs.coastal import coastal_timeseries_from_catalog_row as build_timeseries
-from sfincs_runs.scenarios.inland_coupled import (
+from sfincs_runs.inland_coupled import (
     InlandCoupledForcingStage,
     InlandCoupledExamplePlan,
     accepted_dynamic_handoff_event_ids,
@@ -16,15 +30,35 @@ from sfincs_runs.scenarios.inland_coupled import (
     stage_scenarios,
     stage_inland_coupled_scenario_forcing,
 )
-from sfincs_runs.scenarios.inland_initial_conditions import (
+from sfincs_runs.inland_initial_conditions import (
     init_hydrographs,
     derive_hydrograph_initial_depth,
 )
-from sfincs_runs.scenarios.joint_handoff import write_handoff
-from sfincs_runs.scenarios.outcome_catalogue import (
+from sfincs_runs.joint_handoff import write_handoff
+from sfincs_runs.outcome_catalogue import (
     FloodOutcomeCatalogue,
     build_flood_event_outcome_catalogue,
 )
+
+__path__ = []
+if __spec__ is not None:
+    __spec__.submodule_search_locations = __path__
+
+for _name, _module in {
+    "audit": audit,
+    "create_events": create_events,
+    "event_forcing": event_forcing,
+    "inland_coupled": inland_coupled,
+    "inland_initial_conditions": inland_initial_conditions,
+    "joint_handoff": joint_handoff,
+    "outcome_catalogue": outcome_catalogue,
+    "run_events": run_events,
+    "run_inland_coupled_events": run_inland_coupled_events,
+    "scenario_stats": scenario_stats,
+    "scenarios": scenarios,
+    "timing": timing,
+}.items():
+    sys.modules[f"{__name__}.{_name}"] = _module
 
 
 def build_coastal_hydrograph_from_analog(

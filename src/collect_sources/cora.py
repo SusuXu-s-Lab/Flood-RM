@@ -11,7 +11,7 @@ import requests
 import xarray as xr
 from pyproj import Transformer
 
-from collect_sources.source_artifacts import write_source_artifact
+from source_artifacts import write_source_artifact
 from tqdm.auto import tqdm as iter_progress
 
 

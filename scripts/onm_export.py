@@ -147,7 +147,7 @@ def main() -> None:
     os.environ.setdefault("FLOOD_RM_LOCATION_CONFIG", str(location_dir / "config.yaml"))
 
     global build_powermodels_onm_export, materialize_onm_run_bundle
-    from power.exports.restoration import (  # noqa: PLC0415
+    from power.exports import (  # noqa: PLC0415
         build_powermodels_onm_export,
         materialize_onm_run_bundle,
     )

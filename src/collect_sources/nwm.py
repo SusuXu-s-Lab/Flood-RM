@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from collect_sources.source_artifacts import (
+from source_artifacts import (
     read_source_artifact,
     source_artifact_covers,
     source_artifact_path,

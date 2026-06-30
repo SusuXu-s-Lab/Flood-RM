@@ -8,12 +8,9 @@ import shutil
 import pandas as pd
 import yaml
 
-from sfincs_runs.build_base import (
-    is_built_sfincs_base,
-    is_built_wflow_base,
-    validate_physics,
-)
-from sfincs_runs.scenarios.inland_initial_conditions import init_hydrographs
+from sfincs_runs.infiltration import validate_physics
+from sfincs_runs.inland_base import is_built_sfincs_base, is_built_wflow_base
+from sfincs_runs.inland_initial_conditions import init_hydrographs
 from sfincs_runs.forcing import (
     audit_inland_staged_scenario_files,
     build_inland_scenario_manifest,
@@ -28,7 +25,7 @@ from sfincs_runs.forcing import (
 )
 from sfincs_runs.io import copy_base_model, write_json
 from wflow_runs.dynamic_handoff import dynamic_handoff_paths, require_handoff
-from wflow_runs.notebook import resolve_location_path
+from location_runtime import resolve_location_path
 from wflow_runs.streamflow_realization import wflow_streamflow_gage_overlap
 
 
@@ -696,7 +693,7 @@ def _example_plan(
         "force=True)"
     )
     sfincs_dry_run_command = (
-        "uv run python -m sfincs_runs.scenarios.run_events "
+        "uv run python -m sfincs_runs.run_events "
         f"--config locations/{location_name}/config.yaml"
         f"{event_flag} --dry-run"
     )

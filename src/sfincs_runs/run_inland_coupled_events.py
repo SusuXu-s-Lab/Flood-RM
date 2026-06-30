@@ -12,13 +12,13 @@ import time
 import pandas as pd
 
 from sfincs_runs.config import load_runtime
-from sfincs_runs.scenarios.inland_coupled import (
+from sfincs_runs.inland_coupled import (
     audit_inland_coupled_batch_readiness,
     stage_inland_coupled_scenario_forcing,
     stage_scenarios,
 )
 from wflow_runs.dynamic_handoff_batch import run_handoffs
-from wflow_runs.notebook import resolve_location_path
+from location_runtime import resolve_location_path
 
 
 def run_inland_coupled_event(
@@ -99,7 +99,7 @@ def run_inland_coupled_event(
     command = [
         sys.executable,
         "-m",
-        "sfincs_runs.scenarios.run_events",
+        "sfincs_runs.run_events",
         "--config",
         str(location_root / "config.yaml"),
         "--scenarios-dir",

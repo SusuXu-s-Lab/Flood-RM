@@ -9,9 +9,9 @@ import pandas as pd
 import xarray as xr
 
 from sfincs_runs.config import load_runtime
-from sfincs_runs.scenarios import event_forcing
-from sfincs_runs.scenarios.event_forcing import EventForcing
-from sfincs_runs.scenarios.scenarios import (
+from sfincs_runs import event_forcing
+from sfincs_runs.event_forcing import EventForcing
+from sfincs_runs.scenario_events import (
     assert_event_catalog_audit,
     build_event_timeseries,
     ensure_clean_dir,

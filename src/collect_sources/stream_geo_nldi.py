@@ -10,7 +10,7 @@ from collect_sources.national_hydrography import (
     STREAM_GEO_FIGSHARE_ARTICLE_ID,
     fetch_nldi_comid,
 )
-from collect_sources.source_artifacts import write_source_artifact
+from source_artifacts import write_source_artifact
 from collect_sources.stream_geo import download as _download_stream_geo_file
 from collect_sources.stream_geo import read_table as _read_stream_geo_download
 from collect_sources.stream_geo import select_file as _select_stream_geo_file

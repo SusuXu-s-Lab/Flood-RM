@@ -20,13 +20,13 @@ from shapely.ops import split
 
 from collect_sources.ssurgo import ssurgo_attribute_columns
 from collect_sources.national_hydrography import WBD_MAPSERVER, fetch_nhdplus_hr_catchments, fetch_wbd_huc
-from sfincs_runs.build_base.crossings import select_encompassing_huc
-from sfincs_runs.build_base.inland_base import (
+from sfincs_runs.crossings import select_encompassing_huc
+from sfincs_runs.inland_base import (
     plan_inland_sfincs_domain_set,
     write_inland_sfincs_domain_set_manifest,
 )
-from sfincs_runs.build_base.static_catalog import build_static_data_catalog
-from sfincs_runs.build_base.static_intake import (
+from sfincs_runs.static_catalog import build_static_data_catalog
+from sfincs_runs.static_intake import (
     build_region_setup,
     clip_dem_and_landcover_to_bbox,
     collect_ssurgo_infiltration_inputs,

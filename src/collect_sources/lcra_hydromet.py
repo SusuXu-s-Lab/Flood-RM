@@ -6,7 +6,7 @@ import geopandas as gpd
 import pandas as pd
 import requests
 
-from collect_sources.source_artifacts import write_source_artifact
+from source_artifacts import write_source_artifact
 
 
 LCRA_HYDROMET_ROOT = "https://hydromet.lcra.org/"

@@ -1,15 +1,24 @@
 import os
+import sys
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
-from sfincs_runs.build_base.plan import (
+from sfincs_runs import crossings as crossings
+from sfincs_runs import infiltration as infiltration
+from sfincs_runs import inland_base as inland_base
+from sfincs_runs import plan as plan
+from sfincs_runs import region_notebook as region_notebook
+from sfincs_runs import static_catalog as static_catalog
+from sfincs_runs import static_intake as static_intake
+from sfincs_runs import structures as structures
+from sfincs_runs.plan import (
     BaselineBuildPlan,
     StaticIntakePlan,
     build_baseline_build_plan,
     build_static_intake_plan,
 )
-from sfincs_runs.build_base.static_catalog import build_static_data_catalog
-from sfincs_runs.build_base.inland_base import (
+from sfincs_runs.static_catalog import build_static_data_catalog
+from sfincs_runs.inland_base import (
     InlandSfincsBasePlan,
     InlandSfincsDomainSetPlan,
     add_inland_outflow_boundary,
@@ -29,8 +38,8 @@ from sfincs_runs.build_base.inland_base import (
     write_inland_sfincs_handoff_locations,
     write_inland_sfincs_handoff_locations_from_wflow_rivers,
 )
-from sfincs_runs.build_base.infiltration import validate_physics
-from sfincs_runs.build_base.static_intake import (
+from sfincs_runs.infiltration import validate_physics
+from sfincs_runs.static_intake import (
     RegionSetup,
     build_region_setup,
     clip_dem_and_landcover_to_bbox,
@@ -42,7 +51,7 @@ from sfincs_runs.build_base.static_intake import (
     fetch_worldcover_landcover,
     worldcover_tile_urls,
 )
-from sfincs_runs.build_base.region_notebook import (
+from sfincs_runs.region_notebook import (
     build_sfincs_coverage_and_wflow_preflight,
     collect_coastal_terrain_landcover_inputs,
     collect_inland_static_inputs,
@@ -50,7 +59,7 @@ from sfincs_runs.build_base.region_notebook import (
     plot_coastal_static_input_qa,
     plot_static_input_qa,
 )
-from sfincs_runs.build_base.structures import (
+from sfincs_runs.structures import (
     StructureLayer,
     StructurePlan,
     apply_sfincs_structures,
@@ -58,6 +67,22 @@ from sfincs_runs.build_base.structures import (
     plot_structure_layers,
     prepare_structure_layers,
 )
+
+__path__ = []
+if __spec__ is not None:
+    __spec__.submodule_search_locations = __path__
+
+for _name, _module in {
+    "crossings": crossings,
+    "infiltration": infiltration,
+    "inland_base": inland_base,
+    "plan": plan,
+    "region_notebook": region_notebook,
+    "static_catalog": static_catalog,
+    "static_intake": static_intake,
+    "structures": structures,
+}.items():
+    sys.modules[f"{__name__}.{_name}"] = _module
 
 
 __all__ = [

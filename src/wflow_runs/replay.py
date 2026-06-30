@@ -46,6 +46,7 @@ from collect_sources.aorc_event_meteo import (
     prepare_aorc_temp_pet_for_wflow,
 )
 from sfincs_runs.hydrology import prepare_aorc_precip_for_sfincs
+from location_runtime import resolve_location_path
 from wflow_runs.handoff_locations import read_stream_boundary_handoff_location_artifacts
 from wflow_runs.build_plan import (
     repair_wflow_canopy_parameters,
@@ -58,7 +59,6 @@ from wflow_runs.notebook import (
     _describe_hydromt_command,
     _hydromt_subprocess_env,
     _resolve_hydromt_command,
-    resolve_location_path,
 )
 from wflow_runs.states import prepare_wflow_event_instate
 from wflow_runs.streamflow_realization import (

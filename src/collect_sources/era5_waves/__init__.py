@@ -1,25 +1,31 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pandas as pd
 import xarray as xr
 
-from collect_sources.era5_waves.cds import (
+from collect_sources import cds as cds
+from collect_sources import earthdatahub as earthdatahub
+from collect_sources.cds import (
     era5_wave_variables,
     fetch_era5_waves,
 )
-from collect_sources.era5_waves.earthdatahub import (
+from collect_sources.earthdatahub import (
     earthdatahub_wave_variables,
     fetch_era5_waves_from_earthdatahub,
 )
-from collect_sources.source_artifacts import (
+from source_artifacts import (
     read_source_artifact,
     source_artifact_covers,
     source_artifact_path,
     write_source_artifact,
 )
 from tqdm.auto import tqdm as iter_progress
+
+sys.modules[f"{__name__}.cds"] = cds
+sys.modules[f"{__name__}.earthdatahub"] = earthdatahub
 
 
 era5_wave_short_variables = ["swh", "pp1d", "mwd", "wdw"]

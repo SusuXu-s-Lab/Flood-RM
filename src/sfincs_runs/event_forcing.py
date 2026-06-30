@@ -15,17 +15,17 @@ from shapely.geometry import Point
 
 from sfincs_runs.config import parse_sfincs_inp
 from sfincs_runs.hydrology import prepare_aorc_precip_for_sfincs
-from sfincs_runs.scenarios.scenarios import (
+from sfincs_runs.scenario_events import (
     assert_event_catalog_audit,
     build_event_timeseries,
     events_dir,
     select_zsini_from_series,
 )
-from sfincs_runs.scenarios.timing import plan_event_forcing_support_window
+from sfincs_runs.timing import plan_event_forcing_support_window
 from sfincs_runs.snapwave import legacy_era5_spectra_to_snapwave_timeseries
 from sfincs_runs.io import copy_base_model, remove_solver_outputs
 from sfincs_runs.solver import build_sfincs_command, run_sfincs_process, sfincs_subprocess_env
-from wflow_runs.notebook import resolve_location_path
+from location_runtime import resolve_location_path
 
 
 @dataclass(frozen=True)

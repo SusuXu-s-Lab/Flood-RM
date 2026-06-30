@@ -441,6 +441,6 @@ def _has_soil(manifest: dict) -> bool:
 
 
 def _scenario_stats():
-    import sfincs_runs.scenarios.scenario_stats as scenario_stats
+    import sfincs_runs.scenario_stats as scenario_stats
 
     return scenario_stats

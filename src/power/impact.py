@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from paths import default_location_config_path, find_repo_root
 from power._impact_core import AssetPoint
 from power._impact_core import FloodDepthFragilityCurve
-from power._impact_core import csv_failure_probability as _csv_failure_probability
+from power._impact_core import csv_failure_probability
 from power._impact_core import erad_asset_type as _erad_asset_type
 from power._impact_core import line_local_asset_type
 from power._impact_core import load_asset_points as _load_asset_points
@@ -26,14 +26,17 @@ repo_root = find_repo_root(Path(__file__).resolve())
 
 
 def power_grid_root() -> Path:
-    definition = define_location(default_location_config_path(repo_root))
+    try:
+        definition = define_location(default_location_config_path(repo_root))
+    except (FileNotFoundError, IndexError, ValueError):
+        return Path("data/power_grid")
     path = Path(definition.grid.get("power_grid_root", "data/power_grid"))
     return path if path.is_absolute() else definition.root / path
 
 
 shared_fragility_dir = repo_root / "artifacts" / "fragility"
 default_curves_csv = shared_fragility_dir / "erad_flood_depth_curves.csv"
-power_grid = power_grid_root()
+power_grid = Path("data/power_grid")
 smart_ds_compat = power_grid / "augmented"
 fragility_dir = power_grid / "fragility"
 default_mapping_csv = fragility_dir / "asset_type_mapping.csv"
@@ -48,9 +51,21 @@ def load_flood_depth_curves(path=default_curves_csv):
     return _load_flood_depth_curves(path)
 
 
+def _default_mapping_csv() -> Path:
+    return power_grid_root() / "fragility" / "asset_type_mapping.csv"
+
+
+def _default_smart_ds_compat() -> Path:
+    return power_grid_root() / "augmented"
+
+
+def _default_impacts_dir() -> Path:
+    return power_grid_root() / "figures" / "impacts"
+
+
 @lru_cache(maxsize=None)
-def load_asset_type_mapping(path=default_mapping_csv):
-    return _load_asset_type_mapping(path)
+def load_asset_type_mapping(path=None):
+    return _load_asset_type_mapping(_default_mapping_csv() if path is None else path)
 
 
 def erad_asset_type(local_asset_type, mapping=None):
@@ -58,7 +73,7 @@ def erad_asset_type(local_asset_type, mapping=None):
 
 
 def failure_probability(local_asset_type, depth_m, *, curves=None, mapping=None):
-    return _csv_failure_probability(
+    return csv_failure_probability(
         local_asset_type,
         depth_m,
         curves=curves or load_flood_depth_curves(),
@@ -66,7 +81,8 @@ def failure_probability(local_asset_type, depth_m, *, curves=None, mapping=None)
     )
 
 
-def load_asset_points(registry_dir=smart_ds_compat, *, include_lines=False):
+def load_asset_points(registry_dir=None, *, include_lines=False):
+    registry_dir = _default_smart_ds_compat() if registry_dir is None else registry_dir
     return _load_asset_points(registry_dir, include_lines=include_lines)
 
 
@@ -77,8 +93,9 @@ def compute_asset_impacts(
     probability_threshold=default_probability_threshold,
     max_sample_distance_m=default_max_sample_distance_m,
     include_lines=False,
-    registry_dir=smart_ds_compat,
+    registry_dir=None,
 ):
+    registry_dir = _default_smart_ds_compat() if registry_dir is None else registry_dir
     assets = load_asset_points(registry_dir, include_lines=include_lines)
     depths, distances = sample_sfincs_peak_depths(
         event_dir,
@@ -141,7 +158,7 @@ def run_asset_impacts(
 ):
     event_path = Path(event_dir)
     event_id = event_id or event_path.name
-    output_dir = output_dir or impacts_dir / event_id
+    output_dir = output_dir or _default_impacts_dir() / event_id
     rows, summary = compute_asset_impacts(
         event_path,
         event_id=event_id,
@@ -166,6 +183,7 @@ analysis = SimpleNamespace(
     AssetPoint=AssetPoint,
     load_asset_points=load_asset_points,
     compute_asset_impacts=compute_asset_impacts,
+    summarize_impacts=summarize_impacts,
     write_outputs=write_outputs,
     run_asset_impacts=run_asset_impacts,
 )
