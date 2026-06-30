@@ -48,8 +48,4 @@ locations/*/02_flood/08*
 src/fiat_runs
 docs/
 src/fiat_runs/
-src/power_v2
-src/sfincs_v2
-src/source_collection_v2
-src/wflow_v2
 locations/marshfield/02_flood/06b_scenario_outcome_digest.ipynb
