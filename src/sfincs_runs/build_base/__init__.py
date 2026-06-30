@@ -1,3 +1,7 @@
+import os
+
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+
 from sfincs_runs.build_base.plan import (
     BaselineBuildPlan,
     StaticIntakePlan,
@@ -8,7 +12,6 @@ from sfincs_runs.build_base.static_catalog import build_static_data_catalog
 from sfincs_runs.build_base.inland_base import (
     InlandSfincsBasePlan,
     InlandSfincsDomainSetPlan,
-    add_wflow_native_rivers_to_sfincs_plot_geoms,
     add_inland_outflow_boundary,
     build_inland_sfincs_base,
     build_domains,
@@ -18,7 +21,6 @@ from sfincs_runs.build_base.inland_base import (
     meaningful_model_files,
     plan_inland_sfincs_domain_set,
     plan_inland_sfincs_base,
-    plot_inland_sfincs_domain_set_basemaps,
     plot_sfincs_handoff_basemap,
     sfincs_grid_resolution_matches,
     sfincs_rivers_inflow_geoms,
@@ -64,7 +66,6 @@ __all__ = [
     "StructureLayer",
     "StructurePlan",
     "StaticIntakePlan",
-    "add_wflow_native_rivers_to_sfincs_plot_geoms",
     "add_inland_outflow_boundary",
     "apply_sfincs_structures",
     "build_baseline_build_plan",
@@ -96,7 +97,6 @@ __all__ = [
     "plot_structure_layers",
     "plot_coastal_static_input_qa",
     "plot_static_input_qa",
-    "plot_inland_sfincs_domain_set_basemaps",
     "plot_sfincs_handoff_basemap",
     "prepare_structure_layers",
     "sfincs_grid_resolution_matches",

@@ -1,3 +1,7 @@
+import os
+
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+
 from wflow_runs.build_plan import (
     WflowBuildPlan,
     WflowDomainSetPlan,

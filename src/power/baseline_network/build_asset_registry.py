@@ -1,3 +1,5 @@
-from power.mgr import bind_module
+"""Compatibility entrypoint for baseline-network Asset Registry export."""
 
-bind_module(__name__, "power.mgr.baseline_network.build_asset_registry", globals())
+from power.registry import build_registry
+
+__all__ = ["build_registry"]
