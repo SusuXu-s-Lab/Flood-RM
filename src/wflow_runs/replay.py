@@ -10,16 +10,10 @@ import shlex
 import shutil
 import subprocess
 
-import numpy as np
 import pandas as pd
 
 from coupling import amplification as coupling_amplification
 from coupling import discharge as coupling_discharge
-from collect_sources.aorc_event_meteo import (
-    aorc_wflow_temp_pet_variables,
-    prepare_aorc_temp_pet_for_wflow,
-)
-from event_forcing import find_aorc_event_window, prepare_aorc_precip_for_sfincs
 from paths import resolve_location_path
 from wflow_runs.repairs import (
     normalize_wflow_staticmaps_nodata,
@@ -35,12 +29,9 @@ from wflow_runs.notebook import (
 )
 from wflow_runs.states import prepare_wflow_event_instate
 from wflow_runs.event import (
-    configured_event_window_hours as _v2_configured_event_window_hours,
-    event_window as _v2_event_window,
-    catalog_rainfall_start as _v2_catalog_rainfall_start,
     clean_legacy_replay_submodel_output_dir,
-    legacy_event_catalog_row,
-    required_event_value as _v2_required_event_value,
+    event_reference_time,
+    event_window,
     write_legacy_replay_data_catalog,
     write_legacy_replay_update_config,
 )
@@ -48,188 +39,6 @@ from wflow_runs.domain import configured_or_manifest_submodels as _v2_configured
 from wflow_runs.runner import clean_output_dir as _v2_clean_output_dir
 from wflow_runs.runner import wflow_run_command as _v2_wflow_run_command
 from wflow_runs.runner import zero_event_forcing as _zero_event_forcing
-
-
-# ─── pure helpers (unit-tested) ───────────────────────────────────────────────
-
-
-def resolve_event_window(
-    reference_time,
-    *,
-    pre_event_hours: float = 48.0,
-    post_event_hours: float = 72.0,
-    timestep_seconds: int = 3600,
-) -> tuple[pd.Timestamp, pd.Timestamp]:
-    """Wflow simulation window bracketing a catalog event's reference time.
-
-    ``pre_event_hours`` is spin-up before the peak; ``post_event_hours`` lets the
-    hydrograph recede. Both ends are snapped to the forcing timestep so the window is
-    an exact number of steps.
-    """
-    return _v2_event_window(
-        reference_time,
-        pre_event_hours=pre_event_hours,
-        post_event_hours=post_event_hours,
-        timestep_seconds=timestep_seconds,
-    )
-
-
-def configured_event_window_hours(
-    config: dict,
-    *,
-    default_pre_event_hours: float = 48.0,
-    default_post_event_hours: float = 72.0,
-) -> tuple[float, float]:
-    """Return Wflow event-window hours, including configured SFINCS drain-down.
-
-    Wflow dynamic handoff needs enough post-rain time for routed discharge to
-    recede before SFINCS stops. Locations may override this with
-    ``wflow.event_window``. Otherwise, reuse the standard Wflow 72-hour
-    post-event forcing window and add the Location's SFINCS drain-down buffer.
-    """
-
-    return _v2_configured_event_window_hours(
-        config,
-        default_pre_event_hours=default_pre_event_hours,
-        default_post_event_hours=default_post_event_hours,
-    )
-
-
-def build_meteo(
-    config: dict,
-    location_root,
-    event_id: str,
-    *,
-    catalog_path=None,
-    pre_event_hours: float = 48.0,
-    post_event_hours: float = 72.0,
-    overwrite: bool = False,
-) -> dict:
-    """Stage the per-event Wflow forcing files consumed by the replay update.
-
-    The rainfall field comes from the catalog-selected AORC SST storm window and is
-    scaled by ``rainfall_scale_factor``. The companion ``temp_pet.nc`` is written from
-    AORC event temperature, pressure, and radiation fields using the native
-    HydroMT-Wflow ``setup_temp_pet_forcing`` contract for De Bruin PET.
-    """
-    location_root = Path(location_root).resolve()
-    wflow = config.get("wflow", {})
-    events_root = resolve_location_path(location_root, wflow.get("events_root", "data/wflow/events"))
-    event_dir = events_root / str(event_id)
-    event_dir.mkdir(parents=True, exist_ok=True)
-
-    row = _event_catalog_row(location_root, event_id, catalog_path)
-    start, end = resolve_event_window(
-        row["event_reference_time"],
-        pre_event_hours=pre_event_hours,
-        post_event_hours=post_event_hours,
-    )
-
-    precip_path = event_dir / "precip.nc"
-    temp_pet_path = event_dir / "temp_pet.nc"
-    precip_provenance = event_dir / "precip_provenance.json"
-    temp_pet_provenance = event_dir / "temp_pet_provenance.json"
-    write_precip = overwrite or not precip_path.exists() or not _provenance_window_matches(precip_provenance, start, end)
-    write_temp_pet = (
-        overwrite
-        or write_precip
-        or not temp_pet_path.exists()
-        or not _provenance_window_matches(temp_pet_provenance, start, end)
-    )
-
-    rainfall_source_nc = _event_rainfall_source_nc(config, location_root, row)
-    scale_factor = _positive_float(row.get("rainfall_scale_factor"), default=1.0)
-    if write_temp_pet:
-        _require_event_meteo_variables(config, rainfall_source_nc, event_id=event_id)
-    if write_precip:
-        precip_cfg = (wflow.get("event_forcing", {}) or {}).get("precipitation", {}) or {}
-        aorc_cfg = (config.get("collection", {}) or {}).get("aorc_sst", {}) or {}
-        prepare_aorc_precip_for_sfincs(
-            rainfall_source_nc,
-            precip_path,
-            t_start=start,
-            t_stop=end,
-            variable=str(precip_cfg.get("variable", aorc_cfg.get("variable", "APCP_surface"))),
-            window_alignment=str(precip_cfg.get("window_alignment", "start")),
-            precip_start=_catalog_rainfall_start(row),
-            scale_factor=scale_factor,
-        )
-        _write_json(
-            precip_provenance,
-            {
-                "source_nc": str(rainfall_source_nc),
-                "output_nc": str(precip_path),
-                "time_start": start.isoformat(),
-                "time_stop": end.isoformat(),
-                "rainfall_scale_factor": scale_factor,
-                "hydromt_sfincs_contract": "SfincsPrecipitation.create(cumulative_input=True)",
-            },
-        )
-
-    if write_temp_pet:
-        source_time_start = _catalog_rainfall_start(row) or start
-        prepare_aorc_temp_pet_for_wflow(
-            rainfall_source_nc,
-            temp_pet_path,
-            t_start=start,
-            t_stop=end,
-            precip_template=precip_path,
-            variable_candidates=aorc_wflow_temp_pet_variables(config),
-            source_time_start=source_time_start,
-            provenance_path=temp_pet_provenance,
-        )
-
-    return {
-        "event_id": str(event_id),
-        "window_start": start.isoformat(),
-        "window_end": end.isoformat(),
-        "rainfall_source_nc": str(rainfall_source_nc),
-        "rainfall_scale_factor": scale_factor,
-        "precip_path": str(precip_path),
-        "temp_pet_path": str(temp_pet_path),
-        "precip_provenance": str(precip_provenance),
-        "temp_pet_provenance": str(temp_pet_provenance),
-        "precip_written": bool(write_precip),
-        "temp_pet_written": bool(write_temp_pet),
-    }
-
-
-def resolve_event_rainfall_source_nc(config: dict, location_root, event_id: str, *, catalog_path=None) -> Path:
-    """Resolve the catalog-selected AORC event-window file used by Wflow replay."""
-    location_root = Path(location_root).resolve()
-    row = _event_catalog_row(location_root, event_id, catalog_path)
-    return _event_rainfall_source_nc(config, location_root, row)
-
-
-def _require_event_meteo_variables(config: dict, source_nc: Path, *, event_id: str) -> None:
-    import xarray as xr
-
-    candidates_by_target = aorc_wflow_temp_pet_variables(config)
-    missing: dict[str, list[str]] = {}
-    with xr.open_dataset(source_nc) as ds:
-        available = set(ds.data_vars)
-        for target, candidates in candidates_by_target.items():
-            if not any(candidate in available and _data_array_has_finite(ds[candidate]) for candidate in candidates):
-                missing[target] = list(candidates)
-    if not missing:
-        return
-
-    meteo_cfg = ((config.get("collection", {}) or {}).get("aorc_sst", {}) or {}).get("event_meteo", {}) or {}
-    config_hint = ""
-    if not bool(meteo_cfg.get("enabled", False)):
-        config_hint = " Set collection.aorc_sst.event_meteo.enabled: true in the location Wflow config."
-    missing_text = "; ".join(f"{target}: tried {candidates}" for target, candidates in missing.items())
-    raise RuntimeError(
-        f"Wflow event meteo forcing for {event_id} cannot be built because the selected AORC "
-        f"event-window file is rainfall-only or stale: {source_nc}. Missing variables: {missing_text}."
-        f"{config_hint} Rerun 02_flood/02_collect_sources.ipynb from the AORC SST Event Windows "
-        "cell so event windows are regenerated with AORC event_meteo variables, then rerun the "
-        "dynamic handoff notebook."
-    )
-
-
-def _data_array_has_finite(da) -> bool:
-    return bool(np.isfinite(da).any().compute().item())
 
 
 def _discharge_handoff_source(config: dict) -> str:
@@ -274,8 +83,8 @@ def replay_inland_domain_set(
     data_catalog = resolve_location_path(location_root, wflow.get("data_catalog", "data/wflow/data_catalog.yml"))
     model_crs = wflow.get("model_crs", config.get("project", {}).get("model_crs", "EPSG:32617"))
 
-    reference_time = _event_reference_time(location_root, event_id, catalog_path)
-    start, end = resolve_event_window(reference_time, pre_event_hours=pre_event_hours, post_event_hours=post_event_hours)
+    reference_time = event_reference_time(location_root, event_id, catalog_path)
+    start, end = event_window(reference_time, pre_event_hours=pre_event_hours, post_event_hours=post_event_hours)
 
     event_dir = events_root / event_id
     if execute:
@@ -477,72 +286,6 @@ def run_zero_rain_control(
     report["sfincs_discharge_forcing"] = str(discharge_path)
     report["sfincs_discharge_written"] = bool(execute and discharge_path.exists())
     return report
-
-
-# ─── orchestration helpers ────────────────────────────────────────────────────
-
-
-def _event_catalog_row(location_root: Path, event_id: str, catalog_path):
-    return legacy_event_catalog_row(location_root, event_id, catalog_path)
-
-
-def _event_reference_time(location_root: Path, event_id: str, catalog_path):
-    return _event_catalog_row(location_root, event_id, catalog_path)["event_reference_time"]
-
-
-def _event_rainfall_source_nc(config: dict, location_root: Path, row: pd.Series) -> Path:
-    rainfall_member_file = _required_event_value(row, "rainfall_member_file")
-    rainfall_member_file = resolve_location_path(location_root, rainfall_member_file)
-    precip_cfg = (
-        (config.get("wflow", {}) or {})
-        .get("event_forcing", {})
-        .get("precipitation", {})
-        or {}
-    )
-    event_windows_dir = precip_cfg.get("event_windows_dir") or (rainfall_member_file.parent / "event_windows")
-    event_windows_dir = resolve_location_path(location_root, event_windows_dir)
-    return find_aorc_event_window(
-        event_windows_dir,
-        member_id=str(_required_event_value(row, "rainfall_member_id")),
-        storm_start=_required_event_value(row, "rainfall_member_time"),
-    )
-
-
-def _required_event_value(row: pd.Series, key: str):
-    return _v2_required_event_value(row, key)
-
-
-def _catalog_rainfall_start(row: pd.Series):
-    return _v2_catalog_rainfall_start(row)
-
-
-def _positive_float(value, *, default: float) -> float:
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return float(default)
-    if not (np.isfinite(out) and out > 0):
-        return float(default)
-    return out
-
-
-def _write_json(path: Path, payload: dict) -> Path:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    return path
-
-
-def _provenance_window_matches(path: Path, start: pd.Timestamp, end: pd.Timestamp) -> bool:
-    if not Path(path).exists():
-        return False
-    try:
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
-        existing_start = pd.Timestamp(payload.get("time_start"))
-        existing_end = pd.Timestamp(payload.get("time_stop"))
-    except Exception:
-        return False
-    return existing_start == pd.Timestamp(start) and existing_end == pd.Timestamp(end)
 
 
 def _require_event_forcing(event_dir: Path) -> None:

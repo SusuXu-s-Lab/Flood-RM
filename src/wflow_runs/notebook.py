@@ -15,11 +15,9 @@ import yaml
 from study_location import define_location
 from location_runtime import WflowCalibrationRuntime, WflowRuntime, build_wflow_runtime
 from paths import resolve_location_path
-from wflow_runs.build_plan import (
-    build_wflow_build_plan,
-    plan_wflow_domain_set,
-    write_wflow_subbasin_fabric_from_nhdplus,
-)
+from coupling.wflow_domain_set import plan_wflow_domain_set
+from wflow_runs.fabric import write_wflow_subbasin_fabric_from_nhdplus
+from wflow_runs.hydromt_build import build_wflow_build_plan
 
 
 @dataclass(frozen=True)
@@ -155,7 +153,7 @@ def domain_summary(config: dict, location_root: Path) -> tuple:
     domain_set = wflow_cfg.get("domain_set", {}) or {}
     # Use the same defaults the rest of wflow_runs applies via .get(), so locations that
     # don't spell out every optional domain_set key in YAML (greensboro, austin) summarize
-    # instead of KeyError'ing. Defaults mirror write_wflow_domain_set_manifest (build_plan).
+    # instead of KeyError'ing. Defaults mirror coupling.domain_manifest.
     summary = pd.Series(
         {
             "allow_multiple_submodels": domain_set.get("allow_multiple_submodels", False),

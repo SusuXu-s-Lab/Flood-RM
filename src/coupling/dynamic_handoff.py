@@ -14,19 +14,19 @@ from wflow_runs.coupling_qa import (
 )
 from wflow_runs.replay import (
     _domain_set_submodels,
-    _event_reference_time,
-    build_meteo,
-    configured_event_window_hours,
     replay_inland_domain_set,
-    resolve_event_window,
     run_zero_rain_control,
 )
+from wflow_runs.meteo import build_meteo
 from coupling.discharge import sfincs_handoff_locations
 from wflow_runs.reservoirs import validate_wflow_reservoir_staticmaps, write_wflow_reservoir_readiness
 from wflow_runs.staticmaps_qa import validate_staticmaps
 from wflow_runs.states import plan_wflow_warmup_state, validate_warmup_forcing, validate_instates, write_cold_state_workflow
 from paths import resolve_location_path
 from wflow_runs.event import (
+    configured_event_window_hours,
+    event_reference_time,
+    event_window,
     event_paths as v2_event_paths,
     legacy_dynamic_handoff_paths as v2_legacy_dynamic_handoff_paths,
     require_discharge_window as require_v2_discharge_window,
@@ -50,9 +50,9 @@ def dynamic_handoff_paths(config: dict, location_root, event_id: str) -> dict[st
 
 def plan_handoff(config: dict, location_root, event_id: str, *, catalog_path=None) -> pd.Series:
     location_root = Path(location_root)
-    reference_time = _event_reference_time(location_root, event_id, catalog_path)
+    reference_time = event_reference_time(location_root, event_id, catalog_path)
     pre_event_hours, post_event_hours = configured_event_window_hours(config)
-    start, end = resolve_event_window(
+    start, end = event_window(
         reference_time,
         pre_event_hours=pre_event_hours,
         post_event_hours=post_event_hours,
@@ -176,7 +176,7 @@ def prepare_handoff(
     if _configured_discharge_source(config) != "wflow_dynamic":
         raise ValueError("inland_coupling.discharge_forcing.source must be 'wflow_dynamic'")
     location_root = Path(location_root)
-    reference_time = _event_reference_time(location_root, event_id, catalog_path)
+    reference_time = event_reference_time(location_root, event_id, catalog_path)
     pre_event_hours, post_event_hours = configured_event_window_hours(config)
     state_plan = plan_wflow_warmup_state(config, location_root, event_id, reference_time=reference_time)
     write_cold_state_workflow(state_plan["cold_state_workflow"], timestamp=state_plan["warmup_start"])
@@ -314,9 +314,9 @@ def require_handoff(config: dict, location_root, event_id: str, *, catalog_path=
 
 def _require_current_handoff_window(config: dict, location_root, event_id: str, discharge_nc: Path, *, catalog_path=None) -> None:
     location_root = Path(location_root)
-    reference_time = _event_reference_time(location_root, event_id, catalog_path)
+    reference_time = event_reference_time(location_root, event_id, catalog_path)
     pre_event_hours, post_event_hours = configured_event_window_hours(config)
-    _start, expected_end = resolve_event_window(
+    _start, expected_end = event_window(
         reference_time,
         pre_event_hours=pre_event_hours,
         post_event_hours=post_event_hours,

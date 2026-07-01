@@ -7,7 +7,7 @@ import pandas as pd
 from paths import resolve_location_path
 from sfincs_runs.forcing import select_inland_scenario_rows
 from coupling.dynamic_handoff import dynamic_handoff_paths, require_handoff
-from wflow_runs.streamflow_realization import wflow_streamflow_gage_overlap
+from wflow_runs.streamflow_readiness import wflow_streamflow_gage_overlap
 
 
 def handoff_readiness(

@@ -88,7 +88,7 @@ def crossing_handoff_sources_from_wflow_domain_plan(
 ) -> gpd.GeoDataFrame:
     """Return crossing-derived SFINCS source points from the Wflow Domain Set plan."""
     if plan_wflow_domain_set is None:
-        from wflow_runs.build_plan import plan_wflow_domain_set
+        from coupling.wflow_domain_set import plan_wflow_domain_set
 
     plan = plan_wflow_domain_set(config, {"location_root": location_root})
     if plan.status != "ready":

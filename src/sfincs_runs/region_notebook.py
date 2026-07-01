@@ -40,13 +40,13 @@ from sfincs_runs.static_intake import (
     worldcover_tile_urls,
 )
 from sfincs_runs.config import build_paths as build_sfincs_paths
+from coupling.domain_set import write_wflow_crossing_gauge_locations
 from study_location import build_study_area, define_location
 from coupling.wflow_sfincs_build import (
     domain_summary,
     exists_table,
     prepare_wflow_subbasin_fabric,
     subbasins,
-    write_wflow_crossing_gauge_locations,
     write_wflow_domain_set_manifest,
 )
 

@@ -39,6 +39,88 @@ def read_submodel_gauge_discharge(
     return series_by_handoff, points_by_handoff
 
 
+def read_wflow_event_output_csv(
+    event_id,
+    *,
+    events_root,
+    submodel_id=None,
+    control: bool = False,
+) -> pd.DataFrame:
+    submodel_id = submodel_id or first_event_submodel_id(events_root, event_id)
+    if not submodel_id:
+        return pd.DataFrame()
+    event_root = Path(events_root) / str(event_id)
+    model_root = event_root / "_zero_rain" / submodel_id if control else event_root / submodel_id
+    csv_path = model_root / "run_event" / "output.csv"
+    if not csv_path.exists():
+        return pd.DataFrame()
+    frame = pd.read_csv(csv_path, parse_dates=["time"]).set_index("time")
+    frame.index = pd.DatetimeIndex(frame.index)
+    return frame
+
+
+def gauge_output_map(
+    event_id,
+    *,
+    events_root,
+    wflow_base_root,
+    layer="gauges_usgs",
+    submodel_id=None,
+) -> pd.DataFrame:
+    gauges = read_wflow_gauge_layer(
+        event_id,
+        events_root=events_root,
+        wflow_base_root=wflow_base_root,
+        layer=layer,
+        submodel_id=submodel_id,
+    )
+    if gauges.empty:
+        return gauges
+    gauges["q_column"] = "Q_" + gauges["index"].astype(int).astype(str)
+    return pd.DataFrame(gauges.drop(columns="geometry"))
+
+
+def read_wflow_gauge_layer(
+    event_id,
+    *,
+    events_root,
+    wflow_base_root,
+    layer: str,
+    submodel_id=None,
+) -> pd.DataFrame:
+    import geopandas as gpd
+
+    submodel_id = submodel_id or first_event_submodel_id(events_root, event_id) or first_base_submodel_id(wflow_base_root)
+    if not submodel_id:
+        return pd.DataFrame()
+    gauges_path = Path(events_root) / str(event_id) / submodel_id / "staticgeoms" / f"{layer}.geojson"
+    if not gauges_path.exists():
+        gauges_path = Path(wflow_base_root) / submodel_id / "staticgeoms" / f"{layer}.geojson"
+    if not gauges_path.exists():
+        return pd.DataFrame()
+    return gpd.read_file(gauges_path)
+
+
+def first_event_submodel_id(events_root, event_id) -> str | None:
+    event_root = Path(events_root) / str(event_id)
+    if not event_root.exists():
+        return None
+    for child in sorted(event_root.iterdir()):
+        if child.is_dir() and (child / "run_event").exists():
+            return child.name
+    return None
+
+
+def first_base_submodel_id(wflow_base_root) -> str | None:
+    root = Path(wflow_base_root)
+    if not root.exists():
+        return None
+    for child in sorted(root.iterdir()):
+        if child.is_dir() and (child / "staticgeoms").exists():
+            return child.name
+    return None
+
+
 def gauge_discharge(
     run_model_root: str | Path,
     gauges_geojson: str | Path,

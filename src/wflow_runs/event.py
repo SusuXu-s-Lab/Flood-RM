@@ -136,6 +136,10 @@ def legacy_event_catalog_row(location_root: str | Path, event_id: str, catalog_p
     return match.iloc[0]
 
 
+def event_reference_time(location_root: str | Path, event_id: str, catalog_path=None) -> pd.Timestamp:
+    return pd.Timestamp(legacy_event_catalog_row(location_root, event_id, catalog_path)["event_reference_time"])
+
+
 def required_event_value(row: pd.Series, key: str):
     value = row.get(key)
     if value is None or pd.isna(value) or str(value).strip() == "":

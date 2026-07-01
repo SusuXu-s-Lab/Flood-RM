@@ -10,7 +10,13 @@ import pandas as pd
 from collect_sources.usgs_streamgages import fetch_nwis_discharge_records
 from coupling.dynamic_handoff import plan_handoff
 from coupling.wflow_sfincs_batch import run_handoffs
-from wflow_runs.replay import _event_reference_time, resolve_event_window
+from wflow_runs.output import (
+    first_event_submodel_id,
+    gauge_output_map,
+    read_wflow_event_output_csv,
+    read_wflow_gauge_layer,
+)
+from wflow_runs.event import event_reference_time, event_window
 from wflow_runs.usgs import usgs_instantaneous_streamflow_spec
 
 
@@ -129,8 +135,8 @@ def cache_validation_event_iv_records(
 ) -> dict:
     location_root = Path(location_root)
     event_streamflow_iv_root = Path(event_streamflow_iv_root)
-    reference_time = _event_reference_time(location_root, event_id, scenario_catalog_path)
-    start, end = resolve_event_window(reference_time)
+    reference_time = event_reference_time(location_root, event_id, scenario_catalog_path)
+    start, end = event_window(reference_time)
     wflow_times = validation_wflow_output_times(event_id, events_root=events_root, submodel_id=submodel_id)
     times_source = "wflow_output"
     if wflow_times.empty:
@@ -275,14 +281,14 @@ def build_usgs_wflow_calibration(
 
 
 def validation_gauge_sites(location_root, event_id, *, events_root, wflow_base_root, submodel_id=None, layer="gauges_usgs") -> list[str]:
-    gauges = _read_gauge_layer(event_id, events_root=events_root, wflow_base_root=wflow_base_root, layer=layer, submodel_id=submodel_id)
+    gauges = read_wflow_gauge_layer(event_id, events_root=events_root, wflow_base_root=wflow_base_root, layer=layer, submodel_id=submodel_id)
     if gauges.empty or "site_no" not in gauges:
         return []
     return sorted(gauges["site_no"].dropna().astype(str).unique())
 
 
 def validation_wflow_output_times(event_id, *, events_root, submodel_id=None) -> pd.DatetimeIndex:
-    submodel_id = submodel_id or _first_submodel_id(events_root, event_id)
+    submodel_id = submodel_id or first_event_submodel_id(events_root, event_id)
     if not submodel_id:
         return pd.DatetimeIndex([])
     output_path = Path(events_root) / str(event_id) / submodel_id / "run_event" / "output.csv"
@@ -332,28 +338,6 @@ def align_iv_records_to_wflow_times(records, wflow_times: pd.DatetimeIndex) -> p
         site_frame["source"] = "usgs_iv_aligned_to_wflow"
         aligned_frames.append(site_frame[columns])
     return pd.concat(aligned_frames, ignore_index=True).sort_values(["site_no", "time"]) if aligned_frames else pd.DataFrame(columns=columns)
-
-
-def read_wflow_output_csv(event_id, *, events_root, submodel_id=None, control: bool = False) -> pd.DataFrame:
-    submodel_id = submodel_id or _first_submodel_id(events_root, event_id)
-    if not submodel_id:
-        return pd.DataFrame()
-    event_root = Path(events_root) / str(event_id)
-    model_root = event_root / "_zero_rain" / submodel_id if control else event_root / submodel_id
-    csv_path = model_root / "run_event" / "output.csv"
-    if not csv_path.exists():
-        return pd.DataFrame()
-    frame = pd.read_csv(csv_path, parse_dates=["time"]).set_index("time")
-    frame.index = pd.DatetimeIndex(frame.index)
-    return frame
-
-
-def gauge_output_map(event_id, *, events_root, wflow_base_root, layer="gauges_usgs", submodel_id=None) -> pd.DataFrame:
-    gauges = _read_gauge_layer(event_id, events_root=events_root, wflow_base_root=wflow_base_root, layer=layer, submodel_id=submodel_id)
-    if gauges.empty:
-        return gauges
-    gauges["q_column"] = "Q_" + gauges["index"].astype(int).astype(str)
-    return pd.DataFrame(gauges.drop(columns="geometry"))
 
 
 def event_iv_records(event_id, event_streamflow_iv_root) -> pd.DataFrame:
@@ -406,7 +390,7 @@ def hydrograph_scores(simulated: pd.Series, observed: pd.Series) -> dict:
 
 
 def usgs_calibration_table(event_id, *, events_root, wflow_base_root, event_streamflow_iv_root, submodel_id=None) -> pd.DataFrame:
-    sim = read_wflow_output_csv(event_id, events_root=events_root, submodel_id=submodel_id)
+    sim = read_wflow_event_output_csv(event_id, events_root=events_root, submodel_id=submodel_id)
     gauges = gauge_output_map(event_id, events_root=events_root, wflow_base_root=wflow_base_root, layer="gauges_usgs", submodel_id=submodel_id)
     records = event_iv_records(event_id, event_streamflow_iv_root)
     if sim.empty or gauges.empty or records.empty:
@@ -473,37 +457,3 @@ def _calibration_patch(config: dict, location_root: Path, calibration_summary: p
 def _read_optional_csv(path, columns: list[str]) -> pd.DataFrame:
     path = Path(path)
     return pd.read_csv(path, dtype={"event_id": str}) if path.exists() else pd.DataFrame(columns=columns)
-
-
-def _read_gauge_layer(event_id, *, events_root, wflow_base_root, layer: str, submodel_id=None) -> pd.DataFrame:
-    import geopandas as gpd
-
-    submodel_id = submodel_id or _first_submodel_id(events_root, event_id) or _first_base_submodel_id(wflow_base_root)
-    if not submodel_id:
-        return pd.DataFrame()
-    gauges_path = Path(events_root) / str(event_id) / submodel_id / "staticgeoms" / f"{layer}.geojson"
-    if not gauges_path.exists():
-        gauges_path = Path(wflow_base_root) / submodel_id / "staticgeoms" / f"{layer}.geojson"
-    if not gauges_path.exists():
-        return pd.DataFrame()
-    return gpd.read_file(gauges_path)
-
-
-def _first_submodel_id(events_root, event_id) -> str | None:
-    event_root = Path(events_root) / str(event_id)
-    if not event_root.exists():
-        return None
-    for child in sorted(event_root.iterdir()):
-        if child.is_dir() and (child / "run_event").exists():
-            return child.name
-    return None
-
-
-def _first_base_submodel_id(wflow_base_root) -> str | None:
-    root = Path(wflow_base_root)
-    if not root.exists():
-        return None
-    for child in sorted(root.iterdir()):
-        if child.is_dir() and (child / "staticgeoms").exists():
-            return child.name
-    return None
