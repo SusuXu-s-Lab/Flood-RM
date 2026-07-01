@@ -12,15 +12,15 @@ import subprocess
 
 import numpy as np
 import pandas as pd
-import yaml
 
+from coupling import amplification as coupling_amplification
+from coupling import discharge as coupling_discharge
 from collect_sources.aorc_event_meteo import (
     aorc_wflow_temp_pet_variables,
     prepare_aorc_temp_pet_for_wflow,
 )
 from event_forcing import find_aorc_event_window, prepare_aorc_precip_for_sfincs
 from paths import resolve_location_path
-from coupling.handoff_sources import read_stream_boundary_handoff_location_artifacts
 from wflow_runs.repairs import (
     normalize_wflow_staticmaps_nodata,
     repair_wflow_canopy_parameters,
@@ -34,18 +34,9 @@ from wflow_runs.notebook import (
     _resolve_hydromt_command,
 )
 from wflow_runs.states import prepare_wflow_event_instate
-from wflow_runs.streamflow_realization import (
-    _finite_float,
-    _split_site_list,
-    _streamflow_members_path,
-    _streamflow_records_path,
-    apply_same_frequency_amplification,
-)
 from wflow_runs.event import (
-    build_discharge_dataset as _v2_build_discharge_dataset,
     configured_event_window_hours as _v2_configured_event_window_hours,
     event_window as _v2_event_window,
-    merge_submodel_discharge as _v2_merge_submodel_discharge,
     catalog_rainfall_start as _v2_catalog_rainfall_start,
     clean_legacy_replay_submodel_output_dir,
     legacy_event_catalog_row,
@@ -54,12 +45,9 @@ from wflow_runs.event import (
     write_legacy_replay_update_config,
 )
 from wflow_runs.domain import configured_or_manifest_submodels as _v2_configured_or_manifest_submodels
-from wflow_runs.output import read_submodel_gauge_discharge
 from wflow_runs.runner import clean_output_dir as _v2_clean_output_dir
 from wflow_runs.runner import wflow_run_command as _v2_wflow_run_command
 from wflow_runs.runner import zero_event_forcing as _zero_event_forcing
-
-CFS_TO_CMS = 0.028316846592
 
 
 # ─── pure helpers (unit-tested) ───────────────────────────────────────────────
@@ -244,307 +232,6 @@ def _data_array_has_finite(da) -> bool:
     return bool(np.isfinite(da).any().compute().item())
 
 
-def build_discharge_geodataset(
-    series_by_handoff: dict[str, pd.Series],
-    points_by_handoff: dict[str, tuple[float, float]],
-    *,
-    crs,
-    variable: str = "discharge",
-):
-    """Assemble per-handoff discharge series into a HydroMT GeoDataset."""
-    ds = _v2_build_discharge_dataset(series_by_handoff, points_by_handoff, crs=crs)
-    if variable != "discharge":
-        ds = ds.rename({"discharge": variable})
-        ds[variable].attrs.update(units="m3 s-1", standard_name="river_water__volume_flow_rate")
-    epsg = _epsg(crs)
-    if epsg is not None:
-        ds.attrs["crs"] = epsg
-    return ds
-
-
-def _epsg(crs):
-    if crs is None:
-        return None
-    try:
-        from pyproj import CRS
-
-        return int(CRS.from_user_input(crs).to_epsg())
-    except Exception:
-        try:
-            return int(crs)
-        except (TypeError, ValueError):
-            return None
-
-
-def merge_submodel_discharge(
-    submodel_outputs: list[dict],
-    *,
-    model_crs,
-    out_path: Path,
-    handoff_points: dict[str, tuple[float, float]] | None = None,
-):
-    """Merge per-submodel gauge discharge into one ``sfincs_discharge.nc`` GeoDataset."""
-    normalized = [
-        {
-            **entry,
-            "run_model_root": entry.get("run_model_root") or Path(entry["run_output_dir"]).parent,
-        }
-        for entry in submodel_outputs
-    ]
-    return _v2_merge_submodel_discharge(
-        normalized,
-        model_crs=model_crs,
-        out_path=out_path,
-        handoff_points=handoff_points,
-    )
-
-
-def write_event_streamflow_handoff_discharge(
-    config: dict,
-    location_root,
-    event_id: str,
-    *,
-    catalog_path=None,
-    model_crs,
-    out_path: Path,
-    start: pd.Timestamp,
-    end: pd.Timestamp,
-):
-    """Write SFINCS discharge forcing from the event-catalog streamflow analog.
-
-    This is the native SFINCS time-series handoff file: locations come from the vetted
-    SFINCS handoff source artifact, while the hydrograph comes from the selected USGS
-    analog records, scaled to the catalog design peak and distributed to handoff points
-    by upstream area when that field is available.
-    """
-    row = _event_catalog_row(Path(location_root), event_id, catalog_path)
-    handoffs = _sfincs_handoff_locations_for_replay(config, Path(location_root), model_crs)
-    if handoffs is None or handoffs.empty:
-        raise ValueError("no SFINCS handoff source locations available for streamflow discharge forcing")
-
-    total_series, provenance = _event_streamflow_series_cms(config, Path(location_root), row, start=start, end=end)
-    distribution_field = _handoff_distribution_field(handoffs)
-    provenance["distribution_field"] = distribution_field
-    weights = _handoff_distribution_weights(handoffs)
-    points_by_handoff = {
-        str(record["sfincs_handoff_id"]): (float(record.geometry.x), float(record.geometry.y))
-        for _, record in handoffs.iterrows()
-    }
-    series_by_handoff = {
-        handoff_id: total_series * float(weight)
-        for handoff_id, weight in weights.items()
-        if handoff_id in points_by_handoff
-    }
-    ds = build_discharge_geodataset(series_by_handoff, points_by_handoff, crs=model_crs)
-    ds.attrs.update(
-        {
-            "discharge_source": "event_streamflow_timeseries",
-            "distribution": "uparea_weighted" if distribution_field else "equal",
-            "event_streamflow_member_id": provenance["member_id"],
-            "streamflow_target_peak_cfs": provenance["target_peak_cfs"],
-            "streamflow_template_peak_cfs": provenance["template_peak_cfs"],
-            "streamflow_scale_factor": provenance["scale_factor"],
-            "source_records": provenance["records_path"],
-            "source_sites": ",".join(provenance["source_sites"]),
-            "reference_time": str(provenance["reference_time"]),
-            "analog_event_time": str(provenance["analog_event_time"]),
-        }
-    )
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    ds.to_netcdf(out_path)
-    _write_json(out_path.with_suffix(".provenance.json"), {**provenance, "weights": weights})
-    return out_path
-
-
-def _sfincs_handoff_points_for_replay(config: dict, location_root: Path, model_crs) -> dict[str, tuple[float, float]]:
-    """Return vetted SFINCS handoff source coordinates keyed by ``sfincs_handoff_id``."""
-    locations = _sfincs_handoff_locations_for_replay(config, location_root, model_crs)
-    if locations is None or locations.empty:
-        return {}
-    points: dict[str, tuple[float, float]] = {}
-    for _, row in locations.iterrows():
-        handoff_id = str(row["sfincs_handoff_id"])
-        points[handoff_id] = (float(row.geometry.x), float(row.geometry.y))
-    return points
-
-
-def _sfincs_handoff_locations_for_replay(config: dict, location_root: Path, model_crs):
-    """Return vetted SFINCS handoff source rows projected to ``model_crs``."""
-    locations = read_stream_boundary_handoff_location_artifacts(
-        config,
-        location_root,
-        location_path=resolve_location_path,
-    )
-    if locations is None or locations.empty:
-        return locations.iloc[0:0] if locations is not None else locations
-    active_domain_ids = _active_sfincs_domain_ids(config, location_root)
-    if active_domain_ids and "sfincs_domain_id" in locations.columns:
-        locations = locations[locations["sfincs_domain_id"].astype(str).isin(active_domain_ids)].copy()
-        if locations.empty:
-            raise ValueError(
-                "SFINCS handoff artifacts exist, but none match active sfincs_domain_set domains: "
-                + ", ".join(sorted(active_domain_ids))
-            )
-    target = locations.to_crs(model_crs) if locations.crs is not None and _epsg(locations.crs) != _epsg(model_crs) else locations
-    return target
-
-
-def _active_sfincs_domain_ids(config: dict, location_root: Path) -> set[str]:
-    configured = config.get("sfincs_domain_set", {}).get("include_domain_ids") or []
-    active = {str(value) for value in configured if str(value).strip()}
-    if active:
-        return active
-    manifest_value = config.get("sfincs_domain_set", {}).get("domain_manifest", "data/sfincs/domains/domain_set.yaml")
-    manifest = resolve_location_path(location_root, manifest_value)
-    if not manifest.exists():
-        return set()
-    payload = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
-    return {
-        str(domain.get("sfincs_domain_id"))
-        for domain in payload.get("domains", [])
-        if domain.get("sfincs_domain_id")
-    }
-
-
-def _handoff_distribution_weights(handoffs) -> dict[str, float]:
-    id_col = "sfincs_handoff_id"
-    if _handoff_distribution_field(handoffs) == "uparea":
-        values = pd.to_numeric(handoffs["uparea"], errors="coerce").fillna(0.0).astype(float)
-        return {
-            str(handoff_id): float(value / values.sum())
-            for handoff_id, value in zip(handoffs[id_col].astype(str), values, strict=False)
-        }
-    n = len(handoffs)
-    if n == 0:
-        return {}
-    return {str(handoff_id): 1.0 / n for handoff_id in handoffs[id_col].astype(str)}
-
-
-def _handoff_distribution_field(handoffs) -> str:
-    if "uparea" not in handoffs.columns:
-        return ""
-    values = pd.to_numeric(handoffs["uparea"], errors="coerce").fillna(0.0).astype(float)
-    return "uparea" if float(values.sum()) > 0 else ""
-
-
-def _event_streamflow_series_cms(
-    config: dict,
-    location_root: Path,
-    row: pd.Series,
-    *,
-    start: pd.Timestamp,
-    end: pd.Timestamp,
-) -> tuple[pd.Series, dict]:
-    records_path = _streamflow_records_path(config, location_root)
-    if not records_path.exists():
-        raise FileNotFoundError(f"streamflow records not found: {records_path}")
-    records = pd.read_csv(records_path, dtype={"site_no": str}, parse_dates=["time"])
-    if records.empty:
-        raise ValueError(f"streamflow records are empty: {records_path}")
-
-    member = _streamflow_member_metadata(config, location_root, row)
-    reference_time = pd.Timestamp(_required_event_value(row, "event_reference_time"))
-    analog_event_time = pd.Timestamp(member["event_time"])
-    pre = reference_time - pd.Timestamp(start)
-    post = pd.Timestamp(end) - reference_time
-    window_start = analog_event_time - pre
-    window_end = analog_event_time + post
-
-    source_sites = [site for site in member["site_nos"] if site in set(records["site_no"].astype(str))]
-    selected = records[
-        records["site_no"].astype(str).isin(source_sites)
-        & (records["time"] >= window_start)
-        & (records["time"] <= window_end)
-    ].copy()
-    if selected.empty:
-        raise ValueError(
-            "no streamflow records overlap the selected analog window "
-            f"{window_start.isoformat()} to {window_end.isoformat()} for member {member['member_id']!r}"
-        )
-
-    pivot = (
-        selected.pivot_table(index="time", columns="site_no", values="discharge_cfs", aggfunc="mean")
-        .sort_index()
-        .astype(float)
-    )
-    template = pivot.max(axis=1).dropna()
-    if template.empty or float(template.max()) <= 0:
-        raise ValueError(f"streamflow analog member {member['member_id']!r} has no positive discharge records")
-    shifted = template.copy()
-    shifted.index = pd.DatetimeIndex(shifted.index) - analog_event_time + reference_time
-    target_index = pd.date_range(start=pd.Timestamp(start), end=pd.Timestamp(end), freq="h")
-    hourly = (
-        shifted.reindex(shifted.index.union(target_index))
-        .sort_index()
-        .interpolate(method="time")
-        .reindex(target_index)
-        .ffill()
-        .bfill()
-    )
-    template_peak_cfs = float(hourly.max())
-    target_peak_cfs = _streamflow_target_peak_cfs(row, member)
-    scale_factor = target_peak_cfs / template_peak_cfs if template_peak_cfs > 0 else 1.0
-    out = (hourly * scale_factor * CFS_TO_CMS).astype(float)
-    provenance = {
-        "member_id": member["member_id"],
-        "member_site_no": member["site_no"],
-        "source_sites": sorted(set(source_sites)),
-        "records_path": str(records_path),
-        "reference_time": reference_time.isoformat(),
-        "analog_event_time": analog_event_time.isoformat(),
-        "window_start": pd.Timestamp(start).isoformat(),
-        "window_end": pd.Timestamp(end).isoformat(),
-        "analog_window_start": window_start.isoformat(),
-        "analog_window_end": window_end.isoformat(),
-        "target_peak_cfs": target_peak_cfs,
-        "template_peak_cfs": template_peak_cfs,
-        "scale_factor": scale_factor,
-        "distribution_field": "",
-    }
-    return out, provenance
-
-
-def _streamflow_member_metadata(config: dict, location_root: Path, row: pd.Series) -> dict:
-    member_id = str(_required_event_value(row, "streamflow_member_id"))
-    site_no = str(row.get("streamflow_member_site_no") or member_id.split("_")[0])
-    event_time = row.get("streamflow_member_time") or row.get("event_reference_time")
-    peak_flow_cfs = _finite_float(row.get("streamflow_template_value"))
-    contributing: list[str] = []
-
-    members_path = _streamflow_members_path(config, location_root)
-    if members_path.exists():
-        members = pd.read_csv(members_path, dtype={"site_no": str})
-        match = members[members["member_id"].astype(str) == member_id]
-        if not match.empty:
-            mrow = match.iloc[0]
-            site_no = str(mrow.get("site_no") or site_no)
-            event_time = mrow.get("event_time") or event_time
-            peak_flow_cfs = _finite_float(mrow.get("peak_flow_cfs")) or peak_flow_cfs
-            contributing = _split_site_list(mrow.get("contributing_site_nos"))
-
-    site_nos = list(dict.fromkeys([site_no, *contributing]))
-    return {
-        "member_id": member_id,
-        "site_no": site_no,
-        "event_time": event_time,
-        "peak_flow_cfs": peak_flow_cfs,
-        "site_nos": site_nos,
-    }
-
-
-def _streamflow_target_peak_cfs(row: pd.Series, member: dict) -> float:
-    for key in ("streamflow", "target_peak_cfs"):
-        value = _finite_float(row.get(key))
-        if value and value > 0:
-            return value
-    scale = _positive_float(row.get("streamflow_scale_factor"), default=1.0)
-    template_peak = _finite_float(row.get("streamflow_template_value")) or member.get("peak_flow_cfs")
-    if template_peak and template_peak > 0:
-        return float(template_peak) * scale
-    raise ValueError("event row has no usable streamflow design peak")
-
-
 def _discharge_handoff_source(config: dict) -> str:
     forcing = ((config.get("inland_coupling", {}) or {}).get("discharge_forcing", {}) or {})
     return str(forcing.get("source", "wflow_replay")).strip().lower()
@@ -677,7 +364,7 @@ def replay_inland_domain_set(
     discharge_path = event_dir / "sfincs_discharge.nc"
     if execute:
         if discharge_source in {"event_streamflow", "event_streamflow_timeseries", "catalog_streamflow"}:
-            write_event_streamflow_handoff_discharge(
+            coupling_discharge.write_event_streamflow_handoff_discharge(
                 config,
                 location_root,
                 event_id,
@@ -688,16 +375,16 @@ def replay_inland_domain_set(
                 end=end,
             )
         else:
-            merge_submodel_discharge(
+            coupling_discharge.merge_submodel_discharge(
                 [{"run_output_dir": s.run_output_dir, "gauges_geojson": s.gauges_geojson} for s in steps],
                 model_crs=model_crs,
                 out_path=discharge_path,
-                handoff_points=_sfincs_handoff_points_for_replay(config, location_root, model_crs),
+                handoff_points=coupling_discharge.sfincs_handoff_points(config, location_root, model_crs),
             )
             # One Same-Frequency Amplification K applied uniformly to the handoff hydrographs.
             # No-op (K=1) until the catalog provides a per-event target and a
             # primary_reference_gage is configured.
-            apply_same_frequency_amplification(
+            coupling_amplification.apply_same_frequency_amplification(
                 config,
                 location_root,
                 event_id,
@@ -767,11 +454,11 @@ def run_zero_rain_control(
         )
     discharge_path = zero_root / "sfincs_discharge.nc"
     if execute:
-        merge_submodel_discharge(
+        coupling_discharge.merge_submodel_discharge(
             outputs,
             model_crs=model_crs,
             out_path=discharge_path,
-            handoff_points=_sfincs_handoff_points_for_replay(config, location_root, model_crs),
+            handoff_points=coupling_discharge.sfincs_handoff_points(config, location_root, model_crs),
         )
         (zero_root / "zero_rain_control.provenance.json").write_text(
             json.dumps(

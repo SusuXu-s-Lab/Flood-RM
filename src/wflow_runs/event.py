@@ -11,12 +11,11 @@ import pandas as pd
 import xarray as xr
 import yaml
 
-from .domain import domain_submodels, model_crs, read_handoff_artifacts, read_handoff_points
+from .domain import domain_submodels, model_crs, read_handoff_points
 from .qa import read_acceptance, validate_event_boundary, write_acceptance
 from .states import prepare_event_instate, validate_instates
 from .types import BoundaryRun, DesignEvent
 from paths import resolve_location_path, write_json
-from wflow_runs.output import match_gauge_column, wflow_output_csv
 from wflow_runs.runner import clean_output_dir, run_solver, zero_event_forcing
 
 CFS_TO_CMS = 0.028316846592
@@ -375,8 +374,24 @@ def run_event_boundary(
     amplification = {"K": 1.0, "status": "not_run"}
     zero_path = None
     if execute:
-        merge_submodel_discharge(outputs, model_crs=model_crs(config), out_path=paths["discharge"], handoff_points=sfincs_handoff_points(config, root))
-        amplification = apply_same_frequency_amplification(config, root, event, discharge_nc=paths["discharge"], submodel_outputs=outputs)
+        from coupling import amplification as coupling_amplification
+        from coupling import discharge as coupling_discharge
+
+        coupling_discharge.merge_submodel_discharge(
+            outputs,
+            model_crs=model_crs(config),
+            out_path=paths["discharge"],
+            handoff_points=coupling_discharge.sfincs_handoff_points(config, root, model_crs(config)),
+        )
+        amplification = coupling_amplification.apply_same_frequency_amplification(
+            config,
+            root,
+            event.event_id,
+            discharge_nc=paths["discharge"],
+            submodel_runs=outputs,
+            event=event,
+            write_provenance=False,
+        )
         write_json(paths["amplification"], amplification)
         if zero_rain:
             zero_path = run_zero_rain_control(config, root, event.event_id, execute=True, model_cls=model_cls)
@@ -419,226 +434,15 @@ def run_zero_rain_control(config: dict[str, Any], location_root: str | Path, eve
             run_solver(config, target / "wflow_sbm.toml", cwd=root)
         outputs.append({"run_model_root": target, "run_output_dir": target / "run_event", "gauges_geojson": target / "staticgeoms" / "gauges_sfincs.geojson", "submodel_id": sid})
     if execute:
-        merge_submodel_discharge(outputs, model_crs=model_crs(config), out_path=paths["zero_rain_discharge"], handoff_points=sfincs_handoff_points(config, root))
+        from coupling import discharge as coupling_discharge
+
+        coupling_discharge.merge_submodel_discharge(
+            outputs,
+            model_crs=model_crs(config),
+            out_path=paths["zero_rain_discharge"],
+            handoff_points=coupling_discharge.sfincs_handoff_points(config, root, model_crs(config)),
+        )
     return paths["zero_rain_discharge"]
-
-
-def sfincs_handoff_points(config: dict[str, Any], location_root: str | Path) -> dict[str, tuple[float, float]]:
-    gdf = read_handoff_artifacts(config, location_root, crs=model_crs(config))
-    return {str(r["sfincs_handoff_id"]): (float(r.geometry.x), float(r.geometry.y)) for _, r in gdf.iterrows()}
-
-
-def merge_submodel_discharge(submodel_outputs: list[dict[str, Any]], *, model_crs: str, out_path: str | Path, handoff_points: dict[str, tuple[float, float]] | None = None) -> Path:
-    series: dict[str, pd.Series] = {}
-    points: dict[str, tuple[float, float]] = {}
-    crs_by_handoff: dict[str, Any] = {}
-    for item in submodel_outputs:
-        sub_series, sub_points, sub_crs = gauge_discharge(item["run_model_root"], item["gauges_geojson"], run_output_dir=item.get("run_output_dir"))
-        series.update(sub_series)
-        points.update(sub_points)
-        for key in sub_points:
-            crs_by_handoff[key] = sub_crs
-    points = _reproject_points(points, crs_by_handoff, model_crs)
-    if handoff_points:
-        points.update({hid: xy for hid, xy in handoff_points.items() if hid in series})
-    ds = build_discharge_dataset(series, points, crs=model_crs)
-    out = Path(out_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    ds.to_netcdf(out)
-    return out
-
-
-def build_discharge_dataset(series_by_handoff: dict[str, pd.Series], points_by_handoff: dict[str, tuple[float, float]], *, crs: str) -> xr.Dataset:
-    ids = [hid for hid in series_by_handoff if hid in points_by_handoff]
-    if not ids:
-        raise ValueError("no discharge series overlap handoff point coordinates")
-    frame = pd.concat({hid: pd.Series(series_by_handoff[hid]).astype(float) for hid in ids}, axis=1).sort_index()
-    frame.index = pd.DatetimeIndex(frame.index)
-    ds = xr.Dataset(
-        {"discharge": (("index", "time"), frame[ids].to_numpy(dtype=float).T)},
-        coords={
-            "index": np.arange(1, len(ids) + 1, dtype=int),
-            "time": frame.index.values,
-            "name": ("index", np.asarray(ids, dtype=object)),
-            "x": ("index", np.asarray([points_by_handoff[i][0] for i in ids], dtype=float)),
-            "y": ("index", np.asarray([points_by_handoff[i][1] for i in ids], dtype=float)),
-        },
-        attrs={"crs": str(crs), "featureType": "timeSeries"},
-    )
-    ds["discharge"].attrs.update(units="m3 s-1", standard_name="river_water__volume_flow_rate")
-    try:
-        ds.vector.set_crs(crs)
-    except Exception:
-        pass
-    return ds
-
-
-def gauge_discharge(run_model_root: str | Path, gauges_geojson: str | Path, *, run_output_dir: str | Path | None = None, model_cls=None):
-    """Return Wflow gauge discharge series keyed by ``sfincs_handoff_id``."""
-    try:
-        return _native_gauge_discharge(run_model_root, gauges_geojson, run_output_dir=run_output_dir, model_cls=model_cls)
-    except Exception:
-        return _fallback_gauge_discharge(run_output_dir or Path(run_model_root) / "run_event", gauges_geojson)
-
-
-def _native_gauge_discharge(run_model_root, gauges_geojson, *, run_output_dir=None, model_cls=None):
-    import geopandas as gpd
-    from hydromt_wflow import utils as wflow_utils
-
-    root = Path(run_model_root)
-    model = _read_model(root, model_cls=model_cls, mode="r")
-    csv_path = wflow_output_csv(run_output_dir or root / "run_event")
-    outputs = wflow_utils.read_csv_output(csv_path, model.config.data, model.staticmaps.data)
-    gauges = gpd.read_file(gauges_geojson)
-    if "sfincs_handoff_id" not in gauges:
-        raise ValueError(f"{gauges_geojson} lacks sfincs_handoff_id")
-    da = _select_discharge_output(outputs)
-    frame = da.to_pandas()
-    if isinstance(frame, pd.Series):
-        frame = frame.to_frame()
-    if frame.index.name != "time":
-        frame.index = pd.DatetimeIndex(frame.index)
-
-    gauges_by_index = {int(r["index"]): str(r["sfincs_handoff_id"]) for _, r in gauges.iterrows() if "index" in gauges}
-    series: dict[str, pd.Series] = {}
-    points: dict[str, tuple[float, float]] = {}
-    for col in frame.columns:
-        try:
-            idx = int(col)
-        except Exception:
-            idx = _index_from_label(col)
-        hid = gauges_by_index.get(idx)
-        if hid is None:
-            continue
-        series[hid] = pd.to_numeric(frame[col], errors="coerce").astype(float)
-    for _, row in gauges.iterrows():
-        hid = str(row["sfincs_handoff_id"])
-        if hid in series:
-            points[hid] = (float(row.geometry.x), float(row.geometry.y))
-    if not series:
-        raise ValueError("native read_csv_output did not produce matching SFINCS gauge series")
-    return series, points, gauges.crs
-
-
-def _fallback_gauge_discharge(run_output_dir, gauges_geojson):
-    import geopandas as gpd
-
-    gauges = gpd.read_file(gauges_geojson)
-    table = pd.read_csv(wflow_output_csv(run_output_dir), index_col=0, parse_dates=True)
-    table.index = pd.DatetimeIndex(table.index)
-    series: dict[str, pd.Series] = {}
-    points: dict[str, tuple[float, float]] = {}
-    for _, row in gauges.iterrows():
-        hid = str(row.get("sfincs_handoff_id") or row.get("name"))
-        col = match_gauge_column(table.columns, row.get("index"))
-        if hid and col:
-            series[hid] = pd.to_numeric(table[col], errors="coerce").astype(float)
-            points[hid] = (float(row.geometry.x), float(row.geometry.y))
-    if not series:
-        raise ValueError(f"No Wflow gauge discharge columns matched {gauges_geojson}")
-    return series, points, gauges.crs
-
-
-def _select_discharge_output(outputs: dict[str, Any]):
-    for key, value in outputs.items():
-        low = str(key).lower()
-        if "river_q" in low or "volume_flow" in low or low.startswith("q"):
-            return value
-    if len(outputs) == 1:
-        return next(iter(outputs.values()))
-    raise ValueError(f"could not identify discharge output among {sorted(outputs)}")
-
-
-def _index_from_label(value) -> int | None:
-    import re
-
-    match = re.search(r"(\d+)$", str(value))
-    return int(match.group(1)) if match else None
-
-
-def apply_same_frequency_amplification(config: dict[str, Any], location_root: str | Path, event: DesignEvent, *, discharge_nc: str | Path, submodel_outputs: list[dict[str, Any]]) -> dict[str, Any]:
-    amp_cfg = ((config.get("inland_coupling", {}) or {}).get("amplification", {}) or {})
-    reference_gage = amp_cfg.get("primary_reference_gage") or (config.get("inland_coupling", {}) or {}).get("primary_reference_gage")
-    band = amp_cfg.get("k_band", [0.25, 4.0])
-    provenance = {"method": "same_frequency_amplification", "equation": "K = clip(Q*_omega(g*) / max_t Q^W_omega(g*,t), K_min, K_max)", "K": 1.0, "status": "response_based_unbiased", "reference_gage": reference_gage, "target_cms": event.q_target_cms, "wflow_peak_cms": None, "k_band": band}
-    if not amp_cfg.get("enabled", True):
-        provenance["status"] = "disabled"
-        return provenance
-    k_cal = _float_or_none(amp_cfg.get("k_calibration"))
-    if k_cal and k_cal > 0 and not amp_cfg.get("prefer_per_event_target", False):
-        k = _clip(k_cal, band)
-        _scale_discharge(discharge_nc, k, reference_gage)
-        provenance.update(K=k, status="calibration_constant")
-        return provenance
-    if not reference_gage or not event.q_target_cms:
-        return provenance
-    peak = reference_gage_peak(config, location_root, str(reference_gage), submodel_outputs)
-    provenance["wflow_peak_cms"] = peak
-    if not peak or peak <= 0:
-        provenance["status"] = "no_wflow_peak"
-        return provenance
-    k = _clip(float(event.q_target_cms) / float(peak), band)
-    _scale_discharge(discharge_nc, k, reference_gage)
-    provenance.update(K=k, status="applied")
-    return provenance
-
-
-def reference_gage_peak(config: dict[str, Any], location_root: str | Path, reference_gage: str, submodel_outputs: list[dict[str, Any]]) -> float | None:
-    import geopandas as gpd
-
-    gauges_root = resolve_location_path(location_root, ((config.get("wflow", {}) or {}).get("gauges", {}) or {}).get("root", "data/wflow/domain_set_gauges"))
-    for item in submodel_outputs:
-        sid = str(item["submodel_id"])
-        gauges_path = gauges_root / f"{sid}_observation_gauges.geojson"
-        if not gauges_path.exists():
-            continue
-        gauges = gpd.read_file(gauges_path)
-        if "site_no" not in gauges:
-            continue
-        match = gauges[gauges["site_no"].astype(str).str.zfill(8).eq(str(reference_gage).zfill(8))]
-        if match.empty:
-            continue
-        csv_path = wflow_output_csv(item["run_output_dir"])
-        table = pd.read_csv(csv_path, index_col=0, parse_dates=True)
-        col = match_gauge_column(table.columns, match.iloc[0].get("index"))
-        if col is None:
-            continue
-        peak = float(pd.to_numeric(table[col], errors="coerce").max())
-        if np.isfinite(peak):
-            return peak
-    return None
-
-
-def _reproject_points(points: dict[str, tuple[float, float]], crs_by_handoff: dict[str, Any], dst_crs: str) -> dict[str, tuple[float, float]]:
-    from pyproj import CRS, Transformer
-
-    out: dict[str, tuple[float, float]] = {}
-    transformers: dict[str, Any] = {}
-    for hid, (x, y) in points.items():
-        src = crs_by_handoff.get(hid)
-        if src is None or CRS.from_user_input(src) == CRS.from_user_input(dst_crs):
-            out[hid] = (float(x), float(y))
-            continue
-        key = str(src)
-        transformers.setdefault(key, Transformer.from_crs(src, dst_crs, always_xy=True))
-        nx, ny = transformers[key].transform(x, y)
-        out[hid] = (float(nx), float(ny))
-    return out
-
-
-def _scale_discharge(discharge_nc: str | Path, k: float, reference_gage: str | None) -> None:
-    if float(k) == 1.0:
-        return
-    path = Path(discharge_nc)
-    with xr.open_dataset(path) as opened:
-        ds = opened.load()
-    ds["discharge"] = ds["discharge"] * float(k)
-    ds.attrs["same_frequency_amplification_K"] = float(k)
-    if reference_gage:
-        ds.attrs["amplification_reference_gage"] = str(reference_gage)
-    tmp = path.with_suffix(".amp.tmp.nc")
-    ds.to_netcdf(tmp)
-    tmp.replace(path)
 
 
 def _workflow_steps(workflow_file: str | Path) -> list[dict[str, Any]]:
@@ -682,12 +486,6 @@ def _target_cms(row: pd.Series) -> float | None:
         if value and value > 0:
             return float(value) * factor
     return None
-
-
-def _clip(value: float, band) -> float:
-    if not band:
-        return float(value)
-    return float(np.clip(float(value), float(band[0]), float(band[1])))
 
 
 def _first(row: pd.Series, keys: list[str]):

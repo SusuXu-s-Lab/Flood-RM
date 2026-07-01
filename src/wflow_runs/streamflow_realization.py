@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
-import re
 import tomllib
 
 import numpy as np
@@ -12,6 +11,12 @@ import xarray as xr
 import yaml
 
 from collect_sources.usgs_streamgages import fetch_nwis_discharge_records
+from event_streamflow import (
+    event_streamflow_records_path as _event_streamflow_records_path,
+    finite_float as _finite_float,
+    streamflow_member_metadata as _streamflow_member_metadata,
+    streamflow_records_path as _streamflow_records_path,
+)
 from paths import resolve_location_path
 from wflow_runs.usgs import usgs_instantaneous_streamflow_spec
 
@@ -19,169 +24,6 @@ from wflow_runs.usgs import usgs_instantaneous_streamflow_spec
 WFLOW_EXTERNAL_RIVER_INFLOW = "river_water__external_inflow_volume_flow_rate"
 WFLOW_EXTERNAL_RIVER_INFLOW_VAR = "river_inflow"
 CFS_TO_CMS = 0.028316846592
-
-
-def apply_same_frequency_amplification(
-    config: dict,
-    location_root,
-    event_id: str,
-    *,
-    catalog_path=None,
-    discharge_nc,
-    submodel_runs,
-) -> dict:
-    """Same-Frequency Amplification of Wflow-generated handoff discharge.
-
-    Scales every handoff hydrograph in ``discharge_nc`` by a single event-level factor
-    ``K = streamflow_target / Q_wflow_peak`` evaluated at the Primary Reference Gage, so the
-    routed flow honors the observed streamflow-frequency target while preserving hydrograph
-    shape, timing, and inter-tributary structure.
-
-    No-op (``K=1``) unless a ``primary_reference_gage`` is configured and the catalog row
-    carries a streamflow target and the reference gage's simulated peak can be read. Writes
-    ``sfincs_discharge.amplification.json`` provenance next to ``discharge_nc``.
-    """
-    location_root = Path(location_root)
-    discharge_nc = Path(discharge_nc)
-    amp_cfg = (((config.get("inland_coupling", {}) or {}).get("amplification", {})) or {})
-    provenance = {
-        "event_id": str(event_id),
-        "method": "same_frequency_amplification",
-        "K": 1.0,
-        "status": "disabled",
-        "reference_gage": None,
-        "target_cms": None,
-        "wflow_peak_cms": None,
-        "k_band": list(amp_cfg.get("k_band", [])) or None,
-    }
-    provenance_path = discharge_nc.with_name("sfincs_discharge.amplification.json")
-
-    reference_gage = amp_cfg.get("primary_reference_gage") or (
-        ((config.get("inland_coupling", {}) or {}).get("primary_reference_gage"))
-    )
-    if not amp_cfg.get("enabled", True):
-        _write_amplification_provenance(provenance_path, provenance)
-        return provenance
-
-    # A configured ``k_calibration`` constant is applied uniformly; absent that, K=1 unless
-    # the catalog carries an explicit per-event ``streamflow_target_cfs``.
-    k_calibration = _finite_float(amp_cfg.get("k_calibration"))
-    if k_calibration and k_calibration > 0 and not amp_cfg.get("prefer_per_event_target", False):
-        k = float(k_calibration)
-        band = amp_cfg.get("k_band")
-        in_band = True if not band else (float(band[0]) <= k <= float(band[1]))
-        provenance.update(K=k, status="calibration_constant" if in_band else "calibration_constant_out_of_band", reference_gage=str(reference_gage) if reference_gage else None)
-        _scale_discharge_in_place(discharge_nc, k, reference_gage)
-        _write_amplification_provenance(provenance_path, provenance)
-        return provenance
-
-    if not reference_gage:
-        provenance["status"] = "response_based_unbiased"
-        _write_amplification_provenance(provenance_path, provenance)
-        return provenance
-
-    try:
-        row = _event_catalog_row(location_root, event_id, catalog_path)
-        target_cms = _event_streamflow_target_cms(row)
-        wflow_peak_cms = _reference_gage_simulated_peak_cms(
-            config, location_root, reference_gage, submodel_runs
-        )
-    except Exception as exc:  # defensive: amplification must never break the handoff
-        provenance.update(status=f"skipped:{type(exc).__name__}", reference_gage=str(reference_gage))
-        _write_amplification_provenance(provenance_path, provenance)
-        return provenance
-
-    provenance.update(reference_gage=str(reference_gage), target_cms=target_cms, wflow_peak_cms=wflow_peak_cms)
-    if not target_cms or not wflow_peak_cms or wflow_peak_cms <= 0:
-        provenance["status"] = "no_target" if not target_cms else "no_wflow_peak"
-        _write_amplification_provenance(provenance_path, provenance)
-        return provenance
-
-    k = float(target_cms) / float(wflow_peak_cms)
-    band = amp_cfg.get("k_band")
-    in_band = True if not band else (float(band[0]) <= k <= float(band[1]))
-    provenance.update(K=k, status="applied" if in_band else "applied_out_of_band")
-    _scale_discharge_in_place(discharge_nc, k, reference_gage)
-    _write_amplification_provenance(provenance_path, provenance)
-    return provenance
-
-
-def _scale_discharge_in_place(discharge_nc: Path, k: float, reference_gage) -> None:
-    if not float(k) or float(k) == 1.0:
-        return
-    with xr.open_dataset(discharge_nc) as src:
-        ds = src.load()
-    if "discharge" not in ds:
-        return
-    ds["discharge"] = ds["discharge"] * float(k)
-    ds["discharge"].attrs["same_frequency_amplification_K"] = float(k)
-    ds.attrs["same_frequency_amplification_K"] = float(k)
-    if reference_gage:
-        ds.attrs["amplification_reference_gage"] = str(reference_gage)
-    tmp = discharge_nc.with_suffix(".amp.tmp.nc")
-    ds.to_netcdf(tmp)
-    tmp.replace(discharge_nc)
-
-
-def _write_amplification_provenance(path: Path, provenance: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(provenance, indent=2), encoding="utf-8")
-
-
-def _event_streamflow_target_cms(row: pd.Series) -> float | None:
-    """Per-event streamflow target peak at the Primary Reference Gage, in m3/s.
-
-    Reads the catalog column ``streamflow_target_cfs`` — the POT target at the Primary
-    Reference Gage produced by 03's in-domain anchor. The legacy ``streamflow_cfs`` /
-    ``streamflow`` columns are not used: they hold the cross-basin max-envelope magnitude,
-    which would over-amplify. Returns None (amplification no-ops, status ``no_target``) when
-    the target column is absent.
-    """
-    value = _finite_float(row.get("streamflow_target_cfs"))
-    if value and value > 0:
-        return float(value) * CFS_TO_CMS
-    return None
-
-
-def _reference_gage_simulated_peak_cms(
-    config: dict, location_root: Path, reference_gage: str, submodel_runs
-) -> float | None:
-    """Peak simulated Wflow discharge (m3/s) at the Primary Reference Gage's output cell.
-
-    Locates the reference gage in each submodel's observation-gauge set, matches its Wflow
-    ``Q_<index>`` output column, and returns the peak. Returns None if the gage is not an
-    output point in any submodel (then amplification no-ops rather than guesses).
-    """
-    import geopandas as gpd
-
-    from wflow_runs.output import match_gauge_column, resolve_wflow_output_csv
-
-    reference_gage = str(reference_gage)
-    for entry in submodel_runs or []:
-        run_output_dir = Path(entry["run_output_dir"])
-        # The output dir is .../events/<event>/<submodel_id>/run_event; submodel id is its parent name.
-        submodel_id = run_output_dir.parent.name
-        gauges_path = _observation_gauges_path(config, location_root, submodel_id)
-        if not gauges_path.exists():
-            continue
-        gauges = gpd.read_file(gauges_path)
-        if "site_no" not in gauges or "index" not in gauges:
-            continue
-        match = gauges[gauges["site_no"].astype(str) == reference_gage]
-        if match.empty:
-            continue
-        try:
-            csv_path = resolve_wflow_output_csv(run_output_dir, None)
-            table = pd.read_csv(csv_path, index_col=0, parse_dates=True)
-        except (FileNotFoundError, ValueError):
-            continue
-        column = match_gauge_column(table.columns, match.iloc[0]["index"])
-        if column is None:
-            continue
-        peak = float(pd.to_numeric(table[column], errors="coerce").max())
-        if np.isfinite(peak):
-            return peak
-    return None
 
 
 def prepare_wflow_streamflow_realization_for_event_model(
@@ -717,34 +559,6 @@ def _analog_window(row: pd.Series, member: dict, *, start: pd.Timestamp, end: pd
     return analog_event_time - pre, analog_event_time + post
 
 
-def _event_streamflow_records_path(
-    config: dict,
-    location_root: Path,
-    event_id: str,
-    member: dict,
-    start: pd.Timestamp,
-    end: pd.Timestamp,
-) -> Path:
-    settings = (((config.get("wflow", {}) or {}).get("streamflow_realization", {}) or {}))
-    root = resolve_location_path(
-        location_root,
-        settings.get("event_records_root", "data/sources/usgs_streamgages/event_streamflow_iv"),
-    )
-    token = "_".join(
-        [
-            str(event_id),
-            str(member["member_id"]),
-            pd.Timestamp(start).strftime("%Y%m%dT%H%M%S"),
-            pd.Timestamp(end).strftime("%Y%m%dT%H%M%S"),
-        ]
-    )
-    return root / f"{_safe_filename_token(token)}.csv"
-
-
-def _safe_filename_token(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
-
-
 def _record_source_summary(records: pd.DataFrame) -> str:
     if "source" not in records:
         return "unknown"
@@ -840,51 +654,6 @@ def _event_catalog_row(location_root: Path, event_id: str, catalog_path):
     return match.iloc[0]
 
 
-def _streamflow_records_path(config: dict, location_root: Path) -> Path:
-    streamflow_cfg = (((config.get("event_catalog", {}) or {}).get("driver_records", {}) or {}).get("streamflow", {}) or {})
-    for key in ("records", "records_file", "path"):
-        value = streamflow_cfg.get(key)
-        if value:
-            return resolve_location_path(location_root, value)
-    return resolve_location_path(location_root, "data/sources/usgs_streamgages/streamflow_records.csv")
-
-
-def _streamflow_members_path(config: dict, location_root: Path) -> Path:
-    streamflow_cfg = (((config.get("event_catalog", {}) or {}).get("driver_records", {}) or {}).get("streamflow", {}) or {})
-    for key in ("members", "members_file"):
-        value = streamflow_cfg.get(key)
-        if value:
-            return resolve_location_path(location_root, value)
-    return resolve_location_path(location_root, "data/sources/usgs_streamgages/streamflow_members.csv")
-
-
-def _streamflow_member_metadata(config: dict, location_root: Path, row: pd.Series) -> dict:
-    member_id = str(row.get("streamflow_member_id"))
-    site_no = str(row.get("streamflow_member_site_no") or member_id.split("_")[0])
-    event_time = row.get("streamflow_member_time") or row.get("event_reference_time")
-    peak_flow_cfs = _finite_float(row.get("streamflow_template_value"))
-    contributing: list[str] = []
-
-    members_path = _streamflow_members_path(config, location_root)
-    if members_path.exists():
-        members = pd.read_csv(members_path, dtype={"site_no": str})
-        match = members[members["member_id"].astype(str) == member_id]
-        if not match.empty:
-            mrow = match.iloc[0]
-            site_no = str(mrow.get("site_no") or site_no)
-            event_time = mrow.get("event_time") or event_time
-            peak_flow_cfs = _finite_float(mrow.get("peak_flow_cfs")) or peak_flow_cfs
-            contributing = _split_site_list(mrow.get("contributing_site_nos"))
-
-    return {
-        "member_id": member_id,
-        "site_no": site_no,
-        "event_time": event_time,
-        "peak_flow_cfs": peak_flow_cfs,
-        "site_nos": list(dict.fromkeys([site_no, *contributing])),
-    }
-
-
 def _streamflow_scale_factor(row: pd.Series, member: dict) -> float:
     value = _finite_float(row.get("streamflow_scale_factor"))
     if value and value > 0:
@@ -894,17 +663,3 @@ def _streamflow_scale_factor(row: pd.Series, member: dict) -> float:
     if target and template and template > 0:
         return float(target) / float(template)
     return 1.0
-
-
-def _split_site_list(value) -> list[str]:
-    if value is None or pd.isna(value):
-        return []
-    return [item.strip() for item in str(value).split(",") if item.strip()]
-
-
-def _finite_float(value) -> float | None:
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return None
-    return out if np.isfinite(out) else None

@@ -15,13 +15,13 @@ from wflow_runs.coupling_qa import (
 from wflow_runs.replay import (
     _domain_set_submodels,
     _event_reference_time,
-    _sfincs_handoff_locations_for_replay,
     build_meteo,
     configured_event_window_hours,
     replay_inland_domain_set,
     resolve_event_window,
     run_zero_rain_control,
 )
+from coupling.discharge import sfincs_handoff_locations
 from wflow_runs.reservoirs import validate_wflow_reservoir_staticmaps, write_wflow_reservoir_readiness
 from wflow_runs.staticmaps_qa import validate_staticmaps
 from wflow_runs.states import plan_wflow_warmup_state, validate_warmup_forcing, validate_instates, write_cold_state_workflow
@@ -344,7 +344,7 @@ def _instate_paths(config: dict, location_root: Path) -> list[Path]:
 
 def _expected_handoff_ids(config: dict, location_root: Path) -> set[str]:
     model_crs = config.get("wflow", {}).get("model_crs", config.get("project", {}).get("model_crs", "EPSG:32617"))
-    locations = _sfincs_handoff_locations_for_replay(config, location_root, model_crs)
+    locations = sfincs_handoff_locations(config, location_root, model_crs)
     if locations is None or locations.empty:
         locations = read_stream_boundary_handoff_location_artifacts(config, location_root, location_path=resolve_location_path)
     if locations is None or locations.empty:

@@ -8,7 +8,11 @@ import numpy as np
 import pandas as pd
 from scipy.signal import find_peaks
 
-from paths import location_root_from_paths, resolve_location_path
+from event_streamflow import (
+    streamflow_members_path as _streamflow_members_path,
+    streamflow_records_path as _streamflow_records_path,
+)
+from paths import location_root_from_paths
 
 
 def build_usgs_streamflow_event_members(config, paths, *, streamflow_records=None):
@@ -174,30 +178,8 @@ def _median_spacing_hours(index):
     return max(float(hours), 1.0)
 
 
-def _streamflow_members_path(config, location_root):
-    value = config.get("event_catalog", {}).get("forcing_members", {}).get("streamflow")
-    if not value:
-        value = "data/sources/usgs_streamgages/streamflow_members.csv"
-    return _location_path(location_root, value)
-
-
-def _streamflow_records_path(config, location_root):
-    value = (
-        config.get("collection", {})
-        .get("usgs_streamgages", {})
-        .get("streamflow_records", "data/sources/usgs_streamgages/streamflow_records.csv")
-    )
-    if isinstance(value, dict):
-        value = value.get("output", "data/sources/usgs_streamgages/streamflow_records.csv")
-    return _location_path(location_root, value)
-
-
 def _location_root(paths):
     return location_root_from_paths(paths)
-
-
-def _location_path(location_root, value):
-    return resolve_location_path(location_root, value)
 
 
 __all__ = [

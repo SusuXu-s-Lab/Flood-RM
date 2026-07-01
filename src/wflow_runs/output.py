@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -13,8 +14,6 @@ def read_submodel_gauge_discharge(
 ):
     """Read one submodel's Wflow gauge discharge and handoff locations."""
     if csv_name is None:
-        from wflow_runs.event import gauge_discharge
-
         series, points, _crs = gauge_discharge(
             Path(run_output_dir).parent,
             gauges_geojson,
@@ -38,6 +37,122 @@ def read_submodel_gauge_discharge(
     if not series_by_handoff:
         raise ValueError(f"no Q_<index> gauge columns matched in {output_csv}")
     return series_by_handoff, points_by_handoff
+
+
+def gauge_discharge(
+    run_model_root: str | Path,
+    gauges_geojson: str | Path,
+    *,
+    run_output_dir: str | Path | None = None,
+    model_cls=None,
+):
+    """Return Wflow gauge discharge series keyed by ``sfincs_handoff_id``."""
+    try:
+        return _native_gauge_discharge(
+            run_model_root,
+            gauges_geojson,
+            run_output_dir=run_output_dir,
+            model_cls=model_cls,
+        )
+    except Exception:
+        return _fallback_gauge_discharge(
+            run_output_dir or Path(run_model_root) / "run_event",
+            gauges_geojson,
+        )
+
+
+def _native_gauge_discharge(run_model_root, gauges_geojson, *, run_output_dir=None, model_cls=None):
+    import geopandas as gpd
+    from hydromt_wflow import utils as wflow_utils
+
+    root = Path(run_model_root)
+    model = _read_model(root, model_cls=model_cls, mode="r")
+    csv_path = wflow_output_csv(run_output_dir or root / "run_event")
+    outputs = wflow_utils.read_csv_output(csv_path, model.config.data, model.staticmaps.data)
+    gauges = gpd.read_file(gauges_geojson)
+    if "sfincs_handoff_id" not in gauges:
+        raise ValueError(f"{gauges_geojson} lacks sfincs_handoff_id")
+    da = _select_discharge_output(outputs)
+    frame = da.to_pandas()
+    if isinstance(frame, pd.Series):
+        frame = frame.to_frame()
+    if frame.index.name != "time":
+        frame.index = pd.DatetimeIndex(frame.index)
+
+    gauges_by_index = {
+        int(row["index"]): str(row["sfincs_handoff_id"])
+        for _, row in gauges.iterrows()
+        if "index" in gauges
+    }
+    series: dict[str, pd.Series] = {}
+    points: dict[str, tuple[float, float]] = {}
+    for col in frame.columns:
+        try:
+            idx = int(col)
+        except Exception:
+            idx = _index_from_label(col)
+        hid = gauges_by_index.get(idx)
+        if hid is None:
+            continue
+        series[hid] = pd.to_numeric(frame[col], errors="coerce").astype(float)
+    for _, row in gauges.iterrows():
+        hid = str(row["sfincs_handoff_id"])
+        if hid in series:
+            points[hid] = (float(row.geometry.x), float(row.geometry.y))
+    if not series:
+        raise ValueError("native read_csv_output did not produce matching SFINCS gauge series")
+    return series, points, gauges.crs
+
+
+def _fallback_gauge_discharge(run_output_dir, gauges_geojson):
+    import geopandas as gpd
+
+    gauges = gpd.read_file(gauges_geojson)
+    table = pd.read_csv(wflow_output_csv(run_output_dir), index_col=0, parse_dates=True)
+    table.index = pd.DatetimeIndex(table.index)
+    series: dict[str, pd.Series] = {}
+    points: dict[str, tuple[float, float]] = {}
+    for _, row in gauges.iterrows():
+        hid = str(row.get("sfincs_handoff_id") or row.get("name"))
+        col = match_gauge_column(table.columns, row.get("index"))
+        if hid and col:
+            series[hid] = pd.to_numeric(table[col], errors="coerce").astype(float)
+            points[hid] = (float(row.geometry.x), float(row.geometry.y))
+    if not series:
+        raise ValueError(f"No Wflow gauge discharge columns matched {gauges_geojson}")
+    return series, points, gauges.crs
+
+
+def _select_discharge_output(outputs: dict[str, Any]):
+    for key, value in outputs.items():
+        low = str(key).lower()
+        if "river_q" in low or "volume_flow" in low or low.startswith("q"):
+            return value
+    if len(outputs) == 1:
+        return next(iter(outputs.values()))
+    raise ValueError(f"could not identify discharge output among {sorted(outputs)}")
+
+
+def _index_from_label(value) -> int | None:
+    import re
+
+    match = re.search(r"(\d+)$", str(value))
+    return int(match.group(1)) if match else None
+
+
+def _read_model(root: str | Path, *, model_cls=None, mode: str = "r"):
+    cls = _wflow_model_cls(model_cls)
+    model = cls(root=str(root), mode=mode)
+    model.read()
+    return model
+
+
+def _wflow_model_cls(model_cls=None):
+    if model_cls is not None:
+        return model_cls
+    from hydromt_wflow import WflowSbmModel
+
+    return WflowSbmModel
 
 
 def resolve_wflow_output_csv(run_output_dir: Path, csv_name: str | None) -> Path:
