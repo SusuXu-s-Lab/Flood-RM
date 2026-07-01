@@ -15,7 +15,7 @@ from event_streamflow import (
     streamflow_records_path as _streamflow_records_path,
 )
 from paths import resolve_location_path
-from wflow_runs.event import (
+from wflow_runs.event_catalog import (
     legacy_event_catalog_row,
     required_event_value,
 )

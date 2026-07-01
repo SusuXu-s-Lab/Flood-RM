@@ -15,7 +15,7 @@ from coupling.dynamic_handoff import (
     prepare_handoff,
     require_handoff,
 )
-from wflow_runs.event import configured_event_window_hours
+from wflow_runs.event_catalog import configured_event_window_hours
 from wflow_runs.meteo import build_meteo
 
 

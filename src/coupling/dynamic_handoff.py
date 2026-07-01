@@ -24,13 +24,15 @@ from wflow_runs.staticmaps_qa import validate_staticmaps
 from wflow_runs.states import plan_wflow_warmup_state, validate_warmup_forcing, validate_instates, write_cold_state_workflow
 from paths import resolve_location_path
 from wflow_runs.event import (
+    require_discharge_window as require_v2_discharge_window,
+    require_event_boundary as require_v2_event_boundary,
+)
+from wflow_runs.event_catalog import (
     configured_event_window_hours,
     event_reference_time,
     event_window,
     event_paths as v2_event_paths,
     legacy_dynamic_handoff_paths as v2_legacy_dynamic_handoff_paths,
-    require_discharge_window as require_v2_discharge_window,
-    require_event_boundary as require_v2_event_boundary,
 )
 
 

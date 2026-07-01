@@ -6,8 +6,8 @@ import pandas as pd
 
 from paths import resolve_location_path
 from coupling.domain_manifest import write_wflow_domain_set_manifest
-from coupling.domain_set import write_wflow_crossing_gauge_locations
 from coupling.wflow_domain_set import plan_wflow_domain_set
+from coupling.wflow_gauges import write_wflow_crossing_gauge_locations
 from wflow_runs.fabric import write_wflow_subbasin_fabric_from_nhdplus
 from wflow_runs.hydromt_build import build_wflow_build_plan
 

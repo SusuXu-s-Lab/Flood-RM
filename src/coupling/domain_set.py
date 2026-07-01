@@ -2,66 +2,28 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import geopandas as gpd
-import numpy as np
 import pandas as pd
-from shapely.geometry import GeometryCollection, LineString, MultiPoint, Point
-from shapely.ops import unary_union
 
 from paths import location_root_from_paths, relative_to_or_absolute, resolve_location_path
+from coupling.domain_geometry import (
+    coverage_box_crossings,
+    coverage_domain_geometries,
+    coverage_domain_id,
+    load_crossing_rivers,
+    sfincs_coverage_boxes,
+    stream_boundary_inflow_crossings,
+    subbasin_submodels_from_crossings,
+)
 from coupling.handoff_sources import read_stream_boundary_handoff_location_artifacts
-
-
-def coverage_domain_id(box_row, project_name: str, index: int, count: int) -> str:
-    """Return the SFINCS domain id for one coverage box."""
-    subregion_id = box_row.get("subregion_id") if hasattr(box_row, "get") else None
-    if subregion_id is not None and not pd.isna(subregion_id) and str(subregion_id).strip():
-        suffix = "".join(char.lower() if char.isalnum() else "_" for char in str(subregion_id)).strip("_")
-        if suffix.startswith(f"{project_name}_"):
-            return suffix
-        return f"{project_name}_{suffix}"
-    if count == 1:
-        return f"{project_name}_main"
-    if count == 2:
-        return f"{project_name}_{'west' if index == 0 else 'east'}"
-    return f"{project_name}_{index + 1:02d}"
-
-
-def coverage_box_crossings(
-    boxes: gpd.GeoDataFrame,
-    rivers: gpd.GeoDataFrame,
-    *,
-    project_name: str,
-    min_uparea_km2: float,
-    uparea_col: str = "uparea",
-) -> gpd.GeoDataFrame:
-    """Return every inflow crossing across all coverage boxes with stable ids."""
-    boxes = boxes.reset_index(drop=True)
-    count = len(boxes)
-    rows = []
-    for index, box_row in boxes.iterrows():
-        domain_id = coverage_domain_id(box_row, project_name, int(index), count)
-        crossings = stream_boundary_inflow_crossings(
-            rivers, box_row.geometry, min_uparea_km2=min_uparea_km2, uparea_col=uparea_col
-        )
-        for rank, (_, crossing) in enumerate(crossings.iterrows(), start=1):
-            rows.append(
-                {
-                    "sfincs_domain_id": domain_id,
-                    "sfincs_handoff_id": f"{domain_id}_inflow_{rank:02d}",
-                    "uparea_km2": float(crossing["uparea_km2"]),
-                    "geometry": crossing.geometry,
-                }
-            )
-    return gpd.GeoDataFrame(
-        rows,
-        columns=["sfincs_domain_id", "sfincs_handoff_id", "uparea_km2", "geometry"],
-        geometry="geometry",
-        crs=getattr(rivers, "crs", None),
-    )
+from coupling.reviewed_gages import (
+    accepted_streamgages_by_sfincs_domain,
+    accepted_streamgages_frame,
+    role_counts,
+    sorted_values,
+)
 
 
 def plan_wflow_domain_set_from_stream_boundary_crossings(config, paths):
@@ -253,9 +215,9 @@ def plan_wflow_domain_set_from_boundary_handoff_watersheds(config, paths):
                 "sfincs_domain_ids": [str(domain_id)],
                 "sfincs_handoff_ids": [point["sfincs_handoff_id"] for point in handoff_points],
                 "handoff_points": handoff_points,
-                "gauge_site_nos": _sorted_values(gage.get("site_no") for gage in domain_gages),
-                "frequency_basis": _sorted_values(gage.get("frequency_basis") for gage in domain_gages),
-                "role_counts": _role_counts(domain_gages),
+                "gauge_site_nos": sorted_values(gage.get("site_no") for gage in domain_gages),
+                "frequency_basis": sorted_values(gage.get("frequency_basis") for gage in domain_gages),
+                "role_counts": role_counts(domain_gages),
                 "watershed_source": watershed_source or "hydromt_primary_boundary_handoff_subbasin",
             }
         )
@@ -321,270 +283,13 @@ def boundary_handoff_submodels_from_source_artifacts(
                 "sfincs_domain_ids": [str(domain_id)],
                 "sfincs_handoff_ids": [point["sfincs_handoff_id"] for point in handoff_points],
                 "handoff_points": handoff_points,
-                "gauge_site_nos": _sorted_values(gage.get("site_no") for gage in domain_gages),
-                "frequency_basis": _sorted_values(gage.get("frequency_basis") for gage in domain_gages),
-                "role_counts": _role_counts(domain_gages),
+                "gauge_site_nos": sorted_values(gage.get("site_no") for gage in domain_gages),
+                "frequency_basis": sorted_values(gage.get("frequency_basis") for gage in domain_gages),
+                "role_counts": role_counts(domain_gages),
                 "watershed_source": watershed_source or "hydromt_primary_sfincs_handoff_subbasin",
             }
         )
     return submodels
-
-
-def select_encompassing_huc(coverage_geom, huc_loader, *, levels=(8, 6, 4), allow_union=True) -> dict:
-    """Return the WBD HUC domain that contains ``coverage_geom``."""
-    for level in levels:
-        hucs = huc_loader(level)
-        if hucs is None or len(hucs) == 0:
-            continue
-        containing = hucs[hucs.geometry.covers(coverage_geom)]
-        if not containing.empty:
-            areas = containing.geometry.to_crs("EPSG:5070").area if containing.crs else containing.geometry.area
-            smallest = containing.loc[areas.idxmin()]
-            huc_id = str(smallest.get("huc_id", ""))
-            huc_ids = [part for part in huc_id.split("_") if part]
-            kind = str(smallest.get("huc_kind", ""))
-            if kind not in {"single", "union"}:
-                kind = "union" if len(huc_ids) > 1 else "single"
-            return {
-                "level": int(level),
-                "kind": kind,
-                "huc_id": huc_id,
-                "huc_ids": huc_ids or [huc_id],
-                "geometry": smallest.geometry,
-            }
-
-    if allow_union:
-        for level in levels:
-            hucs = huc_loader(level)
-            if hucs is None or len(hucs) == 0:
-                continue
-            intersecting = hucs[hucs.geometry.intersects(coverage_geom)]
-            if intersecting.empty:
-                continue
-            union = intersecting.geometry.union_all()
-            if union.covers(coverage_geom):
-                huc_ids = [str(value) for value in intersecting.get("huc_id", [])]
-                return {
-                    "level": int(level),
-                    "kind": "union",
-                    "huc_id": "_".join(huc_ids),
-                    "huc_ids": huc_ids,
-                    "geometry": union,
-                }
-
-    raise ValueError(
-        "No WBD HUC (single or union) at levels "
-        f"{tuple(levels)} contains the coverage area; widen the levels (e.g. add 2)."
-    )
-
-
-def sfincs_coverage_boxes(config, location_root: Path) -> tuple[Path, gpd.GeoDataFrame]:
-    """Return the SFINCS hydraulic coverage boxes that Wflow must enclose."""
-    domain_set = config.get("sfincs_domain_set", {})
-    source_value = domain_set.get(
-        "source",
-        config.get("static_sources", {}).get("bbox", {}).get("output", "data/static/aoi/bbox.geojson"),
-    )
-    coverage_path = resolve_location_path(location_root, source_value)
-    if not coverage_path.exists():
-        return coverage_path, gpd.GeoDataFrame(columns=["subregion_id", "geometry"], geometry="geometry", crs="EPSG:4326")
-
-    source = gpd.read_file(coverage_path).to_crs("EPSG:4326")
-    records = _coverage_component_records(source)
-    if domain_set.get("allow_multiple_domains") is False and records:
-        records = [{"source_subregion_id": None, "geometry": unary_union([record["geometry"] for record in records])}]
-
-    project_name = str(config.get("project", {}).get("name", location_root.name))
-    region_geometry = str(domain_set.get("region_geometry", "component")).lower()
-    rows = []
-    count = len(records)
-    for index, record in enumerate(records):
-        domain_id = coverage_domain_id({"subregion_id": record.get("source_subregion_id")}, project_name, index, count)
-        geometry = record["geometry"]
-        if region_geometry in {"bbox", "bounding_box", "envelope"}:
-            geometry = geometry.envelope
-        rows.append(
-            {
-                "name": "sfincs_coverage_bbox",
-                "subregion_id": domain_id,
-                "source_subregion_id": record.get("source_subregion_id"),
-                "component_index": index,
-                "geometry": geometry,
-            }
-        )
-    include_domain_ids = _included_sfincs_domain_ids(domain_set)
-    if include_domain_ids:
-        rows = [row for row in rows if row["subregion_id"] in include_domain_ids]
-    return coverage_path, gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326")
-
-
-def stream_boundary_inflow_crossings(
-    rivers: gpd.GeoDataFrame,
-    coverage_bbox,
-    *,
-    min_uparea_km2: float,
-    uparea_col: str = "uparea",
-) -> gpd.GeoDataFrame:
-    """Return stream/coverage-box boundary crossings ranked by drainage area."""
-    boundary = coverage_bbox.boundary
-    rows = []
-    for river_index, row in rivers.iterrows():
-        geometry = row.geometry
-        if geometry is None or geometry.is_empty:
-            continue
-        uparea = float(row[uparea_col])
-        if uparea < float(min_uparea_km2):
-            continue
-        if not _flows_into(geometry, coverage_bbox):
-            continue
-        for point in _intersection_points(geometry.intersection(boundary)):
-            rows.append({"river_index": int(river_index), "uparea_km2": uparea, "geometry": point})
-
-    crossings = gpd.GeoDataFrame(
-        rows,
-        columns=["river_index", "uparea_km2", "geometry"],
-        geometry="geometry",
-        crs=rivers.crs,
-    )
-    return crossings.sort_values("uparea_km2", ascending=False).reset_index(drop=True)
-
-
-def load_crossing_rivers(config, location_root: Path) -> gpd.GeoDataFrame:
-    """Load stream geometry with a normalized ``uparea`` km2 column for crossing planning."""
-    rivers_path = resolve_location_path(
-        location_root,
-        config.get("collection", {})
-        .get("national_hydrography", {})
-        .get("river_geometry", "data/sources/national_hydrography/nhdplus_hr_river_geometry.gpkg"),
-    )
-    if not rivers_path.exists():
-        raise FileNotFoundError(f"Stream network for crossings is missing: {rivers_path}")
-    rivers = gpd.read_file(rivers_path).to_crs("EPSG:4326")
-    if rivers.empty:
-        raise FileNotFoundError(f"Stream network for crossings has no features: {rivers_path}")
-    uparea_col = _find_column(rivers, ("uparea", "uparea_km2", "totdasqkm"))
-    if uparea_col is None:
-        raise FileNotFoundError(f"Stream network has no drainage-area column (uparea/TotDASqKm): {rivers_path}")
-    if uparea_col != "uparea":
-        rivers = rivers.copy()
-        rivers["uparea"] = pd.to_numeric(rivers[uparea_col], errors="coerce")
-    return rivers
-
-
-def write_wflow_crossing_gauge_locations(config, paths, submodel: dict, *, output=None) -> dict:
-    """Write HydroMT-Wflow gauges for crossing-derived Wflow-SFINCS handoff points."""
-    location_root = location_root_from_paths(paths)
-    points = submodel.get("handoff_points")
-    if points:
-        records = [
-            {
-                "sfincs_handoff_id": str(point["sfincs_handoff_id"]),
-                "sfincs_domain_id": str(point.get("sfincs_domain_id", "")),
-                "lon": float(point["lon"]),
-                "lat": float(point["lat"]),
-                "uparea": float(point["uparea_km2"]) if point.get("uparea_km2") is not None else np.nan,
-            }
-            for point in points
-        ]
-    else:
-        region = submodel.get("region", {}) or {}
-        outlet_xy = (submodel.get("outlet_region") or region).get("subbasin") or region.get("subbasin")
-        if not outlet_xy:
-            raise ValueError(f"Wflow Submodel {submodel.get('wflow_submodel_id')} has no crossing outlet for a gauge")
-        handoff_id = next(
-            (str(value) for value in submodel.get("sfincs_handoff_ids", ()) if value),
-            str(submodel.get("wflow_submodel_id")),
-        )
-        uparea = region.get("uparea")
-        records = [
-            {
-                "sfincs_handoff_id": handoff_id,
-                "sfincs_domain_id": next((str(value) for value in submodel.get("sfincs_domain_ids", ()) if value), ""),
-                "lon": float(outlet_xy[0]),
-                "lat": float(outlet_xy[1]),
-                "uparea": float(uparea) if uparea is not None else np.nan,
-            }
-        ]
-
-    gauges = gpd.GeoDataFrame(
-        {
-            "index": range(1, len(records) + 1),
-            "name": [record["sfincs_handoff_id"] for record in records],
-            "uparea": [record["uparea"] for record in records],
-            "sfincs_handoff_id": [record["sfincs_handoff_id"] for record in records],
-            "wflow_submodel_id": [str(submodel.get("wflow_submodel_id"))] * len(records),
-            "sfincs_domain_id": [record["sfincs_domain_id"] for record in records],
-            "gauge_location_source": ["sfincs_stream_boundary_intersection"] * len(records),
-        },
-        geometry=[Point(record["lon"], record["lat"]) for record in records],
-        crs="EPSG:4326",
-    )
-    out_path = resolve_location_path(
-        location_root,
-        output
-        or Path(config.get("wflow", {}).get("gauges", {}).get("root", "data/wflow/domain_set_gauges"))
-        / f"{submodel['wflow_submodel_id']}_sfincs_gauges.geojson",
-    )
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    gauges.to_file(out_path, driver="GeoJSON")
-    outlet_source = str(config.get("wflow", {}).get("domain_set", {}).get("outlet_source", "reviewed_streamgages"))
-    snap_uparea = bool(gauges["uparea"].notna().all()) and outlet_source not in {
-        "boundary_handoff_watershed",
-        "stream_boundary_watershed",
-        "sfincs_boundary_watershed",
-    }
-    return {
-        "gauges_fn": out_path,
-        "gauge_count": int(len(gauges)),
-        "snap_to_river": True,
-        "snap_uparea": snap_uparea,
-        "wflow_submodel_id": str(submodel["wflow_submodel_id"]),
-        "sfincs_handoff_ids": tuple(record["sfincs_handoff_id"] for record in records),
-    }
-
-
-def accepted_streamgages_frame(network_path: Path) -> gpd.GeoDataFrame:
-    if not network_path.exists():
-        return gpd.GeoDataFrame(columns=["site_no", "geometry"], geometry="geometry", crs="EPSG:4326")
-    gages = _accepted_streamgages(network_path)
-    if not gages:
-        return gpd.GeoDataFrame(columns=["site_no", "geometry"], geometry="geometry", crs="EPSG:4326")
-    geometry = [Point(float(gage["longitude"]), float(gage["latitude"])) for gage in gages]
-    return gpd.GeoDataFrame(gages, geometry=geometry, crs="EPSG:4326")
-
-
-def accepted_streamgages_by_sfincs_domain(
-    accepted_gages,
-    boxes: gpd.GeoDataFrame,
-    project_name: str,
-) -> dict[str, list[dict]]:
-    by_domain: dict[str, list[dict]] = {}
-    if hasattr(accepted_gages, "to_dict"):
-        gage_records = accepted_gages.to_dict("records")
-    else:
-        gage_records = list(accepted_gages)
-    domain_ids = {
-        coverage_domain_id(box_row, project_name, int(index), len(boxes))
-        for index, box_row in boxes.reset_index(drop=True).iterrows()
-    }
-    for gage in gage_records:
-        domain_id = str(gage.get("sfincs_domain_id") or "")
-        if domain_id in domain_ids:
-            by_domain.setdefault(domain_id, []).append(gage)
-    if by_domain:
-        return by_domain
-
-    boxes_wgs = boxes.to_crs("EPSG:4326") if boxes.crs is not None else boxes
-    for gage in gage_records:
-        try:
-            point = Point(float(gage["longitude"]), float(gage["latitude"]))
-        except Exception:
-            continue
-        for index, box_row in boxes_wgs.reset_index(drop=True).iterrows():
-            if box_row.geometry is not None and box_row.geometry.intersects(point):
-                domain_id = coverage_domain_id(box_row, project_name, int(index), len(boxes_wgs))
-                by_domain.setdefault(domain_id, []).append(gage)
-    return by_domain
 
 
 def source_artifact_handoff_points_by_domain(
@@ -649,15 +354,6 @@ def hydromt_boundary_handoff_subbasin_region(
     return region
 
 
-def coverage_domain_geometries(boxes: gpd.GeoDataFrame, project_name: str) -> dict[str, object]:
-    count = len(boxes)
-    return {
-        coverage_domain_id(box_row, project_name, int(index), count): box_row.geometry
-        for index, box_row in boxes.reset_index(drop=True).iterrows()
-        if box_row.geometry is not None and not box_row.geometry.is_empty
-    }
-
-
 def reviewed_wflow_watershed_region(
     config: dict,
     location_root: Path,
@@ -713,94 +409,6 @@ def reviewed_wflow_watershed_region(
     return {"geom": output_path.as_posix()}, relative_output, "reviewed_wflow_watershed_geometry"
 
 
-def subbasin_submodels_from_crossings(
-    crossings: gpd.GeoDataFrame,
-    *,
-    project_name: str,
-    sfincs_domain_id: str,
-) -> list[dict]:
-    """Turn ranked inflow crossings into Wflow subbasin submodel descriptors."""
-    submodels = []
-    for rank, (_, crossing) in enumerate(crossings.iterrows(), start=1):
-        submodel_id = f"{sfincs_domain_id}_inflow_{rank:02d}"
-        outlet_xy = [float(crossing.geometry.x), float(crossing.geometry.y)]
-        submodels.append(
-            {
-                "wflow_submodel_id": submodel_id,
-                "region_kind": "subbasin",
-                "region": {"subbasin": outlet_xy, "uparea": float(crossing["uparea_km2"])},
-                "outlet_region": {"subbasin": outlet_xy},
-                "subbasin_geometry": None,
-                "sfincs_domain_ids": [sfincs_domain_id],
-                "sfincs_handoff_ids": [submodel_id],
-                "gauge_site_nos": [],
-                "frequency_basis": [],
-                "role_counts": {},
-            }
-        )
-    return submodels
-
-
-def _coverage_component_records(source: gpd.GeoDataFrame) -> list[dict]:
-    if source.empty:
-        return []
-    if "subregion_id" in source.columns:
-        records = []
-        for _, row in source.iterrows():
-            geometry = row.geometry
-            if geometry is None or geometry.is_empty:
-                continue
-            subregion_id = row.get("subregion_id")
-            subregion_id = None if pd.isna(subregion_id) else str(subregion_id)
-            polygons = list(geometry.geoms) if geometry.geom_type == "MultiPolygon" else [geometry]
-            records.extend(
-                {"source_subregion_id": subregion_id, "geometry": polygon}
-                for polygon in polygons
-                if polygon is not None and not polygon.is_empty
-            )
-        return sorted(
-            records,
-            key=lambda record: (
-                str(record["source_subregion_id"] or ""),
-                record["geometry"].centroid.x,
-                record["geometry"].centroid.y,
-            ),
-        )
-
-    geometry = source.geometry.union_all()
-    if geometry.is_empty:
-        return []
-    polygons = list(geometry.geoms) if geometry.geom_type == "MultiPolygon" else [geometry]
-    return [
-        {"source_subregion_id": None, "geometry": polygon}
-        for polygon in sorted(polygons, key=lambda geom: (geom.centroid.x, geom.centroid.y))
-    ]
-
-
-def _included_sfincs_domain_ids(domain_set) -> set[str]:
-    values = domain_set.get("include_domain_ids", ())
-    return {str(value).strip() for value in values if str(value).strip()}
-
-
-def _accepted_streamgages(path: Path) -> list[dict]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    rows = []
-    for feature in payload.get("features", []):
-        properties = dict(feature.get("properties", {}))
-        if str(properties.get("status", "")).lower() != "active":
-            continue
-        if str(properties.get("review_status", "")).lower() not in {"accepted", "accepted_with_warning"}:
-            continue
-        coordinates = (feature.get("geometry") or {}).get("coordinates") or []
-        if len(coordinates) < 2:
-            continue
-        properties["site_no"] = str(properties.get("site_no", ""))
-        properties["longitude"] = coordinates[0]
-        properties["latitude"] = coordinates[1]
-        rows.append(properties)
-    return rows
-
-
 def _select_reviewed_watershed_rows(watersheds: gpd.GeoDataFrame, domain_id: str, domain_geometry) -> gpd.GeoDataFrame:
     for column in ("wflow_submodel_id", "sfincs_domain_id", "subregion_id"):
         if column in watersheds.columns:
@@ -838,64 +446,10 @@ def _primary_handoff_subbasin_point(handoff_points: list[dict]) -> dict:
     return sorted(handoff_points, key=sort_key)[0]
 
 
-def _sorted_values(values) -> tuple:
-    return tuple(sorted({str(value) for value in values if value not in {None, ""}}))
-
-
-def _role_counts(gages: list[dict]) -> dict:
-    counts = {}
-    for gage in gages:
-        roles = gage.get("roles") or []
-        if isinstance(roles, str):
-            roles = [role.strip() for role in roles.split(",")]
-        for role in roles:
-            if role:
-                counts[str(role)] = counts.get(str(role), 0) + 1
-    return {role: counts[role] for role in sorted(counts)}
-
-
-def _find_column(frame: gpd.GeoDataFrame, candidates: tuple[str, ...]) -> str | None:
-    columns = {str(column).lower(): column for column in frame.columns}
-    for candidate in candidates:
-        column = columns.get(str(candidate).lower())
-        if column is not None:
-            return column
-    return None
-
-
-def _flows_into(river: LineString, coverage_bbox) -> bool:
-    downstream_end = Point(river.coords[-1])
-    return coverage_bbox.covers(downstream_end)
-
-
-def _intersection_points(geometry) -> list[Point]:
-    if geometry is None or geometry.is_empty:
-        return []
-    if isinstance(geometry, Point):
-        return [geometry]
-    if isinstance(geometry, MultiPoint):
-        return list(geometry.geoms)
-    if isinstance(geometry, LineString):
-        return [geometry.interpolate(0.5, normalized=True)]
-    if isinstance(geometry, GeometryCollection) or hasattr(geometry, "geoms"):
-        points = []
-        for part in geometry.geoms:
-            points.extend(_intersection_points(part))
-        return points
-    return []
 
 
 __all__ = [
-    "coverage_box_crossings",
-    "coverage_domain_id",
-    "coverage_domain_geometries",
-    "load_crossing_rivers",
     "plan_wflow_domain_set_from_boundary_handoff_watersheds",
     "plan_wflow_domain_set_from_stream_boundary_crossings",
     "source_artifact_handoff_points_by_domain",
-    "select_encompassing_huc",
-    "sfincs_coverage_boxes",
-    "stream_boundary_inflow_crossings",
-    "subbasin_submodels_from_crossings",
-    "write_wflow_crossing_gauge_locations",
 ]

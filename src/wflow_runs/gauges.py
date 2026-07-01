@@ -10,7 +10,7 @@ import yaml
 from shapely.geometry import Point
 
 from paths import location_root_from_paths, resolve_location_path
-from coupling.domain_set import write_wflow_crossing_gauge_locations
+from coupling.wflow_gauges import write_wflow_crossing_gauge_locations
 from coupling.handoff_sources import (
     read_stream_boundary_handoff_location_artifacts,
     read_stream_boundary_handoff_locations,

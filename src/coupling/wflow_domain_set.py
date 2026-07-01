@@ -3,22 +3,25 @@
 from __future__ import annotations
 
 from copy import deepcopy
-import json
 from pathlib import Path
 
 import geopandas as gpd
 import pandas as pd
-from shapely.geometry import Point
 
 from paths import location_root_from_paths, relative_to_or_absolute, resolve_location_path
-from coupling.domain_set import (
+from coupling.domain_geometry import (
+    coverage_box_crossings,
     coverage_domain_id,
     load_crossing_rivers,
+    select_encompassing_huc,
+    sfincs_coverage_boxes,
+)
+from coupling.domain_set import (
     plan_wflow_domain_set_from_boundary_handoff_watersheds,
     plan_wflow_domain_set_from_stream_boundary_crossings,
     source_artifact_handoff_points_by_domain,
-    sfincs_coverage_boxes,
 )
+from coupling.reviewed_gages import accepted_streamgages, accepted_streamgages_frame, role_counts, sorted_values
 import wflow_runs.hydromt_recipe as hydromt_recipe
 import wflow_runs.types as wflow_types
 
@@ -53,7 +56,7 @@ def plan_wflow_domain_set_from_streamgages(config, paths) -> wflow_types.WflowDo
             issues=(f"Reviewed Streamgage Network Artifact is missing: {network_path}",),
         )
 
-    gages = _accepted_streamgages(network_path)
+    gages = accepted_streamgages(network_path)
     issues = _schema_issues(gages)
     domain_set = wflow.get("domain_set", {})
     if domain_set.get("allow_multiple_submodels") is False:
@@ -77,11 +80,11 @@ def plan_wflow_domain_set_from_streamgages(config, paths) -> wflow_types.WflowDo
                     "region": region,
                     "outlet_region": region,
                     "subbasin_geometry": None,
-                    "sfincs_domain_ids": _sorted_values(gage.get("sfincs_domain_id") for gage in handoff_gages),
-                    "sfincs_handoff_ids": _sorted_values(gage.get("sfincs_handoff_id") for gage in handoff_gages),
-                    "gauge_site_nos": _sorted_values(gage.get("site_no") for gage in gages),
-                    "frequency_basis": _sorted_values(gage.get("frequency_basis") for gage in gages),
-                    "role_counts": _role_counts(gages),
+                    "sfincs_domain_ids": sorted_values(gage.get("sfincs_domain_id") for gage in handoff_gages),
+                    "sfincs_handoff_ids": sorted_values(gage.get("sfincs_handoff_id") for gage in handoff_gages),
+                    "gauge_site_nos": sorted_values(gage.get("site_no") for gage in gages),
+                    "frequency_basis": sorted_values(gage.get("frequency_basis") for gage in gages),
+                    "role_counts": role_counts(gages),
                 }
             )
         status = "ready" if submodels and not issues else "review_required"
@@ -116,11 +119,11 @@ def plan_wflow_domain_set_from_streamgages(config, paths) -> wflow_types.WflowDo
                 "region": _hydromt_subbasin_region(outlet_xy, outlet),
                 "outlet_region": outlet_region,
                 "subbasin_geometry": None,
-                "sfincs_domain_ids": _sorted_values(gage.get("sfincs_domain_id") for gage in group),
-                "sfincs_handoff_ids": _sorted_values(gage.get("sfincs_handoff_id") for gage in handoff_gages),
-                "gauge_site_nos": _sorted_values(gage.get("site_no") for gage in group),
-                "frequency_basis": _sorted_values(gage.get("frequency_basis") for gage in group),
-                "role_counts": _role_counts(group),
+                "sfincs_domain_ids": sorted_values(gage.get("sfincs_domain_id") for gage in group),
+                "sfincs_handoff_ids": sorted_values(gage.get("sfincs_handoff_id") for gage in handoff_gages),
+                "gauge_site_nos": sorted_values(gage.get("site_no") for gage in group),
+                "frequency_basis": sorted_values(gage.get("frequency_basis") for gage in group),
+                "role_counts": role_counts(group),
             }
         )
 
@@ -154,8 +157,6 @@ def plan_wflow_domain_set(config, paths) -> wflow_types.WflowDomainSetPlan:
 
 def plan_wflow_domain_set_from_encompassing_huc(config, paths) -> wflow_types.WflowDomainSetPlan:
     """Plan one Wflow basin per SFINCS coverage box from the smallest encapsulating WBD HUC."""
-    from coupling.domain_set import coverage_box_crossings, select_encompassing_huc
-
     location_root = location_root_from_paths(paths)
     domain_set = config.get("wflow", {}).get("domain_set", {})
     crossings_cfg = domain_set.get("crossings", {})
@@ -197,7 +198,7 @@ def plan_wflow_domain_set_from_encompassing_huc(config, paths) -> wflow_types.Wf
         .get("streamgage_network", {})
         .get("reviewed_network", "data/sources/usgs_streamgages/streamgage_network.geojson"),
     )
-    accepted_gages = _accepted_streamgages_frame(network_path)
+    accepted_gages = accepted_streamgages_frame(network_path)
     crossings = coverage_box_crossings(boxes, rivers, project_name=project_name, min_uparea_km2=min_uparea_km2)
     artifact_handoff_points = source_artifact_handoff_points_by_domain(
         config,
@@ -273,9 +274,9 @@ def plan_wflow_domain_set_from_encompassing_huc(config, paths) -> wflow_types.Wf
                 "sfincs_domain_ids": [domain_id],
                 "sfincs_handoff_ids": [point["sfincs_handoff_id"] for point in handoff_points],
                 "handoff_points": handoff_points,
-                "gauge_site_nos": _sorted_values(gage.get("site_no") for gage in huc_gages),
-                "frequency_basis": _sorted_values(gage.get("frequency_basis") for gage in huc_gages),
-                "role_counts": _role_counts(huc_gages),
+                "gauge_site_nos": sorted_values(gage.get("site_no") for gage in huc_gages),
+                "frequency_basis": sorted_values(gage.get("frequency_basis") for gage in huc_gages),
+                "role_counts": role_counts(huc_gages),
                 "huc_id": "_".join(selected["huc_ids"]),
                 "huc_ids": selected["huc_ids"],
                 "huc_level": int(selected["level"]),
@@ -312,13 +313,7 @@ def plan_wflow_domain_set_from_encompassing_huc(config, paths) -> wflow_types.Wf
     status = "ready" if not issues else "review_required"
     handoff_count = sum(len(submodel["handoff_points"]) for submodel in submodels)
     return wflow_types.WflowDomainSetPlan(
-        coverage_path,
-        status,
-        len(accepted_gages),
-        len(submodels),
-        handoff_count,
-        tuple(submodels),
-        tuple(issues),
+        coverage_path, status, len(accepted_gages), len(submodels), handoff_count, tuple(submodels), tuple(issues)
     )
 
 
@@ -379,16 +374,6 @@ def _cached_wbd_hucs(config, location_root: Path, coverage_union, level: int) ->
     return cached
 
 
-def _accepted_streamgages_frame(network_path: Path) -> gpd.GeoDataFrame:
-    if not network_path.exists():
-        return gpd.GeoDataFrame(columns=["site_no", "geometry"], geometry="geometry", crs="EPSG:4326")
-    gages = _accepted_streamgages(network_path)
-    if not gages:
-        return gpd.GeoDataFrame(columns=["site_no", "geometry"], geometry="geometry", crs="EPSG:4326")
-    geometry = [Point(float(gage["longitude"]), float(gage["latitude"])) for gage in gages]
-    return gpd.GeoDataFrame(gages, geometry=geometry, crs="EPSG:4326")
-
-
 def _streamgages_in_geometry(gages: gpd.GeoDataFrame, geometry) -> list[dict]:
     if gages.empty:
         return []
@@ -436,41 +421,6 @@ def _drainage_area_km2(drainage_area_sqmi) -> float | None:
     if pd.isna(drainage_area_sqmi):
         return None
     return float(drainage_area_sqmi) * 2.589988110336
-
-
-def _accepted_streamgages(path: Path) -> list[dict]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    rows = []
-    for feature in payload.get("features", []):
-        properties = dict(feature.get("properties", {}))
-        if str(properties.get("status", "")).lower() != "active":
-            continue
-        if str(properties.get("review_status", "")).lower() not in {"accepted", "accepted_with_warning"}:
-            continue
-        coordinates = (feature.get("geometry") or {}).get("coordinates") or []
-        if len(coordinates) < 2:
-            continue
-        properties["site_no"] = str(properties.get("site_no", ""))
-        properties["longitude"] = coordinates[0]
-        properties["latitude"] = coordinates[1]
-        rows.append(properties)
-    return rows
-
-
-def _sorted_values(values) -> tuple:
-    return tuple(sorted({str(value) for value in values if value not in {None, ""}}))
-
-
-def _role_counts(gages: list[dict]) -> dict:
-    counts = {}
-    for gage in gages:
-        roles = gage.get("roles") or []
-        if isinstance(roles, str):
-            roles = [role.strip() for role in roles.split(",")]
-        for role in roles:
-            if role:
-                counts[str(role)] = counts.get(str(role), 0) + 1
-    return {role: counts[role] for role in sorted(counts)}
 
 
 def _schema_issues(gages: list[dict]) -> list[str]:

@@ -12,7 +12,7 @@ from collect_sources.aorc_event_meteo import (
 )
 from event_forcing import find_aorc_event_window, prepare_aorc_precip_for_sfincs
 from paths import resolve_location_path, write_json
-from wflow_runs.event import (
+from wflow_runs.event_catalog import (
     catalog_rainfall_start,
     event_window,
     legacy_event_catalog_row,

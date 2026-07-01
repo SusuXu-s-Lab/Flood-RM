@@ -22,7 +22,7 @@ from wflow_runs.repairs import (
     repair_wflow_river_width,
 )
 from wflow_runs.staticmaps_qa import validate_staticmaps
-from wflow_runs.notebook import (
+from wflow_runs.hydromt_runtime import (
     _describe_hydromt_command,
     _hydromt_subprocess_env,
     _resolve_hydromt_command,
@@ -30,10 +30,12 @@ from wflow_runs.notebook import (
 from wflow_runs.states import prepare_wflow_event_instate
 from wflow_runs.event import (
     clean_legacy_replay_submodel_output_dir,
-    event_reference_time,
-    event_window,
     write_legacy_replay_data_catalog,
     write_legacy_replay_update_config,
+)
+from wflow_runs.event_catalog import (
+    event_reference_time,
+    event_window,
 )
 from wflow_runs.domain import configured_or_manifest_submodels as _v2_configured_or_manifest_submodels
 from wflow_runs.runner import clean_output_dir as _v2_clean_output_dir

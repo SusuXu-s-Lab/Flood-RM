@@ -9,7 +9,7 @@ import xarray as xr
 
 from event_streamflow import finite_float
 from paths import resolve_location_path
-from wflow_runs.event import legacy_event_catalog_row
+from wflow_runs.event_catalog import legacy_event_catalog_row
 from wflow_runs.output import match_gauge_column, resolve_wflow_output_csv
 
 CFS_TO_CMS = 0.028316846592
