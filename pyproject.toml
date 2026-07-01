@@ -59,6 +59,7 @@ build-backend = "hatchling.build"
 packages = [
     "src/design_events",
     "src/collect_sources",
+    "src/coupling",
     "src/sfincs_runs",
     "src/wflow_runs",
     "src/power",
@@ -67,6 +68,7 @@ packages = [
 only-include = [
     "src/design_events",
     "src/collect_sources",
+    "src/coupling",
     "src/sfincs_runs",
     "src/wflow_runs",
     "src/power",
@@ -74,6 +76,7 @@ only-include = [
     "src/study_location.py",
     "src/location_runtime.py",
     "src/paths.py",
+    "src/event_forcing.py",
     "src/aoi.py",
     "src/source_artifacts.py",
 ]

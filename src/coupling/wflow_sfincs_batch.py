@@ -10,7 +10,7 @@ import time
 import pandas as pd
 
 from sfincs_runs.config import load_runtime
-from wflow_runs.dynamic_handoff import (
+from coupling.dynamic_handoff import (
     dynamic_handoff_paths,
     prepare_handoff,
     require_handoff,
@@ -27,13 +27,7 @@ def dynamic_handoff_batch_worklist(
     status: str = "blocked",
     limit=None,
 ) -> pd.DataFrame:
-    """Build a Wflow dynamic handoff batch worklist.
-
-    ``status="blocked"`` selects events without current accepted handoff
-    artifacts that are still compatible with the reviewed Wflow gauge set.
-    ``status="accepted"`` selects already-ready events, and ``status="all"``
-    selects every requested catalog event including incompatible diagnostics.
-    """
+    """Build a Wflow dynamic handoff batch worklist."""
     from sfincs_runs.scenarios import handoff_readiness
 
     location_root = Path(location_root)
@@ -66,12 +60,7 @@ def run_handoffs(
     force: bool = False,
     overwrite_meteo: bool = False,
 ) -> pd.DataFrame:
-    """Prepare Wflow dynamic handoffs for a batch of events.
-
-    This is the batch equivalent of ``04/b_prepare_wflow_dynamic_handoff``:
-    it writes per-event Wflow meteo forcing, runs Wflow replay and zero-rain QA
-    when ``execute=True``, and records an acceptance JSON per event.
-    """
+    """Prepare Wflow dynamic handoffs for a batch of Wflow-SFINCS events."""
     location_root = Path(location_root)
     worklist = dynamic_handoff_batch_worklist(
         config,
@@ -149,8 +138,6 @@ def run_handoffs(
             if execute:
                 break
     return pd.DataFrame(rows)
-
-
 
 
 def _parse_args(argv=None):

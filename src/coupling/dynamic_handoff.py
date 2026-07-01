@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from wflow_runs.handoff_locations import read_stream_boundary_handoff_location_artifacts
+from coupling.handoff_sources import read_stream_boundary_handoff_location_artifacts
 from wflow_runs.coupling_qa import (
     read_dynamic_handoff_acceptance,
     validate_dynamic_handoff,
@@ -22,9 +22,9 @@ from wflow_runs.replay import (
     resolve_event_window,
     run_zero_rain_control,
 )
-from wflow_runs.build_plan import validate_wflow_reservoir_staticmaps, validate_staticmaps, write_wflow_reservoir_readiness
+from wflow_runs.reservoirs import validate_wflow_reservoir_staticmaps, write_wflow_reservoir_readiness
+from wflow_runs.staticmaps_qa import validate_staticmaps
 from wflow_runs.states import plan_wflow_warmup_state, validate_warmup_forcing, validate_instates, write_cold_state_workflow
-from wflow_runs.streamflow_realization import validate_wflow_streamflow_realization
 from paths import resolve_location_path
 from wflow_runs.event import (
     event_paths as v2_event_paths,
@@ -478,16 +478,4 @@ def _reservoirs_enabled(config: dict) -> bool:
         ((config.get("collection", {}) or {}).get("national_hydrography", {}) or {})
         .get("reservoirs", {})
         .get("enabled", False)
-    )
-
-
-def plan_streamflow(config: dict, location_root, event_id: str, *, catalog_path=None) -> pd.DataFrame:
-    """Notebook-facing readiness report for event streamflow consumed by Wflow."""
-    return validate_wflow_streamflow_realization(
-        config,
-        location_root,
-        event_id,
-        catalog_path=catalog_path,
-        event_model_root=None,
-        raise_on_error=False,
     )

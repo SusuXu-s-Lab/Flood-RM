@@ -154,7 +154,7 @@ def _reference_gage_simulated_peak_cms(
     """
     import geopandas as gpd
 
-    from wflow_runs.replay import _match_gauge_column, _resolve_wflow_output_csv
+    from wflow_runs.output import match_gauge_column, resolve_wflow_output_csv
 
     reference_gage = str(reference_gage)
     for entry in submodel_runs or []:
@@ -171,11 +171,11 @@ def _reference_gage_simulated_peak_cms(
         if match.empty:
             continue
         try:
-            csv_path = _resolve_wflow_output_csv(run_output_dir, None)
+            csv_path = resolve_wflow_output_csv(run_output_dir, None)
             table = pd.read_csv(csv_path, index_col=0, parse_dates=True)
         except (FileNotFoundError, ValueError):
             continue
-        column = _match_gauge_column(table.columns, match.iloc[0]["index"])
+        column = match_gauge_column(table.columns, match.iloc[0]["index"])
         if column is None:
             continue
         peak = float(pd.to_numeric(table[column], errors="coerce").max())

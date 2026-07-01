@@ -184,7 +184,7 @@ def wflow_artifact_inventory(
 
     reservoir_readiness = pd.DataFrame()
     if _reservoirs_enabled(config):
-        from wflow_runs.build_plan import write_wflow_reservoir_readiness
+        from wflow_runs.reservoirs import write_wflow_reservoir_readiness
 
         reservoir_readiness = write_wflow_reservoir_readiness(config, location_root, raise_on_error=False)
         if not reservoir_readiness.empty and reservoir_readiness["status"].isin(["failed"]).any():
@@ -359,7 +359,7 @@ def _handoff_upareas(location_root: Path, reference_gage: str, gpd):
 
 
 def _sfincs_domain_gdf(location_root: Path, sfincs_domains: list[dict], gpd):
-    layers = [gpd.read_file(_location_path(location_root, domain["region"])) for domain in sfincs_domains]
+    layers = [gpd.read_file(resolve_location_path(location_root, domain["region"])) for domain in sfincs_domains]
     frame = pd.concat(layers, ignore_index=True)
     return gpd.GeoDataFrame(frame, geometry="geometry", crs=layers[0].crs).to_crs(4326)
 
@@ -369,12 +369,12 @@ def _wflow_watershed_gdf(config: dict, location_root: Path, wflow_domain_plan, g
     for submodel in wflow_domain_plan.submodels:
         watershed_path = submodel.get("subbasin_geometry")
         if watershed_path:
-            watershed = gpd.read_file(_location_path(location_root, watershed_path)).to_crs(4326)
+            watershed = gpd.read_file(resolve_location_path(location_root, watershed_path)).to_crs(4326)
             watershed["wflow_submodel_id"] = submodel["wflow_submodel_id"]
             layers.append(watershed)
     if not layers:
         watershed_path = config["static_sources"]["wflow_collection_extent"]["watersheds"]
-        layers.append(gpd.read_file(_location_path(location_root, watershed_path)).to_crs(4326))
+        layers.append(gpd.read_file(resolve_location_path(location_root, watershed_path)).to_crs(4326))
     return gpd.GeoDataFrame(pd.concat(layers, ignore_index=True), geometry="geometry", crs=layers[0].crs).to_crs(4326)
 
 
@@ -500,10 +500,6 @@ def _match_gauge(gauges, gauge_id: str):
     if "sfincs_handoff_id" in gauges:
         return gauges[gauges["sfincs_handoff_id"].astype(str).eq(gauge_id)]
     return gauges[gauges["name"].astype(str).eq(gauge_id)]
-
-
-def _location_path(location_root: Path, value) -> Path:
-    return resolve_location_path(location_root, value)
 
 
 def _relative_path(path: Path, root: Path) -> str:

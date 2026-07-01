@@ -17,7 +17,7 @@ from sfincs_runs.inland_coupled import (
     stage_inland_coupled_scenario_forcing,
     stage_scenarios,
 )
-from wflow_runs.dynamic_handoff_batch import run_handoffs
+from coupling.wflow_sfincs_batch import run_handoffs
 from paths import resolve_location_path
 
 

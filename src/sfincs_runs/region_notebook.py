@@ -21,7 +21,7 @@ from shapely.ops import split
 from collect_sources.ssurgo import ssurgo_attribute_columns
 from collect_sources.national_hydrography import WBD_MAPSERVER, fetch_nhdplus_hr_catchments, fetch_wbd_huc
 from paths import resolve_location_path
-from sfincs_runs.crossings import select_encompassing_huc
+from coupling.domain_set import select_encompassing_huc
 from sfincs_runs.inland_base import (
     plan_inland_sfincs_domain_set,
     write_inland_sfincs_domain_set_manifest,
@@ -41,8 +41,14 @@ from sfincs_runs.static_intake import (
 )
 from sfincs_runs.config import build_paths as build_sfincs_paths
 from study_location import build_study_area, define_location
-from wflow_runs.build_plan import write_wflow_crossing_gauge_locations, write_wflow_domain_set_manifest
-from wflow_runs.notebook import exists_table, prepare_wflow_subbasin_fabric, domain_summary, subbasins
+from coupling.wflow_sfincs_build import (
+    domain_summary,
+    exists_table,
+    prepare_wflow_subbasin_fabric,
+    subbasins,
+    write_wflow_crossing_gauge_locations,
+    write_wflow_domain_set_manifest,
+)
 
 
 @dataclass(frozen=True)

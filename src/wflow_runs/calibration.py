@@ -8,8 +8,8 @@ import numpy as np
 import pandas as pd
 
 from collect_sources.usgs_streamgages import fetch_nwis_discharge_records
-from wflow_runs.dynamic_handoff import plan_handoff
-from wflow_runs.dynamic_handoff_batch import run_handoffs
+from coupling.dynamic_handoff import plan_handoff
+from coupling.wflow_sfincs_batch import run_handoffs
 from wflow_runs.replay import _event_reference_time, resolve_event_window
 from wflow_runs.usgs import usgs_instantaneous_streamflow_spec
 

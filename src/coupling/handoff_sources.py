@@ -80,6 +80,22 @@ def crossing_handoff_sources(domain_plan) -> gpd.GeoDataFrame:
     return gpd.GeoDataFrame(rows, geometry="geometry", crs="EPSG:4326")
 
 
+def crossing_handoff_sources_from_wflow_domain_plan(
+    config: dict,
+    location_root: Path,
+    *,
+    plan_wflow_domain_set=None,
+) -> gpd.GeoDataFrame:
+    """Return crossing-derived SFINCS source points from the Wflow Domain Set plan."""
+    if plan_wflow_domain_set is None:
+        from wflow_runs.build_plan import plan_wflow_domain_set
+
+    plan = plan_wflow_domain_set(config, {"location_root": location_root})
+    if plan.status != "ready":
+        raise ValueError(f"Crossing-derived Wflow domain plan is not ready: {plan.status}: {plan.issues}")
+    return crossing_handoff_sources(plan)
+
+
 def _candidate_handoff_source_paths(config: dict, location_root: Path, location_path) -> list[Path]:
     paths = []
     manifest_value = config.get("sfincs_domain_set", {}).get(

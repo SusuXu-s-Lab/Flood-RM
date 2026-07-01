@@ -2,7 +2,7 @@ import os
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
-from sfincs_runs import crossings as crossings
+from coupling import domain_set as crossings
 from sfincs_runs import infiltration as infiltration
 from sfincs_runs import inland_base as inland_base
 from sfincs_runs import plan as plan

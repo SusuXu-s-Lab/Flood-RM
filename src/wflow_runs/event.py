@@ -11,11 +11,12 @@ import pandas as pd
 import xarray as xr
 import yaml
 
-from .api import BoundaryRun, DesignEvent
 from .domain import domain_submodels, model_crs, read_handoff_artifacts, read_handoff_points
 from .qa import read_acceptance, validate_event_boundary, write_acceptance
 from .states import prepare_event_instate, validate_instates
+from .types import BoundaryRun, DesignEvent
 from paths import resolve_location_path, write_json
+from wflow_runs.output import match_gauge_column, wflow_output_csv
 from wflow_runs.runner import clean_output_dir, run_solver, zero_event_forcing
 
 CFS_TO_CMS = 0.028316846592
@@ -486,7 +487,7 @@ def _native_gauge_discharge(run_model_root, gauges_geojson, *, run_output_dir=No
 
     root = Path(run_model_root)
     model = _read_model(root, model_cls=model_cls, mode="r")
-    csv_path = _output_csv(run_output_dir or root / "run_event")
+    csv_path = wflow_output_csv(run_output_dir or root / "run_event")
     outputs = wflow_utils.read_csv_output(csv_path, model.config.data, model.staticmaps.data)
     gauges = gpd.read_file(gauges_geojson)
     if "sfincs_handoff_id" not in gauges:
@@ -523,7 +524,7 @@ def _fallback_gauge_discharge(run_output_dir, gauges_geojson):
     import geopandas as gpd
 
     gauges = gpd.read_file(gauges_geojson)
-    table = pd.read_csv(_output_csv(run_output_dir), index_col=0, parse_dates=True)
+    table = pd.read_csv(wflow_output_csv(run_output_dir), index_col=0, parse_dates=True)
     table.index = pd.DatetimeIndex(table.index)
     series: dict[str, pd.Series] = {}
     points: dict[str, tuple[float, float]] = {}
@@ -553,22 +554,6 @@ def _index_from_label(value) -> int | None:
 
     match = re.search(r"(\d+)$", str(value))
     return int(match.group(1)) if match else None
-
-
-def match_gauge_column(columns, index_value) -> str | None:
-    try:
-        index_text = str(int(float(index_value)))
-    except Exception:
-        return None
-    exact = {f"Q_{index_text}", f"Q_gauges_sfincs_{index_text}", f"river_q_{index_text}"}
-    for column in columns:
-        if str(column) in exact:
-            return str(column)
-    for column in columns:
-        text = str(column)
-        if text.startswith(("Q", "river_q")) and text.endswith(f"_{index_text}"):
-            return text
-    return None
 
 
 def apply_same_frequency_amplification(config: dict[str, Any], location_root: str | Path, event: DesignEvent, *, discharge_nc: str | Path, submodel_outputs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -613,7 +598,7 @@ def reference_gage_peak(config: dict[str, Any], location_root: str | Path, refer
         match = gauges[gauges["site_no"].astype(str).str.zfill(8).eq(str(reference_gage).zfill(8))]
         if match.empty:
             continue
-        csv_path = _output_csv(item["run_output_dir"])
+        csv_path = wflow_output_csv(item["run_output_dir"])
         table = pd.read_csv(csv_path, index_col=0, parse_dates=True)
         col = match_gauge_column(table.columns, match.iloc[0].get("index"))
         if col is None:
@@ -683,18 +668,6 @@ def _wflow_model_cls(model_cls=None):
     from hydromt_wflow import WflowSbmModel
 
     return WflowSbmModel
-
-
-def _output_csv(run_output_dir: str | Path) -> Path:
-    root = Path(run_output_dir)
-    for name in ["output.csv", "output_scalar.csv"]:
-        candidate = root / name
-        if candidate.exists():
-            return candidate
-    matches = sorted(root.rglob("*.csv"))
-    if not matches:
-        raise FileNotFoundError(f"no Wflow output CSV under {root}")
-    return matches[0]
 
 
 def _require_event_forcing(event: DesignEvent) -> None:

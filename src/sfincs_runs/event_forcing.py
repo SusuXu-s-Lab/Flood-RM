@@ -2,7 +2,6 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
-import re
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 
@@ -13,8 +12,8 @@ import xarray as xr
 from pyproj import Transformer
 from shapely.geometry import Point
 
+from event_forcing import find_aorc_event_window, prepare_aorc_precip_for_sfincs
 from sfincs_runs.config import parse_sfincs_inp
-from sfincs_runs.hydrology import prepare_aorc_precip_for_sfincs
 from sfincs_runs.scenario_events import (
     assert_event_catalog_audit,
     build_event_timeseries,
@@ -472,7 +471,7 @@ def hydrology_inputs(forcing: EventForcing, *, paths, config):
         hydrology_cfg.get("precipitation", {}).get("event_windows_dir")
         or rainfall_member_file.parent / "event_windows"
     )
-    rainfall_source_nc = _find_aorc_event_window(
+    rainfall_source_nc = find_aorc_event_window(
         _resolve_catalog_path(rainfall_windows_dir, paths=paths),
         member_id=rainfall_member_id,
         storm_start=rainfall_member_time,
@@ -913,30 +912,6 @@ def _required_catalog_value(catalog, key):
 def _resolve_catalog_path(value, *, paths):
     location_root = Path(paths.get("location_root", "."))
     return resolve_location_path(location_root, value)
-
-
-def _find_aorc_event_window(event_windows_dir, *, member_id=None, storm_start=None):
-    """Find one local AORC storm-window NetCDF by rank and/or start hour."""
-    root = Path(event_windows_dir)
-    if not root.exists():
-        raise FileNotFoundError(root)
-
-    patterns = []
-    if member_id:
-        match = re.search(r"rank(\d{4})", str(member_id))
-        if match is None:
-            raise ValueError(f"Could not parse rank#### from member_id={member_id!r}")
-        patterns.append(f"*rank{match.group(1)}_*.nc")
-    if storm_start is not None:
-        patterns.append(f"*_{pd.Timestamp(storm_start):%Y%m%dT%H}.nc")
-    patterns = patterns or ["*.nc"]
-
-    matches = [set(root.glob(pattern)) for pattern in patterns]
-    candidates = sorted(set.intersection(*matches) if len(matches) > 1 else matches[0])
-    if len(candidates) != 1:
-        sample = ", ".join(path.name for path in candidates[:8]) or "no matches"
-        raise RuntimeError(f"AORC event-window lookup expected 1 match; got {sample}")
-    return candidates[0]
 
 
 def _summarize_soil_moisture(source_csv, *, at_time, lookback_hours=24.0):

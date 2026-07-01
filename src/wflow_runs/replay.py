@@ -1,31 +1,4 @@
 """Domain-set Wflow event replay → merged SFINCS discharge forcing.
-
-The greensboro-style inland coupling builds one Wflow submodel per encompassing-HUC /
-stream-boundary-crossing domain (see ``wflow.domain_set``). A single Event-Catalog event
-is replayed by, for each submodel:
-
-  1. resolving the event time window from the catalog ``event_reference_time``,
-  2. writing per-event HydroMT update-forcing config + data catalog (so the
-     ``event_precip`` / ``event_temp_pet`` pointers resolve to *this* event's forcing),
-  3. ``hydromt update wflow_sbm <base>/<submodel> -i <update> -d <catalog> -o events/<event>/<submodel>``,
-  4. running the Wflow engine on the produced run config,
-
-then writing a single ``events/<event>/sfincs_discharge.nc`` GeoDataset keyed by
-``sfincs_handoff_id``. By default this can merge each submodel's Wflow ``Q`` series at
-``gauges_sfincs`` points; locations can also request the catalog streamflow analog as
-the SFINCS handoff source, which avoids passing Wflow default-state startup recession to
-SFINCS as river inflow. ``SfincsModel.discharge_points.create(timeseries=...)`` reads
-that time-series contract while preserving the native SFINCS ``src`` points.
-
-The single-model ``run_wflow_event_replay`` in :mod:`wflow_runs.notebook` only targets one
-base; this module is the domain-set generalisation that also produces the merged handoff.
-
-Prerequisites:
-  - per-event meteo forcing ``events/<event>/precip.nc`` and ``temp_pet.nc``
-    (the ``event_precip`` / ``event_temp_pet`` data-catalog contract; use
-    ``build_meteo`` to stage it from the Event Catalog rainfall member),
-  - built Wflow submodels (``wflow_sbm.toml`` + ``staticmaps.nc``),
-  - a Wflow engine for ``execute=True`` (env ``WFLOW_BIN``, or ``wflow.run.command`` in config).
 """
 
 from __future__ import annotations
@@ -45,16 +18,16 @@ from collect_sources.aorc_event_meteo import (
     aorc_wflow_temp_pet_variables,
     prepare_aorc_temp_pet_for_wflow,
 )
-from sfincs_runs.hydrology import prepare_aorc_precip_for_sfincs
+from event_forcing import find_aorc_event_window, prepare_aorc_precip_for_sfincs
 from paths import resolve_location_path
-from wflow_runs.handoff_locations import read_stream_boundary_handoff_location_artifacts
-from wflow_runs.build_plan import (
+from coupling.handoff_sources import read_stream_boundary_handoff_location_artifacts
+from wflow_runs.repairs import (
+    normalize_wflow_staticmaps_nodata,
     repair_wflow_canopy_parameters,
     repair_wflow_gauge_map,
     repair_wflow_river_width,
-    repair_wflow_staticmaps_nodata,
-    validate_staticmaps,
 )
+from wflow_runs.staticmaps_qa import validate_staticmaps
 from wflow_runs.notebook import (
     _describe_hydromt_command,
     _hydromt_subprocess_env,
@@ -72,10 +45,7 @@ from wflow_runs.event import (
     build_discharge_dataset as _v2_build_discharge_dataset,
     configured_event_window_hours as _v2_configured_event_window_hours,
     event_window as _v2_event_window,
-    gauge_discharge as _v2_gauge_discharge,
-    match_gauge_column as _v2_match_gauge_column,
     merge_submodel_discharge as _v2_merge_submodel_discharge,
-    _output_csv as _v2_output_csv,
     catalog_rainfall_start as _v2_catalog_rainfall_start,
     clean_legacy_replay_submodel_output_dir,
     legacy_event_catalog_row,
@@ -84,6 +54,7 @@ from wflow_runs.event import (
     write_legacy_replay_update_config,
 )
 from wflow_runs.domain import configured_or_manifest_submodels as _v2_configured_or_manifest_submodels
+from wflow_runs.output import read_submodel_gauge_discharge
 from wflow_runs.runner import clean_output_dir as _v2_clean_output_dir
 from wflow_runs.runner import wflow_run_command as _v2_wflow_run_command
 from wflow_runs.runner import zero_event_forcing as _zero_event_forcing
@@ -303,50 +274,6 @@ def _epsg(crs):
             return int(crs)
         except (TypeError, ValueError):
             return None
-
-
-def read_submodel_gauge_discharge(
-    run_output_dir: Path,
-    gauges_geojson: Path,
-    *,
-    csv_name: str | None = None,
-):
-    """Read one submodel's Wflow gauge discharge + handoff locations."""
-    if csv_name is None:
-        series, points, _crs = _v2_gauge_discharge(
-            Path(run_output_dir).parent,
-            gauges_geojson,
-            run_output_dir=run_output_dir,
-        )
-        return series, points
-
-    import geopandas as gpd
-
-    gauges = gpd.read_file(gauges_geojson)
-    table = pd.read_csv(_resolve_wflow_output_csv(Path(run_output_dir), csv_name), index_col=0, parse_dates=True)
-    series_by_handoff: dict[str, pd.Series] = {}
-    points_by_handoff: dict[str, tuple[float, float]] = {}
-    for _, gauge in gauges.iterrows():
-        handoff_id = str(gauge["sfincs_handoff_id"])
-        column = _match_gauge_column(table.columns, gauge["index"])
-        if column is not None:
-            series_by_handoff[handoff_id] = pd.to_numeric(table[column], errors="coerce").astype(float)
-            points_by_handoff[handoff_id] = (float(gauge.geometry.x), float(gauge.geometry.y))
-    if not series_by_handoff:
-        raise ValueError(f"no Q_<index> gauge columns matched in {_resolve_wflow_output_csv(Path(run_output_dir), csv_name)}")
-    return series_by_handoff, points_by_handoff
-
-
-def _resolve_wflow_output_csv(run_output_dir: Path, csv_name: str | None) -> Path:
-    if csv_name:
-        candidate = run_output_dir / csv_name
-        if candidate.exists():
-            return candidate
-    return _v2_output_csv(run_output_dir)
-
-
-def _match_gauge_column(columns, index_value) -> str | None:
-    return _v2_match_gauge_column(columns, index_value)
 
 
 def merge_submodel_discharge(
@@ -686,7 +613,7 @@ def replay_inland_domain_set(
         if not (submodel_base / "wflow_sbm.toml").exists():
             raise FileNotFoundError(f"Wflow submodel base not built: {submodel_base}")
         if execute:
-            repair_wflow_staticmaps_nodata(submodel_base)
+            normalize_wflow_staticmaps_nodata(submodel_base)
             repair_wflow_canopy_parameters(submodel_base)
         if execute and apply_repairs:
             repair_wflow_river_width(submodel_base)
@@ -722,7 +649,7 @@ def replay_inland_domain_set(
             prepare_wflow_event_instate(event_dir / step.submodel_id, base_root / step.submodel_id)
             # Event models run with rainfall + antecedent moisture only; frequency provenance
             # is applied as a single-K Same-Frequency Amplification on the merged output below.
-            repair_wflow_staticmaps_nodata(event_dir / step.submodel_id)
+            normalize_wflow_staticmaps_nodata(event_dir / step.submodel_id)
             repair_wflow_canopy_parameters(event_dir / step.submodel_id)
             if apply_repairs:
                 repair_wflow_river_width(event_dir / step.submodel_id)
@@ -887,12 +814,7 @@ def _event_rainfall_source_nc(config: dict, location_root: Path, row: pd.Series)
     )
     event_windows_dir = precip_cfg.get("event_windows_dir") or (rainfall_member_file.parent / "event_windows")
     event_windows_dir = resolve_location_path(location_root, event_windows_dir)
-    # Deferred: sfincs_runs.event_forcing imports wflow_runs.dynamic_handoff, which imports
-    # this module, so a module-level import here would deadlock the wflow_runs <->
-    # sfincs_runs circular dependency at import time.
-    from sfincs_runs.event_forcing import _find_aorc_event_window
-
-    return _find_aorc_event_window(
+    return find_aorc_event_window(
         event_windows_dir,
         member_id=str(_required_event_value(row, "rainfall_member_id")),
         storm_start=_required_event_value(row, "rainfall_member_time"),

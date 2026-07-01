@@ -16,11 +16,11 @@ from shapely.ops import nearest_points, unary_union
 
 from paths import location_root_from_paths, resolve_location_path
 from sfincs_runs.infiltration import setup_hydromt_infiltration, validate_physics
-from wflow_runs.handoff_locations import (
+from coupling.handoff_sources import (
     LEGACY_BOUNDARY_HANDOFF_MODES,
     RESERVOIR_BOUNDARY_HANDOFF_MODES,
     STREAM_BOUNDARY_HANDOFF_MODES,
-    crossing_handoff_sources,
+    crossing_handoff_sources_from_wflow_domain_plan,
     handoff_location_mode,
     uses_stream_boundary_handoff,
 )
@@ -2203,12 +2203,7 @@ def _crossing_handoff_sources(config, location_root: Path) -> gpd.GeoDataFrame:
     SFINCS sources and Wflow gauges therefore coincide by construction; no USGS gage network
     is read.
     """
-    from wflow_runs.build_plan import plan_wflow_domain_set
-
-    plan = plan_wflow_domain_set(config, {"location_root": location_root})
-    if plan.status != "ready":
-        raise ValueError(f"Crossing-derived Wflow domain plan is not ready: {plan.status}: {plan.issues}")
-    return crossing_handoff_sources(plan)
+    return crossing_handoff_sources_from_wflow_domain_plan(config, location_root)
 
 
 def _accepted_handoff_gages(config, location_root: Path) -> gpd.GeoDataFrame:

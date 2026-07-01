@@ -39,6 +39,7 @@ runs/*
 !runs/debug/.gitkeep
 
 # unfinished
+optimization
 locations/austin/02_flood/05*
 locations/austin/02_flood/06*
 locations/greensboro/02_flood/05*

@@ -78,3 +78,47 @@ class BoundaryRun:
             },
             name="wflow_event_boundary",
         )
+
+
+@dataclass(frozen=True)
+class WflowBuildPlan:
+    study_location: str
+    plugin: str
+    base_model_root: Path
+    events_root: Path
+    data_catalog: Path
+    build_config: Path
+    update_forcing_config: Path
+    build_steps: tuple[str, ...]
+    update_steps: tuple[str, ...]
+    region_kind: str
+    review_required: bool
+    domain_status: str
+    build_command: str
+    update_command: str
+
+
+@dataclass(frozen=True)
+class WflowDomainSetPlan:
+    reviewed_network: Path
+    status: str
+    gage_count: int
+    submodel_count: int
+    handoff_count: int
+    submodels: tuple[dict, ...]
+    issues: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class WflowSourceStrategy:
+    status: str
+    hydrography_policy: str
+    hydromt_basemap_source: str
+    river_geometry_source: str | None
+    catchment_source: str | None
+    hydrography_api: str
+    soil_policy: str
+    wflow_soil_parameter_source: str
+    ssurgo_inputs: tuple[str, ...]
+    global_fallbacks: tuple[str, ...]
+    issues: tuple[str, ...]
