@@ -547,17 +547,6 @@ def _attach_configured_forcing(catalog, plan):
     return out
 
 
-def rebuild_forcing_pairing(catalog, member_path, forcing, policy=None):
-    member_path = Path(member_path)
-    members = pd.read_csv(member_path)
-    members = _normalize_member_table(members, forcing, member_path)
-    out = catalog.drop(
-        columns=[column for column in catalog.columns if column.startswith(f"{forcing}_")],
-        errors="ignore",
-    )
-    return attach_forcing_members(out, members, forcing, policy)
-
-
 def _normalize_member_table(members, forcing, member_path):
     if forcing == "soil_moisture" and "time" in members and _soil_moisture_value_column(members):
         return _normalize_soil_moisture_member_table(members, member_path)

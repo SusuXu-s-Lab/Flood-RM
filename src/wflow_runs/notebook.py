@@ -81,34 +81,6 @@ def load_runtime(location_root, *, workflow: str = "coupled", **kwargs):
     raise ValueError("workflow must be 'coupled' or 'calibration'")
 
 
-def load_wflow_notebook_context(location_name: str | None = None, *, start: Path | None = None) -> WflowNotebookContext:
-    location_root = find_location_root(location_name, start=start)
-    repo_root = location_root.parents[1]
-    config = _read_yaml(location_root / "config.yaml")
-    includes = config.get("includes", {})
-    grid_include = includes.get("smartds") or includes.get("grid")
-    grid_config = _read_yaml(location_root / grid_include) if grid_include else {}
-    data_sources = _read_yaml(location_root / includes["data_sources"]) if "data_sources" in includes else {}
-    sfincs_config = _read_yaml(location_root / config["includes"]["sfincs"])
-    wflow_include = includes.get("wflow")
-    wflow_config = _read_yaml(location_root / wflow_include) if wflow_include else {}
-    runtime_config = define_location(location_root / "config.yaml").config
-    if not data_sources:
-        data_sources = runtime_config
-    if not wflow_config and "wflow" in runtime_config:
-        wflow_config = {"wflow": runtime_config["wflow"]}
-    return WflowNotebookContext(
-        location_root=location_root,
-        repo_root=repo_root,
-        config=config,
-        grid_config=grid_config,
-        data_sources=data_sources,
-        sfincs_config=sfincs_config,
-        wflow_config=wflow_config,
-        runtime_config=runtime_config,
-    )
-
-
 def find_location_root(location_name: str | None = None, *, start: Path | None = None) -> Path:
     # With no name, resolve the location from the working directory: the nearest
     # ancestor that holds a config.yaml and sits directly under locations/. A name
@@ -196,8 +168,6 @@ def subbasins(domain_plan) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
-
-
 
 
 def wflow_event_replay_plan(config: dict, location_root: Path, event_id: str | None) -> pd.Series:

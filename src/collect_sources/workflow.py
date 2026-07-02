@@ -16,17 +16,17 @@ from paths import location_or_repo_path_from_paths
 
 COLLECTORS = {
     "aorc": "collect_sources.aorc:collect",
-    "aorc_sst": "collect_sources.derived.rainfall:collect",
+    "aorc_sst": "derived.rainfall:collect",
     "cora": "collect_sources.cora:collect_cora",
     "era5": "collect_sources.era5:collect",
     "era5_waves": "collect_sources.era5:collect",
     "nwm": "collect_sources.nwm:collect_nwm",
-    "usgs": "collect_sources.usgs:collect",
+    "usgs": "collect_sources.usgs_streamgages:collect",
     "usgs_streamgages": "collect_sources.usgs_streamgages:collect_usgs_streamgages",
     "hurdat2": "collect_sources.hurdat2:collect_hurdat2",
     "lcra_hydromet": "collect_sources.lcra_hydromet:collect_lcra_hydromet",
     "stream_geo": "collect_sources.stream_geo:collect",
-    "stream_geo_nldi": "collect_sources.stream_geo_nldi:collect_stream_geo_nldi",
+    "stream_geo_nldi": "collect_sources.stream_geo:collect_stream_geo_nldi",
     "ssurgo": "collect_sources.ssurgo:collect_ssurgo",
     "national_hydrography": "collect_sources.national_hydrography:collect_national_hydrography",
 }
@@ -166,14 +166,14 @@ from tqdm.auto import tqdm as iter_progress
 
 
 def _default_run_collect_funcs():
-    from collect_sources.derived.aorc_sst import collect_aorc_sst
+    from derived.aorc_sst import collect_aorc_sst
     from collect_sources.cora import collect_cora
-    from collect_sources.era5_waves import collect_era5_waves
+    from collect_sources.era5 import collect_era5_waves
     from collect_sources.hurdat2 import collect_hurdat2
     from collect_sources.lcra_hydromet import collect_lcra_hydromet
     from collect_sources.national_hydrography import collect_national_hydrography
     from collect_sources.nwm import collect_nwm
-    from collect_sources.stream_geo_nldi import collect_stream_geo_nldi
+    from collect_sources.stream_geo import collect_stream_geo_nldi
     from collect_sources.usgs_streamgages import collect_usgs_streamgages
 
     return {
@@ -625,7 +625,7 @@ def _location_path(paths, value):
 
 import matplotlib.pyplot as plt
 
-import collect_sources.era5_waves as era5_waves_module
+import collect_sources.era5 as era5_waves_module
 import collect_sources.lcra_hydromet as lcra_hydromet_module
 import collect_sources.usgs_streamgages as usgs_streamgages_module
 from collect_sources.nwm import soil_moisture_csv_has_variables
@@ -1438,7 +1438,7 @@ def _wave_dataset_variables(path):
 
 
 def check_wave_forcing(config, paths):
-    from collect_sources.era5_waves import era5_wave_short_variables, wave_dataset_covers
+    from collect_sources.era5 import era5_wave_short_variables, wave_dataset_covers
 
     required = bool(config.get("coastal_waves", False))
     spec = config.get("collection", {}).get("era5_waves")
@@ -1628,7 +1628,7 @@ def collect_aorc_sst_event_windows(
     *,
     skip_existing=True,
 ) -> pd.Series:
-    from collect_sources.derived.aorc_sst import collect_aorc_sst_event_windows as _collect_event_windows
+    from derived.aorc_sst import collect_aorc_sst_event_windows as _collect_event_windows
 
     if not collection_plan.has("aorc_sst"):
         raise KeyError("aorc_sst is not configured in the source collection plan")
@@ -1658,7 +1658,7 @@ def repair_aorc_sst_event_window_meteo(
     *,
     skip_existing=True,
 ) -> pd.Series:
-    from collect_sources.derived.aorc_sst import repair_aorc_sst_event_window_meteo as _repair_event_meteo
+    from derived.aorc_sst import repair_aorc_sst_event_window_meteo as _repair_event_meteo
 
     if not collection_plan.has("aorc_sst"):
         raise KeyError("aorc_sst is not configured in the source collection plan")
@@ -1686,7 +1686,7 @@ def aorc_sst_event_window_readiness(
     paths: dict,
     collection_plan,
 ) -> pd.Series:
-    from collect_sources.derived.aorc_sst import event_window_variable_readiness
+    from derived.aorc_sst import event_window_variable_readiness
 
     if not collection_plan.has("aorc_sst"):
         raise KeyError("aorc_sst is not configured in the source collection plan")

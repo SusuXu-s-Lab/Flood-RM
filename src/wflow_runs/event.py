@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-import json
 import re
 import shutil
 
@@ -10,23 +9,19 @@ import pandas as pd
 import xarray as xr
 import yaml
 
-from .domain import domain_submodels, model_crs, read_handoff_points
+from .domain import domain_submodels, model_crs
 from .event_catalog import (
     catalog_rainfall_start,
     configured_event_window_hours,
-    event_catalog_path,
     event_paths,
     event_reference_time,
     event_window,
     legacy_dynamic_handoff_paths,
-    legacy_event_catalog_row,
     read_event,
-    required_event_value,
 )
-from .qa import read_acceptance, validate_event_boundary, write_acceptance
-from .states import prepare_event_instate, validate_instates
-from .types import BoundaryRun, DesignEvent
-from paths import resolve_location_path, write_json
+from .qa import read_acceptance
+from .types import DesignEvent
+from paths import resolve_location_path
 from wflow_runs.runner import clean_output_dir, run_solver, zero_event_forcing
 
 _GENERATED = "# GENERATED FILE - source: wflow_runs.event\n"
@@ -192,91 +187,6 @@ def _rasterio(uri: str, category: str) -> dict[str, Any]:
 
 def _geodataframe(uri: str, crs: str, category: str) -> dict[str, Any]:
     return {"data_type": "GeoDataFrame", "driver": {"name": "pyogrio"}, "uri": uri, "metadata": {"crs": crs, "category": category}}
-
-
-def run_event_boundary(
-    config: dict[str, Any],
-    location_root: str | Path,
-    event_id: str,
-    *,
-    catalog_path=None,
-    execute: bool = True,
-    force: bool = False,
-    zero_rain: bool = False,
-    model_cls=None,
-) -> BoundaryRun:
-    """Run one stochastic event through HydroMT-Wflow and write SFINCS discharge forcing."""
-    root = Path(location_root)
-    event = read_event(config, root, event_id, catalog_path=catalog_path)
-    paths = event_paths(config, root, event_id)
-    paths["event_root"].mkdir(parents=True, exist_ok=True)
-    if execute:
-        validate_instates(config, root, raise_on_error=True)
-        _require_event_forcing(event)
-
-    submodels = domain_submodels(config, root)
-    if not submodels:
-        raise RuntimeError("No Wflow domain submodels are configured or manifested")
-    wflow = config.get("wflow", {}) or {}
-    base_root = resolve_location_path(root, wflow.get("base_model_root", "data/wflow/base"))
-    update_config = resolve_location_path(root, wflow.get("update_forcing_config", "wflow_update_forcing.yml"))
-    base_catalog = _ensure_local_catalog(config, root)
-    event_catalog = _bind_event_catalog_template(base_catalog, paths["event_root"], event.event_id)
-    event_update = _write_event_update_workflow(update_config, paths["event_root"], event.window_start, event.window_end)
-    update_steps = _workflow_steps(event_update)
-
-    rows: list[dict[str, Any]] = []
-    outputs: list[dict[str, Any]] = []
-    for submodel in submodels:
-        sid = str(submodel["wflow_submodel_id"])
-        base_model = base_root / sid
-        event_model = paths["event_root"] / sid
-        if execute:
-            if force and event_model.exists():
-                shutil.rmtree(event_model)
-            _update_model(base_model, event_model, steps=update_steps, data_libs=[str(event_catalog)], model_cls=model_cls)
-            prepare_event_instate(event_model, base_model, model_cls=model_cls)
-            clean_output_dir(event_model / "wflow_sbm.toml")
-            run_solver(config, event_model / "wflow_sbm.toml", cwd=root)
-        gauges = event_model / "staticgeoms" / "gauges_sfincs.geojson"
-        if not gauges.exists():
-            gauges = base_model / "staticgeoms" / "gauges_sfincs.geojson"
-        outputs.append({"run_model_root": event_model, "run_output_dir": event_model / "run_event", "gauges_geojson": gauges, "submodel_id": sid})
-        rows.append({"event_id": event.event_id, "wflow_submodel_id": sid, "event_model_root": str(event_model), "run_output_dir": str(event_model / "run_event"), "gauges_geojson": str(gauges), "status": "completed" if execute else "planned"})
-
-    amplification = {"K": 1.0, "status": "not_run"}
-    zero_path = None
-    if execute:
-        from coupling import amplification as coupling_amplification
-        from coupling import discharge as coupling_discharge
-
-        coupling_discharge.merge_submodel_discharge(
-            outputs,
-            model_crs=model_crs(config),
-            out_path=paths["discharge"],
-            handoff_points=coupling_discharge.sfincs_handoff_points(config, root, model_crs(config)),
-        )
-        amplification = coupling_amplification.apply_same_frequency_amplification(
-            config,
-            root,
-            event.event_id,
-            discharge_nc=paths["discharge"],
-            submodel_runs=outputs,
-            event=event,
-            write_provenance=False,
-        )
-        write_json(paths["amplification"], amplification)
-        if zero_rain:
-            zero_path = run_zero_rain_control(config, root, event.event_id, execute=True, model_cls=model_cls)
-        expected = {p.id for p in read_handoff_points(config, root, crs=model_crs(config))}
-        qa = validate_event_boundary(paths["discharge"], expected_source_ids=expected, window=(event.window_start, event.window_end), zero_rain_discharge_nc=zero_path, raise_on_error=False)
-        qa.to_csv(paths["qa_csv"], index=False)
-        write_acceptance(paths["acceptance"], event=event, discharge_nc=paths["discharge"], qa_report=qa, amplification=amplification, metadata={"hydromt_update_workflow": str(event_update), "hydromt_data_catalog": str(event_catalog)})
-        status = "accepted" if not qa["status"].isin(["failed", "review_required"]).any() else "failed"
-    else:
-        qa = pd.DataFrame()
-        status = "planned"
-    return BoundaryRun(event=event, discharge_nc=paths["discharge"], acceptance_json=paths["acceptance"], qa_csv=paths["qa_csv"], status=status, amplification=amplification, report=pd.DataFrame(rows))
 
 
 def require_event_boundary(config: dict[str, Any], location_root: str | Path, event_id: str) -> pd.Series:

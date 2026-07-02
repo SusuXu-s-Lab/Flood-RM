@@ -22,24 +22,6 @@ def cn_recovery_seff(smax, soil_saturation, *, units: str = "fraction"):
     return out
 
 
-def stage_seff_from_fraction(run_root: str | Path, fraction: float, *, smax_name: str = "sfincs.smax") -> dict[str, float | str]:
-    """Write event-specific ``sfincs.seff`` from native CN-recovery ``smax``.
-
-    HydroMT-SFINCS owns the static ``smax`` and ``ks`` files.  This event helper
-    only updates the mutable antecedent storage file.
-    """
-    run_root = Path(run_root)
-    smax_path = run_root / smax_name
-    if not smax_path.exists():
-        raise FileNotFoundError(smax_path)
-    value = float(np.clip(fraction, 0.0, 1.0))
-    smax = np.fromfile(smax_path, dtype="<f4")
-    seff = (smax * value).astype("<f4")
-    out = run_root / "sfincs.seff"
-    seff.tofile(out)
-    return {"sefffile": out.name, "initial_soil_moisture_fraction": value}
-
-
 def condition_ksat_raster(source, output, *, scale_factor: float = 1.0, max_mmhr: float | None = None):
     """Scale and optionally cap a Ksat raster while preserving georeferencing."""
     import rioxarray as rxr

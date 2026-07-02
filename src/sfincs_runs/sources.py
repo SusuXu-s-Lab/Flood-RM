@@ -7,7 +7,7 @@ import geopandas as gpd
 import pandas as pd
 
 from .build import open_model
-from .io import model_root_path, register_raster_or_dataset
+from .io import register_raster_or_dataset
 from .schema import NativeSourceConfig
 
 
@@ -156,13 +156,3 @@ def validate_source_contract(source_contract: gpd.GeoDataFrame, discharge_names:
     )
 
 
-def write_contract_from_existing_model(base_root: str | Path, output: str | Path) -> gpd.GeoDataFrame:
-    """Export existing native SFINCS ``src`` points as a Wflow source contract."""
-    sf = open_model(base_root, mode="r", read=True)
-    src = _component_gdf(sf.discharge_points).copy()
-    if src.empty:
-        raise RuntimeError(f"No SFINCS discharge source points in {model_root_path(sf)}")
-    out = Path(output)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    src.to_file(out, driver="GeoJSON")
-    return src

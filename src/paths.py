@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from shapely.geometry import mapping, shape
+from shapely.geometry import mapping
 
 def find_repo_root(start=None):
     path = Path(start or Path.cwd()).resolve()
@@ -134,11 +134,6 @@ def write_json(path, payload):
     path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
     return path
 
-def read_geojson_geometry(path):
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
-    item = data["features"][0] if data.get("type") == "FeatureCollection" else data
-    return shape(item.get("geometry", item))
-
 def write_geojson_features(path, features):
     payload = {
         "type": "FeatureCollection",
@@ -150,5 +145,3 @@ def write_geojson_features(path, features):
     }
     Path(path).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
-def write_geojson(path, geometry, properties):
-    write_geojson_features(path, [(geometry, properties)])

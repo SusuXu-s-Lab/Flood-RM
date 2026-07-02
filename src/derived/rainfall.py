@@ -9,7 +9,7 @@ from scipy import ndimage
 import xarray as xr
 
 from collect_sources.audit import Artifact, covers, resolve, write_artifact
-from collect_sources.derived.gridded import coord, subset, to_yx
+from derived.gridded import coord, subset, to_yx
 
 
 def bbox_from_spec(paths: dict, spec: dict) -> tuple[float, float, float, float]:

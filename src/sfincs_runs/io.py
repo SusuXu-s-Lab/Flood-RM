@@ -6,8 +6,6 @@ from pathlib import Path
 import shutil
 from typing import Any, Iterable
 
-import pandas as pd
-
 MUTABLE_EVENT_FILES = frozenset(
     {
         "sfincs.inp",
@@ -67,12 +65,6 @@ RETAINED_OUTPUT_FILES = frozenset(
         "snapwave.bds",
     }
 )
-
-
-def path_or_none(value: str | os.PathLike[str] | None) -> Path | None:
-    if value in (None, ""):
-        return None
-    return Path(value)  # type: ignore[arg-type]
 
 
 def resolve_path(root: Path, value: str | os.PathLike[str] | None, *, default: str | None = None) -> Path | None:
@@ -204,14 +196,6 @@ def config_update(sf: Any, values: dict[str, Any]) -> None:
         config_set(sf, key, value)
 
 
-def set_model_time(sf: Any, start, stop) -> tuple[pd.Timestamp, pd.Timestamp]:
-    """Set ``tref``, ``tstart`` and ``tstop`` through the native config component."""
-    t0 = pd.Timestamp(start)
-    t1 = pd.Timestamp(stop)
-    config_update(sf, {"tref": t0.to_pydatetime(), "tstart": t0.to_pydatetime(), "tstop": t1.to_pydatetime()})
-    return t0, t1
-
-
 def register_raster_or_dataset(sf: Any, name: str, path: Path, *, crs: str | int | None = None) -> str:
     """Register a local raster/netCDF source and return its data-catalog name.
 
@@ -239,9 +223,3 @@ def register_raster_or_dataset(sf: Any, name: str, path: Path, *, crs: str | int
     return name
 
 
-def component_dataframe(component: Any, attr_candidates: tuple[str, ...] = ("gdf", "data")):
-    for attr in attr_candidates:
-        value = getattr(component, attr, None)
-        if value is not None:
-            return value
-    return None

@@ -10,7 +10,6 @@ from design_events import (
     records,
     realization,
     runtime,
-    streamgage,
     timing,
     workflow,
 )
@@ -25,7 +24,6 @@ __all__ = [
     "records",
     "realization",
     "runtime",
-    "streamgage",
     "timing",
     "workflow",
 ]

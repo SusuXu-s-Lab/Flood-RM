@@ -10,7 +10,7 @@ import pandas as pd
 from scipy.signal import fftconvolve
 import xarray as xr
 
-from collect_sources.derived.aorc_event_meteo import aorc_wflow_temp_pet_variables, prepare_aorc_temp_pet_for_wflow
+from derived.aorc_event_meteo import aorc_wflow_temp_pet_variables, prepare_aorc_temp_pet_for_wflow
 from paths import location_or_repo_path_from_paths
 from source_artifacts import (
     read_source_artifact,

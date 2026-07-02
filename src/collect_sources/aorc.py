@@ -5,8 +5,8 @@ from pathlib import Path
 import pandas as pd
 
 from collect_sources.audit import Artifact, nonempty, write_artifact
-from collect_sources.derived.gridded import open_zarr, subset
-from collect_sources.derived.meteo import aorc_source_variables
+from derived.gridded import open_zarr, subset
+from derived.meteo import aorc_source_variables
 
 AORC_ZARR = "s3://noaa-nws-aorc-v1-1-1km/{year}.zarr"
 

@@ -89,15 +89,6 @@ def event_catalog_source_inventory(runtime: EventCatalogNotebookRuntime) -> pd.D
     )
 
 
-def scenario_context(runtime: EventCatalogNotebookRuntime) -> dict:
-    return {
-        "repo_root": runtime.repo_root,
-        "location_root": runtime.location_root,
-        "location_name": runtime.config["project"]["name"],
-        "scenario": {"name": runtime.sfincs_config["scenario_build"]["design_scenario"]},
-    }
-
-
 def configure_coastal_dependence_policy(
     config,
     paths,
@@ -460,8 +451,6 @@ def _location_relative_path(value, location_root: Path):
         return path.as_posix()
 
 
-
-
 __all__ = [
     "EventCatalogNotebookRuntime",
     "configure_coastal_dependence_policy",
@@ -469,5 +458,4 @@ __all__ = [
     "event_catalog_source_inventory",
     "load_runtime",
     "materialize_inland_catalog_outputs",
-    "scenario_context",
 ]

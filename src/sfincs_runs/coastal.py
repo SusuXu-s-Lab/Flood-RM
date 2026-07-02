@@ -60,36 +60,6 @@ def build_coastal_hydrograph_from_analog(
     return out[~out.index.duplicated(keep="first")].sort_index()
 
 
-def coastal_hydrograph_from_catalog_row(
-    row: pd.Series | dict[str, Any],
-    components: pd.DataFrame,
-    *,
-    member_time_column: str = "coastal_water_level_member_time",
-    scale_column: str = "coastal_water_level_scale_factor",
-    window_hours: float = 72.0,
-    msl_offset_m: float = 0.0,
-) -> tuple[pd.Series, dict[str, Any]]:
-    data = dict(row)
-    peak_time = data.get(member_time_column)
-    if peak_time in (None, "") or bool(pd.isna(peak_time)):
-        raise ValueError(f"catalog row is missing {member_time_column!r}")
-    scale = data.get(scale_column, 1.0)
-    eta = build_coastal_hydrograph_from_analog(
-        components,
-        peak_time,
-        scale,
-        window_hours=window_hours,
-        msl_offset_m=msl_offset_m,
-        return_absolute_time=True,
-    )
-    return eta, {
-        "coastal_analog_peak_time": str(pd.Timestamp(peak_time)),
-        "coastal_water_level_scale_factor": float(scale),
-        "msl_offset_m": float(msl_offset_m),
-        "expected_bzs_peak_max_m": float(eta.max()),
-    }
-
-
 def coastal_timeseries_from_catalog_row(
     row: pd.Series | dict[str, Any],
     components: pd.DataFrame,

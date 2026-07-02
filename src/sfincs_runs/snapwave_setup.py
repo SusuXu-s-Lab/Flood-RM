@@ -7,12 +7,10 @@ os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-import shapely
 from pyproj import Transformer
-from shapely.geometry import LineString, MultiLineString, Polygon
+from shapely.geometry import LineString
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union
-from sfincs_runs.snapwave import unwrap_direction_degrees
 
 def derive_seaward_boundary(
     domain: BaseGeometry,
@@ -123,21 +121,6 @@ def _nearest_line_parts(
         if distance <= min_distance + margin_m
     ]
     return unary_union(keep)
-
-def select_snapwave_boundary_points(
-    offshore_edge: LineString | MultiLineString,
-    offshore_polygon: Polygon,
-    spacing_m: float,
-    crs,
-) -> gpd.GeoDataFrame:
-    # place points along the edge every spacing_m, keep those inside polygon
-    length = offshore_edge.length
-    n = int(np.floor(length / spacing_m)) + 1
-    distances = np.arange(n) * spacing_m
-    raw_points = [offshore_edge.interpolate(d) for d in distances]
-    kept = [p for p in raw_points if offshore_polygon.contains(p) or offshore_polygon.touches(p)]
-    names = [f"{i + 1:04d}" for i in range(len(kept))]
-    return gpd.GeoDataFrame({"name": names, "geometry": kept}, crs=crs)
 
 def write_runup_gauges_file(path, transects) -> None:
     # SFINCS rug file: per transect, name line, "2 2" header, then x0 y0 and x1 y1.
