@@ -2,7 +2,7 @@
 
 from collect_sources.audit import Artifact, covers, read_artifact, write_artifact
 from collect_sources.workflow import SourceCollectionPlan, SourceCollectionStep, plan, prepare, run_collect
-from collect_sources.aorc_sst import collect_warmup
+from collect_sources.derived.aorc_sst import collect_warmup
 from collect_sources.usgs_streamgages import build_reviewed_streamgage_decisions
 
 __all__ = [

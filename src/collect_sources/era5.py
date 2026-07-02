@@ -6,7 +6,7 @@ import pandas as pd
 import xarray as xr
 
 from collect_sources.audit import Artifact, covers, netcdf_covers, resolve, write_artifact
-from collect_sources.gridded import coord, subset
+from collect_sources.derived.gridded import coord, subset
 
 CDS_WAVE_VARIABLES = [
     "significant_height_of_combined_wind_waves_and_swell",

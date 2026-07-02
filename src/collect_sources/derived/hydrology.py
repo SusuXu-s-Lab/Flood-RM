@@ -4,7 +4,7 @@ import geopandas as gpd
 import pandas as pd
 from shapely.geometry import Point
 
-from .audit import resolve
+from collect_sources.audit import resolve
 
 
 def derive_soilsat_top(frame: pd.DataFrame, *, layer_dim="soil_layers_stag", top_layers=(0, 1)) -> pd.DataFrame:

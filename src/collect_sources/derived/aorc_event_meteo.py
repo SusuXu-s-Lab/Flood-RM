@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from collect_sources.meteo import AORC_METEO as DEFAULT_AORC_METEO_VARIABLES
-from collect_sources.meteo import aorc_variable_candidates
-from collect_sources.meteo import write_wflow_temp_pet
+from collect_sources.derived.meteo import AORC_METEO as DEFAULT_AORC_METEO_VARIABLES
+from collect_sources.derived.meteo import aorc_variable_candidates
+from collect_sources.derived.meteo import write_wflow_temp_pet
 
 
 def aorc_wflow_temp_pet_variables(config: dict | None = None) -> dict[str, tuple[str, ...]]:

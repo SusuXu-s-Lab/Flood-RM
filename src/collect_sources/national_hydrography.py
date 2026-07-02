@@ -14,7 +14,7 @@ from shapely.geometry import box
 import xarray as xr
 
 from paths import resolve_location_path
-from collect_sources.reservoir_conditions import (
+from collect_sources.derived.reservoir_conditions import (
     enrich_wflow_reservoirs_with_public_conditions,
 )
 from collect_sources.ssurgo import (
